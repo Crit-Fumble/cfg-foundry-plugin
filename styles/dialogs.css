@@ -1,0 +1,708 @@
+/**
+ * CFG Dialogs - Theme-aware styles
+ * Works with both light and dark Foundry themes
+ */
+
+/* ========================================
+   Dialog Container
+   ======================================== */
+
+.cfg-dialog {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.cfg-exporter-container,
+.cfg-manager-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 0;
+}
+
+/* ========================================
+   Dialog Header
+   ======================================== */
+
+.cfg-dialog__header {
+  padding: 16px;
+  background: var(--color-bg-btn-minor-inactive);
+  border-bottom: 1px solid var(--color-border-dark);
+}
+
+.cfg-dialog__header h2 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+  color: var(--color-text-dark-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-dialog__header h2 i {
+  color: var(--color-text-hyperlink);
+}
+
+.cfg-dialog__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-dark-secondary);
+}
+
+/* ========================================
+   Dialog Content
+   ======================================== */
+
+.cfg-dialog__content {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--color-bg-option);
+}
+
+/* Scrollbar styling - theme aware */
+.cfg-dialog__content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.cfg-dialog__content::-webkit-scrollbar-track {
+  background: var(--color-bg-option);
+}
+
+.cfg-dialog__content::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+  border-radius: 4px;
+}
+
+.cfg-dialog__content::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-light);
+}
+
+/* ========================================
+   Dialog Footer
+   ======================================== */
+
+.cfg-dialog__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--color-bg-btn-minor-inactive);
+  border-top: 1px solid var(--color-border-dark);
+}
+
+.cfg-footer-info {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--color-text-dark-secondary);
+}
+
+/* ========================================
+   Actors Section
+   ======================================== */
+
+.cfg-actors-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.cfg-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+}
+
+.cfg-section-header__left label {
+  font-weight: bold;
+  font-size: 13px;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-section-header__right {
+  display: flex;
+  gap: 6px;
+}
+
+.cfg-actors-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--color-border-dark);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--color-bg-btn-minor-inactive);
+  min-height: 0;
+}
+
+.cfg-actors-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.cfg-actors-list::-webkit-scrollbar-track {
+  background: var(--color-bg-btn-minor-inactive);
+}
+
+.cfg-actors-list::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+  border-radius: 4px;
+}
+
+/* ========================================
+   Checkbox in Cards
+   ======================================== */
+
+.cfg-checkbox {
+  font-size: 18px;
+  color: var(--color-text-hyperlink);
+  flex-shrink: 0;
+}
+
+.cfg-card--selected .cfg-checkbox {
+  color: var(--color-text-hyperlink);
+}
+
+/* ========================================
+   Export Options
+   ======================================== */
+
+.cfg-export-options {
+  padding: 16px;
+  background: var(--color-bg-btn-minor-inactive);
+  border: 1px solid var(--color-border-dark);
+  border-radius: 4px;
+}
+
+.cfg-export-options h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: var(--color-text-hyperlink);
+}
+
+/* ========================================
+   Info Boxes
+   ======================================== */
+
+.cfg-info-box {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 4px;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-left: 3px solid;
+}
+
+.cfg-info-box i {
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.cfg-info-box p {
+  margin: 0;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-info-box--info {
+  background: rgba(74, 144, 226, 0.1);
+  border-left-color: var(--color-text-hyperlink);
+}
+
+.cfg-info-box--info i {
+  color: var(--color-text-hyperlink);
+}
+
+.cfg-info-box--warning {
+  background: rgba(255, 107, 107, 0.1);
+  border-left-color: #ff6b6b;
+}
+
+.cfg-info-box--warning i {
+  color: #ff6b6b;
+}
+
+.cfg-info-box--success {
+  background: rgba(76, 175, 80, 0.1);
+  border-left-color: #4caf50;
+}
+
+.cfg-info-box--success i {
+  color: #4caf50;
+}
+
+/* ========================================
+   Detail Items (in card subtitles)
+   ======================================== */
+
+.cfg-app .detail-item {
+  display: inline-block;
+  margin-right: 12px;
+}
+
+.cfg-app .detail-item:last-child {
+  margin-right: 0;
+}
+
+/* ========================================
+   Small Button Variant
+   ======================================== */
+
+.cfg-button--small {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+
+/* ========================================
+   Grid Layout for Two-Column Sections
+   ======================================== */
+
+.cfg-grid-two-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* ========================================
+   Panel (for event manager)
+   ======================================== */
+
+.cfg-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-dark);
+  border-radius: 4px;
+  background: var(--color-bg-btn-minor-inactive);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.cfg-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--color-bg-option);
+  border-bottom: 1px solid var(--color-border-dark);
+}
+
+.cfg-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-panel__title i {
+  color: var(--color-text-hyperlink);
+}
+
+.cfg-panel__count {
+  padding: 2px 8px;
+  background: var(--color-bg-option);
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-panel__content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  min-height: 0;
+}
+
+/* ========================================
+   Responsive
+   ======================================== */
+
+@media (max-width: 768px) {
+  .cfg-grid-two-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .cfg-section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .cfg-dialog__footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cfg-footer-info {
+    text-align: center;
+  }
+}
+
+/* ========================================
+   Onboarding Wizard
+   ======================================== */
+
+.cfg-onboarding-wizard {
+  padding: 24px;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* Progress Indicator */
+.cfg-app .wizard-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  padding: 0 20px;
+}
+
+.cfg-app .progress-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+}
+
+.cfg-app .step-number {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-bg-option);
+  border: 2px solid var(--color-border-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  color: var(--color-text-dark-secondary);
+  transition: all 0.3s ease;
+}
+
+.cfg-app .progress-step.active .step-number {
+  background: var(--color-text-hyperlink);
+  border-color: var(--color-text-hyperlink);
+  color: white;
+}
+
+.cfg-app .progress-step.completed .step-number {
+  background: var(--color-bg-option);
+  border-color: var(--color-bg-option);
+  color: white;
+}
+
+.cfg-app .step-label {
+  font-size: 12px;
+  color: var(--color-text-dark-secondary);
+  font-weight: 500;
+}
+
+.cfg-app .progress-step.active .step-label {
+  color: var(--color-text-dark-primary);
+  font-weight: bold;
+}
+
+.cfg-app .progress-line {
+  flex: 1;
+  height: 2px;
+  background: var(--color-border-dark);
+  margin: 0 -10px;
+  position: relative;
+  z-index: 1;
+  transition: background 0.3s ease;
+}
+
+.cfg-app .progress-line.active {
+  background: var(--color-text-hyperlink);
+}
+
+/* Wizard Steps */
+.cfg-app .wizard-step {
+  text-align: center;
+}
+
+.cfg-app .wizard-step h2 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-app .step-description {
+  margin: 0 0 24px 0;
+  font-size: 14px;
+  color: var(--color-text-dark-secondary);
+}
+
+/* Role Cards */
+.cfg-app .role-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.cfg-app .role-card {
+  padding: 20px;
+  background: var(--color-bg-btn-minor-inactive);
+  border: 2px solid var(--color-border-dark);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.cfg-app .role-card:hover {
+  border-color: var(--color-text-hyperlink);
+  background: var(--color-bg-option);
+}
+
+.cfg-app .role-card.selected {
+  border-color: var(--color-text-hyperlink);
+  background: var(--color-bg-option);
+}
+
+.cfg-app .role-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  color: var(--color-text-hyperlink);
+}
+
+.cfg-app .role-card h3 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-app .role-card p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-dark-secondary);
+  line-height: 1.4;
+}
+
+/* Character Form */
+.cfg-app .character-form {
+  text-align: left;
+  margin-bottom: 24px;
+}
+
+.cfg-app .form-group {
+  margin-bottom: 20px;
+}
+
+.cfg-app .form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--color-text-dark-primary);
+  font-size: 14px;
+}
+
+.cfg-app .form-group label .required {
+  color: #f44336;
+}
+
+.cfg-app .form-group input[type='text'],
+.cfg-app .form-group input[type='url'] {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--color-bg-btn-minor-inactive);
+  border: 1px solid var(--color-border-dark);
+  border-radius: 4px;
+  color: var(--color-text-dark-primary);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.cfg-app .form-group input:focus {
+  outline: none;
+  border-color: var(--color-text-hyperlink);
+}
+
+/* Token Preview */
+.cfg-app .token-preview {
+  width: 150px;
+  height: 150px;
+  margin: 0 auto 12px auto;
+  border: 2px dashed var(--color-border-dark);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--color-bg-btn-minor-inactive);
+}
+
+.cfg-app .token-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cfg-app .token-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-dark-secondary);
+}
+
+.cfg-app .token-placeholder i {
+  font-size: 48px;
+}
+
+.cfg-app .token-placeholder span {
+  font-size: 12px;
+}
+
+.cfg-app .token-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.cfg-app .help-text {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-dark-secondary);
+  font-style: italic;
+}
+
+/* Input Group (for D&D Beyond) */
+.cfg-app .input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.cfg-app .input-group input {
+  flex: 1;
+}
+
+/* Approval Banner */
+.cfg-app .approval-banner {
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.cfg-app .approval-banner i {
+  font-size: 20px;
+}
+
+.cfg-app .approval-pending {
+  background: rgba(255, 152, 0, 0.1);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  color: #ff9800;
+}
+
+.cfg-app .approval-rejected {
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  color: #f44336;
+}
+
+/* Complete Step */
+.cfg-app .complete-icon {
+  font-size: 80px;
+  color: #4caf50;
+  margin-bottom: 16px;
+}
+
+.cfg-app .complete-message {
+  font-size: 16px;
+  margin-bottom: 16px;
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-app .approval-notice {
+  padding: 16px;
+  background: rgba(255, 152, 0, 0.1);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  border-radius: 6px;
+  margin: 20px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+}
+
+.cfg-app .approval-notice i {
+  font-size: 24px;
+  color: #ff9800;
+  margin-top: 2px;
+}
+
+.cfg-app .approval-notice p {
+  margin: 0;
+  color: var(--color-text-dark-primary);
+  font-size: 14px;
+}
+
+.cfg-app .next-steps {
+  font-size: 14px;
+  color: var(--color-text-dark-secondary);
+  font-style: italic;
+}
+
+/* Wizard Actions */
+.cfg-app .wizard-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.cfg-app .wizard-actions .btn {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-app .wizard-actions .btn-primary {
+  background: var(--color-text-hyperlink);
+  color: white;
+}
+
+.cfg-app .wizard-actions .btn-primary:hover:not(:disabled) {
+  background: #3a7bc8;
+}
+
+.cfg-app .wizard-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cfg-app .wizard-actions .btn-secondary {
+  background: var(--color-bg-btn-minor-inactive);
+  color: var(--color-text-dark-primary);
+}
+
+.cfg-app .wizard-actions .btn-secondary:hover {
+  background: var(--color-bg-option);
+}

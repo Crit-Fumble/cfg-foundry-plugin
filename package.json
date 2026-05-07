@@ -1,0 +1,24 @@
+{
+  "name": "crit-fumble-core",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build:zip": "node scripts/build-zip.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --coverage",
+    "test:foundry:up": "docker compose --env-file tests/.env.test -f tests/docker-compose.yml up -d && node tests/integration/shared/wait-for-foundry.js",
+    "test:foundry": "npx playwright test --config tests/integration/playwright.config.js",
+    "test:foundry:core": "npx playwright test --config tests/integration/playwright.config.js --project=core-hosted",
+    "test:foundry:self": "npx playwright test --config tests/integration/playwright.config.js --project=self-hosted",
+    "test:foundry:ui": "npx playwright test --config tests/integration/playwright.config.js --ui",
+    "test:foundry:down": "docker compose --env-file tests/.env.test -f tests/docker-compose.yml down",
+    "test:foundry:all": "npm run test:foundry:up && npm run test:foundry; npm run test:foundry:down"
+  },
+  "overrides": {
+    "picomatch": "^4.0.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

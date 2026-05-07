@@ -1,0 +1,18 @@
+{
+  "name": "crit-fumble-core-tests",
+  "version": "1.0.0",
+  "description": "Tests for crit-fumble-core FoundryVTT module",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config=jest.config.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config=jest.config.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config=jest.config.js --coverage",
+    "test:integration": "npx playwright test --config=integration/playwright.config.js",
+    "test:integration:core": "npx playwright test --config=integration/playwright.config.js --project=core-hosted",
+    "test:integration:self": "npx playwright test --config=integration/playwright.config.js --project=self-hosted"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "dotenv": "^17.4.2"
+  }
+}

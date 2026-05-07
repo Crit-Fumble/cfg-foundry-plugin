@@ -1,0 +1,34 @@
+{
+  "id": "crit-fumble-core",
+  "title": "Crit-Fumble Core",
+  "description": "Core platform integration for CFG-hosted FoundryVTT campaigns. Provides quest sync, party roster, session tracking, AI narration, and system-aware feature gating.",
+  "version": "2.0.0",
+  "authors": [
+    {
+      "name": "Crit-Fumble Gaming",
+      "url": "https://crit-fumble.com",
+      "discord": "critfumble"
+    }
+  ],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "14.359",
+    "maximum": "14"
+  },
+  "esmodules": ["scripts/module.js"],
+  "styles": ["styles/core.css", "styles/dialogs.css"],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "url": "https://crit-fumble.com",
+  "manifest": "https://core.crit-fumble.com/foundry/modules/crit-fumble-core/module.json",
+  "flags": {
+    "coreApiIntegration": true,
+    "narrativeTools": true,
+    "cfgHosted": true
+  }
+}

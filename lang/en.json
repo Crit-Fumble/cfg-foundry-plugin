@@ -1,0 +1,68 @@
+{
+  "CFG": {
+    "ModuleTitle": "Crit-Fumble Core",
+    "EditBackground": "Edit Background Image",
+    "EditTileImage": "Edit Tile Image",
+    "ImageEditor": {
+      "Title": "Image Editor",
+      "Tools": "Tools",
+      "Crop": "Crop",
+      "RotateLeft": "Rotate Left",
+      "RotateRight": "Rotate Right",
+      "FlipHorizontal": "Flip Horizontal",
+      "FlipVertical": "Flip Vertical",
+      "Adjustments": "Adjustments",
+      "Brightness": "Brightness",
+      "Contrast": "Contrast",
+      "Saturation": "Saturation",
+      "Grid": "Grid",
+      "ShowGrid": "Show Grid",
+      "SnapToGrid": "Snap to Grid",
+      "Scale": "Scale",
+      "Undo": "Undo",
+      "Redo": "Redo",
+      "Reset": "Reset to Original",
+      "Export": "Export",
+      "Save": "Save to Foundry",
+      "Ready": "Ready"
+    },
+    "Sync": {
+      "NotInitialized": "Sync service not initialized",
+      "ConfigureToken": "Configure API token in settings",
+      "Success": "Synced successfully",
+      "Failed": "Sync failed",
+      "InProgress": "Syncing..."
+    },
+    "LocationBrowser": {
+      "Title": "Core Location Browser",
+      "Search": "Search locations...",
+      "FilterScale": "Filter by scale",
+      "AllScales": "All Scales",
+      "Refresh": "Refresh",
+      "ImportScene": "Import as Scene",
+      "Importing": "Importing...",
+      "Loading": "Loading locations...",
+      "NoLocations": "No locations found",
+      "NoApi": "Core API not configured. Set your API token in module settings.",
+      "ImportError": "Failed to import location as scene. Check console for details.",
+      "SceneCreated": "Scene \"{name}\" created!",
+      "Page": "Page",
+      "Locations": "locations"
+    },
+    "Scales": {
+      "Voxel": "Voxel (Interaction)",
+      "Arena": "Arena (5ft squares)",
+      "Building": "Building (10ft squares)",
+      "Settlement": "Settlement (30ft hexes)",
+      "Naval": "Naval (50ft hexes)",
+      "County": "County (0.1 mile hex)",
+      "Province": "Province (1 mile hex)",
+      "Kingdom": "Kingdom (6 mile hex)",
+      "Continent": "Continent (60 mile hex)",
+      "Realm": "Realm (100 mile voxel)",
+      "Planet": "Planet (1,000 mile voxel)",
+      "Orbital": "Orbital Space (6,000 mile voxel)",
+      "System": "Star System (60,000 mile voxel)"
+    }
+  }
+}

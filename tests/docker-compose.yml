@@ -1,0 +1,52 @@
+##
+## Foundry VTT — Integration Test Stack
+##
+## Runs a FoundryVTT v13 container for plugin integration tests.
+## The plugin source is bind-mounted read-only so tests always run against
+## the current working tree without a separate build step.
+##
+## Usage:
+##   cp .env.test.example .env.test   # fill in credentials
+##   docker compose --env-file .env.test up -d
+##   npm run test:integration
+##   docker compose --env-file .env.test down
+##
+## The test world (fixtures/worlds/cfg-test-world/) is pre-built with the
+## plugin enabled. Module settings (API URL, campaign ID, API key) are
+## injected at runtime by the Playwright globalSetup.
+##
+
+services:
+  foundry:
+    image: felddy/foundryvtt:13
+    platform: linux/amd64
+    init: true
+    environment:
+      FOUNDRY_LICENSE_KEY: ${FOUNDRY_LICENSE_KEY}
+      FOUNDRY_USERNAME: ${FOUNDRY_USERNAME}
+      FOUNDRY_PASSWORD: ${FOUNDRY_PASSWORD}
+      FOUNDRY_ADMIN_KEY: ${FOUNDRY_ADMIN_KEY:-cfgtestadmin}
+      FOUNDRY_WORLD: cfg-test-world
+      CONTAINER_CACHE: /foundrydata/cache
+      CONTAINER_PRESERVE_OWNER: 'foundry:foundry'
+    volumes:
+      - ../../:/foundrydata/Data/modules/crit-fumble-core:ro
+      - ./fixtures/worlds:/foundrydata/Data/worlds
+      - foundry-cache:/foundrydata/cache
+    ports:
+      - '30000:30000'
+    networks:
+      - cfg-foundry-test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:30000/api/status']
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+volumes:
+  foundry-cache:
+
+networks:
+  cfg-foundry-test-network:
+    name: cfg-foundry-test-network
