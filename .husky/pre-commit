@@ -1,0 +1,64 @@
+#!/bin/sh
+set -e
+
+# Pre-commit: secret scan + unit tests.
+# Skip with: git commit --no-verify  (use sparingly).
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# ── Secret scan ────────────────────────────────────────────────────────────────
+if command -v gitleaks > /dev/null 2>&1; then
+  echo "  secret scan (gitleaks)..."
+  gitleaks protect --staged --config "$REPO_ROOT/.gitleaks.toml" --redact -v
+else
+  echo "  secret scan (grep fallback — install gitleaks for better coverage)..."
+
+  STAGED=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -v -E "(node_modules|\.env\.(.*\.)?example|package-lock\.json|\.husky|\.env\.test|\.gitleaks)" \
+    || true)
+
+  if [ -n "$STAGED" ]; then
+    FAIL=0
+
+    check() {
+      LABEL="$1"; PATTERN="$2"; EXCLUDE="${3:-(\.example|\.md|\.test)$}"
+      MATCHES=$(echo "$STAGED" | xargs grep -lE "$PATTERN" 2>/dev/null | grep -vE "$EXCLUDE" || true)
+      if [ -n "$MATCHES" ]; then
+        echo "BLOCKED: $LABEL found in: $MATCHES"
+        FAIL=1
+      fi
+    }
+
+    RAW=$(echo "$STAGED" | xargs grep -lE "sk_(live|test)_[a-zA-Z0-9]{20,}" 2>/dev/null \
+      | grep -vE "(\.example|\.md|\.test)$" || true)
+    if [ -n "$RAW" ]; then
+      REAL=$(echo "$RAW" | xargs grep -E "sk_(live|test)_[a-zA-Z0-9]{20,}" 2>/dev/null \
+        | grep -vE "(placeholder|ci_build|not_a_real)" || true)
+      [ -n "$REAL" ] && echo "BLOCKED: Stripe API key found" && FAIL=1
+    fi
+
+    check "Stripe webhook secret"            "whsec_[a-zA-Z0-9]{40,}"
+    check "Database credentials"             "postgresql://[^:@]+:[^@]{6,}@"         "(\.example|\.md|\.test|docker-compose|package\.json)"
+    check "Private key"                      "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----" "NOMATCH"
+    check "GitHub token"                     "(ghp_|gho_|ghs_|ghr_)[a-zA-Z0-9]{36}"
+    check "Discord bot token"                "[MN][a-zA-Z0-9_-]{23,25}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,}"
+    check "Anthropic API key"                "sk-ant-[a-zA-Z0-9\-_]{50,}"
+    check "DigitalOcean token"               "dop_v1_[a-f0-9]{64}"
+    check "Auth/service secret (real value)" "(AUTH_SECRET|CORE_SECRET|CRON_SECRET)=['\"]?[a-zA-Z0-9+/]{40,}"
+
+    if [ "$FAIL" -eq 1 ]; then
+      echo ""
+      echo "Rotate the exposed secret, then commit again."
+      echo "False positive? git commit --no-verify  (use sparingly)"
+      exit 1
+    fi
+  fi
+fi
+echo "  secret scan passed"
+
+# ── Unit tests (no tsc — plain JS module) ─────────────────────────────────────
+echo "  unit tests..."
+npm test --silent
+echo "  unit tests passed"
+
+echo "All pre-commit checks passed"

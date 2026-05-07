@@ -1,0 +1,74 @@
+title = "CFG Core — Gitleaks Config"
+
+[extend]
+useDefault = true
+
+# ── Project-specific rules ────────────────────────────────────────────────────
+
+[[rules]]
+id = "stripe-webhook-secret"
+description = "Stripe Webhook Signing Secret"
+regex = '''whsec_[a-zA-Z0-9]{40,}'''
+tags = ["stripe", "webhook"]
+
+[[rules]]
+id = "digitalocean-token"
+description = "DigitalOcean Personal Access Token"
+regex = '''dop_v1_[a-f0-9]{64}'''
+tags = ["digitalocean", "token"]
+
+[[rules]]
+id = "livekit-secret"
+description = "LiveKit API Secret"
+regex = '''LIVEKIT_API_SECRET\s*=\s*["']?[A-Za-z0-9+/]{32,}["']?'''
+tags = ["livekit", "secret"]
+
+[[rules]]
+id = "cfg-auth-secret"
+description = "CFG auth/service secret assigned to a real value"
+regex = '''(AUTH_SECRET|CORE_SECRET|CRON_SECRET|TEST_AUTH_SECRET|BOT_TEST_SECRET)\s*=\s*["']?[a-zA-Z0-9+/]{32,}["']?'''
+tags = ["cfg", "secret"]
+
+# ── Allowlist ─────────────────────────────────────────────────────────────────
+
+[allowlist]
+description = "Safe files and known placeholder values"
+
+paths = [
+  # Example/template files contain placeholder patterns intentionally
+  '''.env\..*example''',
+  # config/ JSON files contain public OAuth client IDs, public keys,
+  # and infrastructure IDs — none of these are secrets.
+  '''platform\.config\.json''',
+  '''config/.*\.json''',
+  # Docs may reference key formats for illustration
+  '''docs/''',
+  # Test fixtures with known-fake credentials
+  '''tests/''',
+  '''prisma/seeds/''',
+  # Lock files contain hashes that look like secrets
+  '''package-lock\.json''',
+  '''yarn\.lock''',
+  # This config file
+  '''.gitleaks\.toml''',
+]
+
+regexes = [
+  # CI and Dockerfile placeholder values (not real keys)
+  '''sk_test_(ci_build_placeholder|placeholder_for_jest|not_a_real)''',
+  '''build-placeholder-not-a-real-stripe-key''',
+  # Empty assignments in example files
+  '''=\s*$''',
+  # Example prefix stubs (value is empty after the prefix)
+  '''sk_live_\s*$''',
+  '''sk_test_\s*$''',
+  '''whsec_\s*$''',
+  # Known test dummy values from .env.test
+  '''test-(auth|discord|cron|core)-secret''',
+  '''000000000000000001''',
+  # Example/documentation strings that look like tokens
+  '''YOUR_API_KEY''',
+  '''Bearer YOUR_''',
+  # License key format strings used in test fixtures
+  '''[A-Z]{4}-[0-9]{4}-[A-Z]{4}-[0-9]{4}''',
+]
