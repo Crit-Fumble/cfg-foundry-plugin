@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Block pushes when tests fail.
+npm test --silent

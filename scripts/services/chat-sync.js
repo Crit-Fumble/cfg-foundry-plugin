@@ -2,7 +2,7 @@
  * ChatSyncManager — Foundry ↔ Core platform chat unification.
  *
  * Behaviour:
- *   - Forwards every new Foundry ChatMessage to Core via POST /api/campaigns/{id}/chat
+ *   - Forwards every new Foundry ChatMessage to Core via POST /api/v1/player/campaigns/{id}/chat/foundry
  *   - Polls GET /api/campaigns/{id}/chat?since={iso} for messages sent from Core
  *   - Tags injected messages with a `coreMessageId` flag to suppress echo loops
  *   - GM client owns the polling loop; players receive injected messages via Foundry's

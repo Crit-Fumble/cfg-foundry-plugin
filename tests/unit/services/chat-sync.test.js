@@ -127,7 +127,7 @@ describe('_onFoundryMessage()', () => {
     const mgr = new ChatSyncManager(api, 'camp-1')
     await mgr._onFoundryMessage(makeMsg())
     expect(api.post).toHaveBeenCalledWith(
-      '/api/campaigns/camp-1/chat',
+      '/api/v1/player/campaigns/camp-1/chat/foundry',
       expect.objectContaining({ content: 'Hello world' }),
     )
   })

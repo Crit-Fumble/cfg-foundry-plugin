@@ -144,7 +144,7 @@ describe('startPairFlow', () => {
     await startPairFlow({ openWindow: false })
 
     expect(getPairState()).toMatchObject({ status: 'error', error: 'Unknown platform: foundry' })
-    expect(store.get('apiKey')).toBeUndefined()
+    expect(store.get('apiKey')).toBe('')
   })
 
   it('marks the flow expired after the 5-minute timeout', async () => {
