@@ -23,6 +23,14 @@ npm run test:foundry:down # tear down
 npm run build:zip         # package for distribution
 ```
 
+## Environment
+
+No env vars are needed to install, load, or build the module. The
+[`.env.example`](.env.example) at the repo root is a pointer; integration tests
+load credentials from `tests/.env.test`. Copy
+[`tests/.env.test.example`](tests/.env.test.example) to `tests/.env.test` and
+fill it in before running `npm run test:foundry:up`.
+
 ## License
 
 AGPL-3.0-only. See [LICENSE](LICENSE) and [TRADEMARK.md](TRADEMARK.md).
