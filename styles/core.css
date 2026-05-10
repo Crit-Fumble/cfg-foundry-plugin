@@ -38,8 +38,17 @@
   }
 }
 
-/* Force dark theme for Foundry VTT (it's always dark) */
-body, .themed {
+/*
+ * Foundry v14 introduced a real light theme. Previously we forced dark
+ * unconditionally on `body, .themed` (which targets EVERY ApplicationV2
+ * window in v14, not just CFG ones — the `.themed` class is part of
+ * Foundry's theme system). That broke contrast for light-mode users.
+ *
+ * Now we only force dark when Foundry is actually in its dark theme,
+ * matching the v14 selectors: `body.theme-dark` and `.themed.theme-dark`.
+ * Light theme falls through to the `:root` defaults declared above.
+ */
+body.theme-dark, .themed.theme-dark {
   --cfg-bg-primary: #1a1a1a;
   --cfg-bg-secondary: #2a2a2a;
   --cfg-bg-tertiary: #333333;
