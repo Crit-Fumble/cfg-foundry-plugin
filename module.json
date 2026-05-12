@@ -25,7 +25,8 @@
     }
   ],
   "url": "https://crit-fumble.com",
-  "manifest": "https://core.crit-fumble.com/foundry/modules/crit-fumble-core/module.json",
+  "manifest": "https://raw.githubusercontent.com/Crit-Fumble/cfg-foundry-plugin/main/module.json",
+  "download": "https://github.com/Crit-Fumble/cfg-foundry-plugin/archive/refs/heads/main.zip",
   "flags": {
     "coreApiIntegration": true,
     "narrativeTools": true,
