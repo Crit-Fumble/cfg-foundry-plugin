@@ -325,11 +325,55 @@ Hooks.once('ready', async () => {
   // before our dialog steals focus.
   setTimeout(() => maybeShowFirstRunPrompt(), 1500)
 
+  // Report the loaded world to CFG so the platform's Server Manager UI
+  // can show "running — <World> loaded" instead of the stale FOUNDRY_WORLD
+  // env it used to read. The platform routes installation resolution
+  // through the player's API key; on core-hosted (no apiKey) the session
+  // cookie covers it. Non-fatal — the platform falls back to "loading…"
+  // and the 15-min safety net re-converges.
+  _reportWorldLoaded(playerApiKey || apiKey).catch((err) => {
+    console.warn('CFG Core | world-load callback failed (non-fatal):', err)
+  })
+
   console.log(
     `CFG Core | Ready — featureMode: ${_featureMode}, platform: ${_platformSystemSlug ?? 'unknown'}, ` +
       `campaign: ${_campaignId}, voice: discord`,
   )
 })
+
+/* -------------------------------------------- */
+/*  World-load Reporter                          */
+/* -------------------------------------------- */
+
+/**
+ * POST the active world id to CFG so the platform's runtime state map
+ * knows which world is loaded right now. Fired once per `ready` hook —
+ * idempotent on the server side (repeated POSTs for the same world just
+ * refresh `loadedAt`).
+ *
+ * Auth: the platform accepts either an installation-bound API key (this
+ * plugin's `playerApiKey`) or the legacy X-Core-Service-Key + installationId
+ * body combo (the felddy entrypoint's path, which we're moving off of).
+ * We try API key first; if no key is configured we let the request go
+ * through with whatever auth the iframe / session cookie provides.
+ */
+async function _reportWorldLoaded(apiKey) {
+  if (!game.world?.id) return
+  const apiUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
+  if (!apiUrl) return
+  const url = `${apiUrl.replace(/\/+$/, '')}/api/v1/foundry/worlds/${encodeURIComponent(game.world.id)}/status`
+  const headers = { 'content-type': 'application/json' }
+  if (apiKey) headers['authorization'] = `Bearer ${apiKey}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify({ status: 'ready' }),
+  })
+  if (!res.ok) {
+    throw new Error(`world-load callback returned HTTP ${res.status}`)
+  }
+}
 
 /* -------------------------------------------- */
 /*  System Reporter                              */
