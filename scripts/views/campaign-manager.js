@@ -4,8 +4,8 @@
  */
 
 import { CampaignFlags } from '../utils/campaign-flags.js'
-import { useCampaigns } from '../hooks/useCampaigns.js'
-import { useParties } from '../hooks/useParties.js'
+import { useCampaigns } from './hooks/useCampaigns.js'
+import { useParties } from './hooks/useParties.js'
 /* ---- Officer position presets (inlined; officer-positions.js removed in Phase 1 slim-down) ---- */
 
 const POSITION_PRESETS = {
