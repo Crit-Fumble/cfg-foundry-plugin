@@ -168,12 +168,6 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
   /* -------------------------------------------- */
 
   async _refreshLinkedUser() {
-    // CFG-hosted Foundry shows a fixed status row — no need to fetch the
-    // user identity, and the bundled apiKey may not represent a single user.
-    if (getHostKind() === 'cfg-hosted') {
-      this._linkedUser = null
-      return
-    }
     if (!isLinked()) {
       this._linkedUser = null
       return
@@ -198,8 +192,6 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
     const state = getPairState()
     const linked = isLinked()
     const endpoint = getCfgEndpoint()
-    const hostKind = getHostKind()
-    const isHosted = hostKind === 'cfg-hosted'
 
     const statusValue = el.querySelector('[data-role="status-value"]')
     const codeEl = el.querySelector('[data-role="pair-code"]')
@@ -208,10 +200,10 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
     const unlinkBtn = el.querySelector('[data-role="unlink-btn"]')
 
     if (statusValue) {
-      statusValue.textContent = this._formatStatus(state, linked, endpoint, hostKind)
+      statusValue.textContent = this._formatStatus(state, linked, endpoint)
     }
     if (codeEl) {
-      if (!isHosted && state.status === 'pending' && state.code) {
+      if (state.status === 'pending' && state.code) {
         codeEl.style.display = 'block'
         codeEl.textContent = `Pairing code: ${state.code}`
       } else {
@@ -220,34 +212,36 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
       }
     }
 
+    // The dialog stays accessible in both hosting modes so the user can
+    // see + verify their connection state. The Link (pair-flow) button is
+    // hidden when running cfg-hosted, though: clicking it would create a
+    // duplicate self-hosted installation record on the platform (the pair
+    // flow registers the current page origin as a "self-hosted" Foundry,
+    // and cfg-hosted users are reaching this dialog from inside the
+    // CFG-managed container). The platform's `__CFG_HOSTED_CONTEXT__`
+    // injection is already authoritative for cfg-hosted; Unlink stays
+    // available so users can clear the stored key if they need to.
     const pending = state.status === 'pending'
+    const isCfgHosted = getHostKind() === 'cfg-hosted'
     if (linkBtn) {
-      // CFG-hosted: the proxy already wrote our key; pairing is meaningless.
-      // Self-hosted: show the button when not linked + not mid-flow.
-      linkBtn.style.display = isHosted || linked || pending ? 'none' : 'inline-block'
+      linkBtn.style.display = isCfgHosted || linked || pending ? 'none' : 'inline-block'
       linkBtn.disabled = pending
     }
     if (cancelBtn) {
-      cancelBtn.style.display = !isHosted && pending ? 'inline-block' : 'none'
+      cancelBtn.style.display = !isCfgHosted && pending ? 'inline-block' : 'none'
     }
     if (unlinkBtn) {
-      // CFG-hosted users can't unlink — the key belongs to the container, not
-      // the world's settings. Hide rather than disable: a tooltip wouldn't
-      // explain it any better than "not shown".
-      unlinkBtn.style.display = !isHosted && linked && !pending ? 'inline-block' : 'none'
+      unlinkBtn.style.display = linked && !pending ? 'inline-block' : 'none'
     }
 
     // Refresh user label after a successful pair so the next refresh shows
     // the linked identity instead of just the endpoint.
-    if (!isHosted && state.status === 'completed') {
+    if (state.status === 'completed') {
       void this._refreshLinkedUser().then(() => this._refresh())
     }
   }
 
-  _formatStatus(state, linked, endpoint, hostKind) {
-    if (hostKind === 'cfg-hosted') {
-      return 'Linked via CFG-hosted Foundry container'
-    }
+  _formatStatus(state, linked, endpoint) {
     if (state.status === 'pending') {
       return `Waiting for browser confirmation… (code valid for 5 min)`
     }
@@ -259,7 +253,8 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
     }
     if (linked) {
       const who = this._linkedUser ? this._linkedUser : 'this account'
-      return `Linked: ${who} @ ${endpoint}`
+      const hostNote = getHostKind() === 'cfg-hosted' ? ' (auto-linked by host)' : ''
+      return `Linked: ${who} @ ${endpoint}${hostNote}`
     }
     return 'Not linked'
   }
@@ -269,9 +264,13 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
   /* -------------------------------------------- */
 
   async _onLinkClick() {
-    // Defence-in-depth: the button is hidden for CFG-hosted, but the click
-    // handler is still wired. Bail rather than start a doomed pair flow.
-    if (getHostKind() === 'cfg-hosted') return
+    // Defence-in-depth: the button is hidden in cfg-hosted mode (see _refresh)
+    // because triggering the pair flow inside a CFG-managed container would
+    // register the same origin as a duplicate "self-hosted" installation.
+    if (getHostKind() === 'cfg-hosted') {
+      ui.notifications?.warn?.('This Foundry is already linked via the CFG-hosted container.')
+      return
+    }
     try {
       await startPairFlow()
     } catch (err) {
@@ -284,7 +283,6 @@ export class CfgLinkSettings extends foundry.applications.api.ApplicationV2 {
   }
 
   async _onUnlinkClick() {
-    if (getHostKind() === 'cfg-hosted') return
     const confirmed = await Dialog.confirm({
       title: 'Unlink from Crit-Fumble',
       content: '<p>This will remove the stored API key from this world. Continue?</p>',

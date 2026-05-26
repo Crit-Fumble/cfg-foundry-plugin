@@ -86,15 +86,12 @@ export class EmbeddedApp extends foundry.applications.api.ApplicationV2 {
     url.searchParams.set('worldId', game.world.id)
     url.searchParams.set('isGM', game.user.isGM ? '1' : '0')
 
-    // Add auth token if available
-    try {
-      const token = game.settings.get(MODULE_ID, 'coreApiToken')
-      if (token) {
-        url.searchParams.set('token', token)
-      }
-    } catch {
-      // No token configured
-    }
+    // Auth model is same-origin session cookie: Foundry is proxied at
+    // `<coreUrl>/servers/foundryvtt/manage/`, so the iframe inherits the
+    // user's Auth.js cookie automatically. No token query param needed.
+    // Self-hosted Foundry (different origin) is deferred — when it lands
+    // it will use a Bearer-token relay, NOT a `?token=` query param
+    // (query strings end up in proxy logs).
 
     return url.toString()
   }
@@ -298,9 +295,21 @@ export function openOnboardingWizard(options = {}) {
  * Open the campaign dashboard
  */
 export function openCampaignDashboard() {
+  // Pull the linked CFG campaignId from world settings so the iframe can
+  // render the right campaign without an extra round-trip to resolve it
+  // from worldId. Empty string when the world isn't linked yet — the
+  // page handles that with a "link this world" hint.
+  let campaignId = ''
+  try {
+    campaignId = game.settings.get(MODULE_ID, 'campaignId') || ''
+  } catch {
+    // Settings not registered yet — non-fatal, page falls back to its
+    // "no campaign linked" state.
+  }
+
   const app = new EmbeddedApp({
     route: '/embed/dashboard',
-    params: {},
+    params: campaignId ? { campaignId } : {},
     window: {
       title: 'Campaign Dashboard',
       icon: 'fa-solid fa-chart-line',

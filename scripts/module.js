@@ -13,10 +13,11 @@
  */
 
 import { CoreAPIClient } from './clients/api-client.js'
-import { CampaignManager } from './views/campaign-manager.js'
-import { QuestSyncManager } from './services/quest-sync.js'
-import { SyncService } from './services/sync-service.js'
-import { ChatSyncManager } from './services/chat-sync.js'
+import { CfgCampaignLinksDialog } from './views/cfg-campaign-links.js'
+// Deprecated / unwired surfaces left on disk for later cleanup:
+//   - views/campaign-manager.js: legacy GM dashboard, broken in v14
+//   - services/quest-sync.js, sync-service.js, chat-sync.js: tied to
+//     the autoSyncQuests / chatSyncEnabled settings, both removed
 import { mountCFGSidebar } from './views/sidebar.js'
 import { FilePickerCompat } from './utils/file-picker-compat.js'
 import { registerCfgLinkMenu } from './views/cfg-link-settings.js'
@@ -38,23 +39,18 @@ let _featureMode = 'narrative'
 /** @type {string|null} e.g. '5e-compatible' */
 let _platformSystemSlug = null
 
-/** @type {string|null} */
-let _campaignId = null
-
-/** @type {'discord'} Voice is always Discord in phase 1. */
-let _voiceProvider = 'discord'
+/**
+ * CFG campaign ids that have linked THIS Foundry world via the N:M join
+ * (`campaign_foundry_worlds`). Populated by `_resolveLinkedCampaigns` in
+ * the ready hook. Per-campaign flows (`_reportSystem`,
+ * `_checkRecommendedModules`) iterate this list; an empty list is
+ * normal for unlinked worlds and just skips those flows.
+ * @type {string[]}
+ */
+let _linkedCampaignIds = []
 
 /** @type {CoreAPIClient|null} */
 let _api = null
-
-/** @type {SyncService|null} */
-let _syncService = null
-
-/** @type {QuestSyncManager|null} */
-let _questSync = null
-
-/** @type {ChatSyncManager|null} */
-let _chatSync = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -62,19 +58,13 @@ let _chatSync = null
 
 window.CFGCore = {
   version: MODULE_VERSION,
-  /** Open the GM campaign manager panel. */
-  openCampaignManager: () => new CampaignManager().render(true),
   /** @returns {'full'|'narrative'} */
   featureMode: () => _featureMode,
   /** @returns {string|null} */
   platformSystemSlug: () => _platformSystemSlug,
   /** @returns {string|null} */
-  campaignId: () => _campaignId,
-  /**
-   * Returns the active voice provider. Always 'discord' in phase 1.
-   * @returns {'discord'}
-   */
-  voiceProvider: () => 'discord',
+  /** @returns {string[]} Campaigns currently linked to this Foundry world via the N:M join. */
+  linkedCampaignIds: () => [..._linkedCampaignIds],
   /**
    * 'cfg-hosted' when Foundry is served from CFG infrastructure (#699 detect),
    * 'self-hosted' otherwise.
@@ -83,6 +73,55 @@ window.CFGCore = {
   hostKind: () => getHostKind(),
   /** @type {CoreAPIClient|null} Set after init. */
   api: null,
+}
+
+/* -------------------------------------------- */
+/*  Helpers                                      */
+/* -------------------------------------------- */
+
+/**
+ * Pick the right default for `coreApiUrl` based on how Foundry is being
+ * served. When the page path begins with `/servers/foundryvtt/` we're
+ * inside the CFG VTT proxy — core-browser is at the same origin (localdev
+ * tunnel, staging, or prod). Self-hosted Foundry falls through to the
+ * prod URL; the user can override via Module Settings.
+ *
+ * This sidesteps the (not-yet-implemented) `__CFG_HOSTED_CONTEXT__`
+ * injection that host-context.js anticipates — once the proxy injects
+ * the global, `applyHostedContext` overwrites this default with the
+ * server-supplied endpoint anyway, so this stays correct as a fallback.
+ */
+function _detectDefaultCoreApiUrl() {
+  if (typeof window === 'undefined') return 'https://core.crit-fumble.com'
+  try {
+    if (window.location.pathname.startsWith('/servers/foundryvtt/')) {
+      return window.location.origin
+    }
+  } catch {
+    // location access can throw in restricted contexts — non-fatal
+  }
+  return 'https://core.crit-fumble.com'
+}
+
+/**
+ * Extract the installation id from the page URL when running cfg-hosted.
+ * Post-route-rename, cfg-hosted Foundry is always served from
+ * `/servers/foundryvtt/{installationId}/...`. Reading the path is the
+ * cheapest + most reliable way to get the installation id — no
+ * dependency on the proxy injecting `__CFG_HOSTED_CONTEXT__` (which is
+ * stubbed for a future commit) or on the pair-flow having run.
+ *
+ * Returns null for self-hosted Foundry or when the URL doesn't match
+ * the cfg-hosted route shape.
+ */
+function _detectInstallationIdFromUrl() {
+  if (typeof window === 'undefined') return null
+  try {
+    const match = window.location.pathname.match(/^\/servers\/foundryvtt\/([^/]+)/)
+    return match?.[1] || null
+  } catch {
+    return null
+  }
 }
 
 /* -------------------------------------------- */
@@ -100,17 +139,15 @@ Hooks.once('init', () => {
     scope: 'world',
     config: true,
     type: String,
-    default: window.CORE_API_URL || 'https://core.crit-fumble.com',
+    default: window.CORE_API_URL || _detectDefaultCoreApiUrl(),
   })
 
-  game.settings.register(MODULE_ID, 'campaignId', {
-    name: 'Campaign ID',
-    hint: 'The Crit-Fumble campaign ID this Foundry world is linked to.',
-    scope: 'world',
-    config: true,
-    type: String,
-    default: window.CORE_CAMPAIGN_ID || '',
-  })
+  // The legacy single-campaign `campaignId` setting has been retired. With
+  // many-to-many linking (`campaign_foundry_worlds` join), a world can host
+  // multiple campaigns and a campaign can be played across multiple worlds.
+  // The Linked Campaigns dialog (game.settings.registerMenu below) is the
+  // single source of truth; plugin-side flows that need a campaign id
+  // iterate over the linked set returned by /api/v1/account/foundry/campaigns.
 
   // Set automatically by the pair flow (#698). Hidden from the settings UI
   // so users can't paste in arbitrary strings; clear it via Unlink instead.
@@ -161,36 +198,10 @@ Hooks.once('init', () => {
   // row for cfg-hosted (the buttons are hidden, see cfg-link-settings.js).
   registerCfgLinkMenu()
 
-  game.settings.register(MODULE_ID, 'autoSyncQuests', {
-    name: 'Auto-sync Quests',
-    hint: 'Automatically sync the campaign quest log to Foundry journal entries.',
-    scope: 'world',
-    config: true,
-    type: Boolean,
-    default: true,
-  })
-
-  game.settings.register(MODULE_ID, 'chatSyncEnabled', {
-    name: 'Chat Sync',
-    hint: 'Mirror Foundry chat messages to the Core platform and receive messages sent from Core.',
-    scope: 'world',
-    config: true,
-    type: Boolean,
-    default: true,
-  })
-
-  game.settings.register(MODULE_ID, 'voiceEnabled', {
-    name: 'Voice Integration',
-    hint: 'Enable voice chat integration for sessions (Discord).',
-    scope: 'world',
-    config: true,
-    type: Boolean,
-    default: true,
-  })
-
   /**
    * Per-campaign officer position configuration (preset + requireLeader flag).
-   * Keyed by campaign ID. Managed via the Campaign Manager UI.
+   * Hidden from the settings UI — currently unused by any active surface,
+   * kept registered as `Object` so existing saved values don't error.
    */
   game.settings.register(MODULE_ID, 'campaignPositions', {
     scope: 'world',
@@ -199,39 +210,18 @@ Hooks.once('init', () => {
     default: {},
   })
 
-  game.settings.register(MODULE_ID, 'playerApiKey', {
-    name: 'Player API Key (Self-Hosted)',
-    hint: 'Self-hosted only. Your personal CFG API key (cfk_...). Leave blank when Foundry runs inside the Core platform — your session is detected automatically. Generate a key at core.crit-fumble.com → Account → API Keys.',
-    scope: 'client',
-    config: true,
-    type: String,
-    default: '',
-  })
-
-  // ---- Keybindings ----
-
-  game.keybindings.register(MODULE_ID, 'toggleVoice', {
-    name: 'Toggle Voice (Mute/Unmute)',
-    hint: 'Mute or unmute your voice connection.',
-    editable: [{ key: 'KeyM', modifiers: ['Control'] }],
-    onDown: () => {
-      window.CFGVoice?.toggleMute?.()
-    },
-  })
-
-  // ---- GM Scene Controls ----
-
-  Hooks.on('getSceneControlButtons', (controls) => {
-    if (!game.user.isGM) return
-    const bar = controls.find((c) => c.name === 'token')
-    if (!bar) return
-    bar.tools.push({
-      name: 'cfg-campaign-manager',
-      title: 'CFG Campaign Manager',
-      icon: 'fas fa-users',
-      onClick: () => window.CFGCore.openCampaignManager(),
-      button: true,
-    })
+  // ── Module Settings → Linked Campaigns ────────────────────────────────────
+  // GM-only multi-link manager. The `campaignId` setting (handled by the
+  // dropdown below) binds the world to ONE campaign for plugin-side sync;
+  // this dialog manages the N:M database link table — "which campaigns
+  // can be played in this world" — backed by /api/v1/account/foundry/campaigns.
+  game.settings.registerMenu(MODULE_ID, 'campaignLinks', {
+    name: 'Linked Campaigns',
+    label: 'Open Linked Campaigns',
+    hint: 'Manage which CFG campaigns can be played in this Foundry world. Many campaigns can share one world.',
+    icon: 'fas fa-link',
+    type: CfgCampaignLinksDialog,
+    restricted: true,
   })
 
   console.log(`CFG Core | Settings and keybindings registered`)
@@ -243,6 +233,35 @@ Hooks.once('init', () => {
 
 Hooks.once('ready', async () => {
   console.log(`CFG Core | Ready`)
+
+  // Auto-correct `coreApiUrl` + `installationId` when running cfg-hosted
+  // (proxied at `/servers/foundryvtt/{installationId}/*`). Existing worlds
+  // may have stale values saved before the smart default landed — typically
+  // the prod URL, which breaks iframe embedding in localdev / staging /
+  // private tunnels. The installationId derives from the page path so the
+  // plugin doesn't depend on `__CFG_HOSTED_CONTEXT__` injection or the
+  // pair-flow having run. Idempotent: only writes on actual change.
+  try {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/servers/foundryvtt/')) {
+      const detectedUrl = window.location.origin
+      const storedUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
+      if (storedUrl !== detectedUrl) {
+        await game.settings.set(MODULE_ID, 'coreApiUrl', detectedUrl)
+        console.log(`CFG Core | coreApiUrl auto-corrected to ${detectedUrl} (was ${storedUrl})`)
+      }
+
+      const detectedInstallId = _detectInstallationIdFromUrl()
+      if (detectedInstallId) {
+        const storedInstallId = game.settings.get(MODULE_ID, 'installationId')
+        if (storedInstallId !== detectedInstallId) {
+          await game.settings.set(MODULE_ID, 'installationId', detectedInstallId)
+          console.log(`CFG Core | installationId auto-corrected to ${detectedInstallId} (was ${storedInstallId || 'unset'})`)
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('CFG Core | host-context auto-correct failed (non-fatal):', err?.message || err)
+  }
 
   // Steer FilePicker away from User Data root, where Foundry blocks uploads
   // (modules/ and systems/ are overwritten on updates). Point it at the
@@ -258,57 +277,38 @@ Hooks.once('ready', async () => {
 
   const apiUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
   const apiKey = game.settings.get(MODULE_ID, 'apiKey') || null
-  _campaignId = game.settings.get(MODULE_ID, 'campaignId') || window.CORE_CAMPAIGN_ID || null
-
-  if (!_campaignId) {
-    console.warn(`CFG Core | No campaign ID configured — set it in Module Settings.`)
-    ui.notifications.warn('CFG Core: No campaign ID set. Configure it in Module Settings.')
-    return
-  }
 
   // Core-hosted: apiKey null → session cookie auth.  Self-hosted: apiKey set → Bearer token.
   _api = new CoreAPIClient(apiUrl, apiKey)
   window.CFGCore.api = _api
   console.log(`CFG Core | Auth mode: ${apiKey ? 'self-hosted (API key)' : 'core-hosted (session cookie)'}`)
 
-  // Report system to Core and read back featureMode + voice provider from campaign settings.
-  // Link this Foundry user to their platform account in parallel.
-  const playerApiKey = game.settings.get(MODULE_ID, 'playerApiKey') || null
+  // Resolve the campaigns linked to this Foundry world (N:M join, source of
+  // truth lives in the platform DB). `_linkedCampaignIds` drives the
+  // per-campaign report + module-check flows; an empty list is fine —
+  // those flows just skip.
+  _linkedCampaignIds = await _resolveLinkedCampaigns()
+
+  // Report system to each linked campaign and check recommended modules
+  // for each. Link this Foundry user to their platform account in parallel.
   await Promise.allSettled([
     _reportSystem(),
     game.user.isGM ? _checkRecommendedModules() : Promise.resolve(),
     // #339 — POST `game.modules` to CFG so the platform UI can list what's
     // installed in this Foundry world. GM-only; non-fatal on failure.
     game.user.isGM ? syncInstalledModules() : Promise.resolve(),
-    _linkPlatformUser(apiUrl, playerApiKey, apiKey),
+    _linkPlatformUser(apiUrl, apiKey),
   ])
 
   _showFeatureModeBanner()
 
-  // Quest sync
-  if (game.settings.get(MODULE_ID, 'autoSyncQuests')) {
-    _questSync = new QuestSyncManager(_api, null)
-    _syncService = new SyncService(_api, _campaignId)
-    try {
-      await _questSync.initialize()
-    } catch (err) {
-      console.error('CFG Core | Quest sync init failed:', err)
-    }
-    _syncService.startAutoSync(5)
-  }
-
-  // Chat sync — mirrors Foundry chat ↔ Core platform
-  if (game.settings.get(MODULE_ID, 'chatSyncEnabled')) {
-    _chatSync = new ChatSyncManager(_api, _campaignId)
-    _chatSync.start()
-  }
-
-  // CFG sidebar — Shell-based dock surfaced in the Foundry viewport. Uses the
-  // player's key on self-hosted Foundry so the iframe inherits their identity;
-  // core-hosted Foundry relies on the same-origin session cookie instead.
+  // CFG sidebar — Shell-based dock surfaced in the Foundry viewport. Auth
+  // flows through the same-origin session cookie (cfg-hosted) or the
+  // world-scoped pair-flow apiKey (self-hosted) — both attach to the
+  // iframe automatically via `credentials: 'include'`.
   mountCFGSidebar({
     coreUrl: apiUrl,
-    token: playerApiKey || null,
+    token: apiKey || null,
   })
 
   // Offline banner (#699). Subscribes to `pluginConnectionState` and surfaces
@@ -331,13 +331,13 @@ Hooks.once('ready', async () => {
   // through the player's API key; on core-hosted (no apiKey) the session
   // cookie covers it. Non-fatal — the platform falls back to "loading…"
   // and the 15-min safety net re-converges.
-  _reportWorldLoaded(playerApiKey || apiKey).catch((err) => {
+  _reportWorldLoaded(apiKey).catch((err) => {
     console.warn('CFG Core | world-load callback failed (non-fatal):', err)
   })
 
   console.log(
     `CFG Core | Ready — featureMode: ${_featureMode}, platform: ${_platformSystemSlug ?? 'unknown'}, ` +
-      `campaign: ${_campaignId}, voice: discord`,
+      `linkedCampaigns: [${_linkedCampaignIds.join(', ')}]`,
   )
 })
 
@@ -351,11 +351,11 @@ Hooks.once('ready', async () => {
  * idempotent on the server side (repeated POSTs for the same world just
  * refresh `loadedAt`).
  *
- * Auth: the platform accepts either an installation-bound API key (this
- * plugin's `playerApiKey`) or the legacy X-Core-Service-Key + installationId
- * body combo (the felddy entrypoint's path, which we're moving off of).
- * We try API key first; if no key is configured we let the request go
- * through with whatever auth the iframe / session cookie provides.
+ * Auth: the world-scoped `apiKey` (set by the pair flow on self-hosted,
+ * by `applyHostedContext` on cfg-hosted) goes in as a Bearer token. When
+ * absent we let the request through with whatever auth the iframe /
+ * session cookie provides — the platform falls back to session-cookie
+ * identity in that path.
  */
 async function _reportWorldLoaded(apiKey) {
   if (!game.world?.id) return
@@ -376,28 +376,66 @@ async function _reportWorldLoaded(apiKey) {
 }
 
 /* -------------------------------------------- */
-/*  System Reporter                              */
+/*  Linked Campaigns + System Reporter           */
 /* -------------------------------------------- */
 
 /**
- * Report this Foundry world's game system to Core and read back:
- *   - featureMode ('full'|'narrative')
- *   - platformSystemSlug
- *   - voiceProvider ('discord') — always Discord in phase 1
+ * Fetch the set of CFG campaigns linked to THIS Foundry world via the
+ * many-to-many join (`campaign_foundry_worlds`). The GM manages the
+ * link list in Module Settings → Linked Campaigns; this is the
+ * canonical "which campaigns can play in this world" lookup.
  *
- * Only the GM sends the PATCH; all users benefit from the state it sets.
+ * Returns an empty array when nothing is linked or the fetch fails —
+ * downstream flows just skip rather than block plugin boot.
+ */
+async function _resolveLinkedCampaigns() {
+  if (!_api) return []
+  const installId = game.settings.get(MODULE_ID, 'installationId') || null
+  const worldId = game.world?.id ?? null
+  if (!installId || !worldId) return []
+  try {
+    const data = await _api.get('/api/v1/account/foundry/campaigns')
+    const campaigns = Array.isArray(data?.data) ? data.data : []
+    const linked = []
+    for (const c of campaigns) {
+      const matches = (c.linkedWorlds ?? []).some(
+        (l) => l.installationId === installId && l.worldId === worldId,
+      )
+      if (matches) linked.push(c.id)
+    }
+    return linked
+  } catch (err) {
+    console.warn('CFG Core | linked-campaign resolution failed (non-fatal):', err?.message ?? err)
+    return []
+  }
+}
+
+/**
+ * Report this Foundry world's game system to each linked campaign and
+ * adopt the FIRST linked campaign's `featureMode` + `platformSystemSlug`
+ * for plugin-local state. Only the GM sends the PATCH; all users
+ * benefit from the resulting feature-mode banner.
+ *
+ * No-op when no campaigns are linked.
  */
 async function _reportSystem() {
-  if (!_campaignId || !_api) return
+  if (!_api || _linkedCampaignIds.length === 0) return
 
   try {
     if (game.user.isGM) {
-      const result = await _api.patch(`/api/campaigns/${_campaignId}/foundry`, {
-        foundrySystemId: game.system.id,
-      })
-
-      if (result?.featureMode) _featureMode = result.featureMode
-      if (result?.platformSystemSlug) _platformSystemSlug = result.platformSystemSlug
+      let firstResult = null
+      for (const campaignId of _linkedCampaignIds) {
+        try {
+          const result = await _api.patch(`/api/campaigns/${campaignId}/foundry`, {
+            foundrySystemId: game.system.id,
+          })
+          if (!firstResult && result) firstResult = result
+        } catch (err) {
+          console.warn(`CFG Core | System reporter failed for ${campaignId} (non-fatal):`, err?.message ?? err)
+        }
+      }
+      if (firstResult?.featureMode) _featureMode = firstResult.featureMode
+      if (firstResult?.platformSystemSlug) _platformSystemSlug = firstResult.platformSystemSlug
     }
 
     console.log(
@@ -406,7 +444,7 @@ async function _reportSystem() {
         : `CFG Core | featureMode: narrative`,
     )
   } catch (err) {
-    console.warn('CFG Core | System reporter failed (non-fatal):', err.message)
+    console.warn('CFG Core | System reporter failed (non-fatal):', err?.message ?? err)
   }
 }
 
@@ -417,30 +455,19 @@ async function _reportSystem() {
 /**
  * Link this Foundry user to their Core platform account.
  *
- * Core-hosted: session cookie auto-identifies the user — no key needed.
- * Self-hosted: each player sets their personal cfk_ key in Module Settings → Player API Key.
- *   If a player hasn't set one, we show a notification prompting them to do so.
+ * Auth source:
+ *   - cfg-hosted Foundry: the same-origin session cookie identifies the
+ *     caller automatically (no apiKey on the request).
+ *   - Self-hosted Foundry: the world-scoped apiKey set by the pair flow
+ *     (Module Settings → Crit-Fumble Link). When absent, the call is
+ *     anonymous and silently no-ops.
  *
  * On success: stores platformUserId in a user flag and broadcasts the
- *   platformUserId↔foundryUserId mapping.
- *
- * @param {string} apiUrl
- * @param {string|null} playerApiKey  — client-scoped player key (null → session cookie)
- * @param {string|null} worldApiKey   — world-scoped GM key (non-null on self-hosted)
+ *   platformUserId↔foundryUserId mapping so other clients can build
+ *   their identity maps.
  */
-async function _linkPlatformUser(apiUrl, playerApiKey, worldApiKey) {
-  // For self-hosted instances, if no player key is set, we can't identify the player individually.
-  const isSelfHosted = Boolean(worldApiKey)
-  if (isSelfHosted && !playerApiKey) {
-    ui.notifications.warn(
-      'CFG Core: Link your personal account for voice and character sync. ' +
-        'Add your API key in Module Settings → Player API Key.',
-      { permanent: false },
-    )
-    return
-  }
-
-  const api = new CoreAPIClient(apiUrl, playerApiKey)
+async function _linkPlatformUser(apiUrl, apiKey) {
+  const api = new CoreAPIClient(apiUrl, apiKey)
   try {
     const data = await api.get('/api/v1/account/user')
     const platformUserId = data?.user?.id
@@ -449,7 +476,6 @@ async function _linkPlatformUser(apiUrl, playerApiKey, worldApiKey) {
     await game.user.setFlag(MODULE_ID, 'platformUserId', platformUserId)
     console.log(`CFG Core | Account linked: platform ${platformUserId} ↔ Foundry ${game.user.id}`)
 
-    // Broadcast identity so other clients can build their identity maps
     game.socket.emit('module.crit-fumble-core', {
       type: 'av-identity',
       platformUserId,
@@ -465,10 +491,14 @@ async function _linkPlatformUser(apiUrl, playerApiKey, worldApiKey) {
 /* -------------------------------------------- */
 
 async function _checkRecommendedModules() {
-  if (!_campaignId || !_api) return
+  if (!_api || _linkedCampaignIds.length === 0) return
 
   try {
-    const config = await _api.getFoundryConfig(_campaignId)
+    // Module recommendations are per-system, not per-campaign — so we
+    // only need to query ONE campaign's foundry config. Pick the first
+    // linked one; the rest would return the same `defaultModules` set
+    // for matching systems.
+    const config = await _api.getFoundryConfig(_linkedCampaignIds[0])
     const defaultModules = config?.defaultModules ?? []
     if (!defaultModules.length) return
 

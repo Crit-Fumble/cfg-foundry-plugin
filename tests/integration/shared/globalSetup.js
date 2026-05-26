@@ -95,7 +95,6 @@ async function injectModuleSettings(page) {
       game.settings.set(moduleId, 'coreApiUrl', apiUrl)
       game.settings.set(moduleId, 'campaignId', campaignId)
       game.settings.set(moduleId, 'apiKey', apiKey)
-      game.settings.set(moduleId, 'autoSyncQuests', false) // disable auto-sync during setup
     },
     { moduleId: MODULE_ID, apiUrl: CORE_API_URL, campaignId: CORE_TEST_CAMPAIGN, apiKey: CORE_TEST_API_KEY },
   )

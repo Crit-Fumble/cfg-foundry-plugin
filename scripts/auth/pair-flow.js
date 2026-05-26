@@ -10,8 +10,10 @@
  *   4. On `status: 'completed'`        → store apiKey in module settings
  *
  * The same `apiKey` + `coreApiUrl` settings power every authenticated CFG
- * call via `fetchCfg`. The flow is GM-only; players still receive their
- * personal API key via `playerApiKey` (separate setting, untouched here).
+ * call via `fetchCfg`. The flow is GM-only — non-GM users authenticate
+ * via the same-origin session cookie when running cfg-hosted, or they
+ * have no platform link at all on self-hosted (acceptable: their VTT
+ * experience just doesn't include character sync, etc.).
  */
 
 'use strict'
