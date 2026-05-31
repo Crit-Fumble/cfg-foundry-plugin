@@ -84,7 +84,7 @@ Two branches use the same logic:
 | Pre-#588 world without `ownerCoreUserId` stamped | Plugin falls back to `defaultRole` for everyone. Owner can manually promote themselves until the next launch re-stamps the setting.                |
 | Player auths first, owner auths later            | Player lands at `defaultRole`. Owner lands at GM. Each user is evaluated against the world's owner ID independently.                               |
 | Owner already exists at GM                       | `update({ role: 4 })` no-ops; logs `Updated existing user`.                                                                                        |
-| World linked to a realm via `linkWorldToRealm`   | The realm-world path is outside the standard `Data/worlds/` sweep. Tracked as a follow-up — see TODO at `foundry-realm-world.ts:linkWorldToRealm`. |
+| World linked to a non-standard hosting path      | Worlds outside `Data/worlds/` need a separate sweep. The pre-2026-05 `Realm → world` linkage path was removed with `CoreRealm`; the equivalent path under `CoreGameWorld` is a follow-up if/when non-standard hosting roots come back.                          |
 | Admin instance                                   | `syncCfgPlugin` is not called for the admin instance (it has its own setup path); admins are GM via Foundry's native `admin.txt` flow.             |
 
 ## Tests

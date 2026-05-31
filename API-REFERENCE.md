@@ -1,9 +1,18 @@
 # Crit-Fumble Core - API Client Reference
 
 **Version:** 1.0.0
-**Updated:** 2026-02-15
+**Updated:** 2026-02-15 (predates 2026-05 platform refactor — see banner below)
 
-The Core API Client provides comprehensive access to all Crit-Fumble Gaming platform features from FoundryVTT.
+> ⚠️ **Out of date.** This reference still describes the pre-refactor Realm /
+> Locations / RotFS APIs. The platform completed a `Realm → GameWorld` migration
+> in May 2026: `CoreRealm` + Realm Manager + 26 components were deleted, and
+> `CoreGameWorld` now owns the concept. The `realms-of-the-5th-system` module
+> and the `getPlanetRealms` / `generateRotFSRealm` endpoints below are retired.
+> The current GameWorld surface is documented in cfg-core-server's
+> `src/routes/v1/account/game-worlds.ts`; this file will be rewritten when the
+> plugin is realigned. Treat everything below as historical until then.
+
+The Core API Client provides comprehensive access to Crit-Fumble Gaming platform features from FoundryVTT.
 
 ## Accessing the API Client
 
@@ -485,5 +494,5 @@ Set your API token in module settings:
 ## Support
 
 - **API Docs**: https://core.crit-fumble.com/api/docs
-- **GitHub**: https://github.com/Crit-Fumble/core.crit-fumble.com
+- **GitHub** (current): https://github.com/Crit-Fumble/cfg-core-server (server) · https://github.com/Crit-Fumble/cfg-core-browser (browser app). The old monorepo at `Crit-Fumble/core.crit-fumble.com` is retired.
 - **Discord**: https://discord.gg/D6vVANEJ3w
