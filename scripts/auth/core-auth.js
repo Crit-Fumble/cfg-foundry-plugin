@@ -348,6 +348,12 @@ export async function handleOAuthCallback() {
       success: true,
       user: authData.user,
       foundryUser: authData.foundryUser,
+      // Forward the server's "we already verified this token + access
+      // row" assertion to syncFoundryUser so it can skip the GM-presence
+      // check (Option C). Without this flag, a player joining cold
+      // (no GM logged in) couldn't be auto-created because the existing
+      // sync path required `game.user?.isGM === true`.
+      serverValidated: authData.serverValidated === true,
       token: authToken,
     }
   } catch (error) {
@@ -389,12 +395,19 @@ export function resolveFoundryRole(coreUserId, ownerCoreUserId, defaultRole) {
 
 /**
  * Create or update Foundry user from Core auth data
- * @param {object} authData - Validated auth data from Core
+ * @param {object} authData - Validated auth data from Core. When
+ *   `authData.serverValidated === true`, the CFG server has already
+ *   verified the token signature + the player's access row, so we
+ *   skip the local `game.user?.isGM` gate — this is the path that
+ *   lets a player auto-join cold (no GM present in the browser).
+ *   For any other code path (manual OAuth click on the join form,
+ *   programmatic calls from other modules), the GM gate still applies.
  * @returns {Promise<User|null>} Foundry User or null
  */
 export async function syncFoundryUser(authData) {
-  if (!game.user?.isGM) {
-    console.log(`${LOG_PREFIX} Cannot sync user - not GM`)
+  const serverValidated = authData?.serverValidated === true
+  if (!serverValidated && !game.user?.isGM) {
+    console.log(`${LOG_PREFIX} Cannot sync user - not GM (and not server-validated)`)
     return null
   }
 
@@ -496,12 +509,118 @@ export async function initializeCoreAuthBypass() {
 }
 
 /**
+ * Try the CFG-signed-token auto-join path on the JoinGameForm.
+ *
+ * Triggered when the iframe lands with `?authToken=<jwt>` — CFG's
+ * Launch route minted the token, the proxy carried the URL through.
+ * The plugin asks the CFG server to validate the token (signature +
+ * access-row check), then pre-fills the username dropdown with the
+ * returned `foundryUsername`. Password stays blank; if the world's
+ * users have no password (the CFG-managed default), submit succeeds
+ * silently and the player lands in /game without ever seeing the form.
+ * If the user requires a password, the dropdown is at least pre-selected
+ * so the player only has to type the password — strict UX improvement
+ * over the previous "manually scroll the user list every session" flow.
+ *
+ * Strictly no-op when:
+ *   - The bypass setting is disabled.
+ *   - No `?authToken=` in the URL.
+ *   - The token POST returns non-2xx (the server logged the reason; the
+ *     player just sees the normal join form).
+ *   - The form doesn't have a username field we can find (Foundry UI
+ *     surgery on a new version).
+ *
+ * @param {jQuery} html  - The JoinGameForm jQuery node.
+ */
+async function tryServerValidatedAutoJoin(html) {
+  if (!isCoreAuthEnabled()) return
+  const params = new URLSearchParams(window.location.search)
+  const authToken = params.get(CORE_AUTH_CONFIG.TOKEN_PARAM)
+  if (!authToken) return
+
+  // Strip the token out of the URL right away so a casual reload doesn't
+  // re-attempt with a possibly-expired token + so it doesn't sit in the
+  // browser history.
+  if (window.history?.replaceState) {
+    const url = new URL(window.location.href)
+    url.searchParams.delete(CORE_AUTH_CONFIG.TOKEN_PARAM)
+    window.history.replaceState({}, document.title, url.toString())
+  }
+
+  let resp
+  try {
+    const validateUrl = `${getCoreAuthUrl()}/api/foundry/auth/validate`
+    resp = await fetch(validateUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: authToken }),
+    })
+  } catch (err) {
+    console.warn(`${LOG_PREFIX} validate fetch failed:`, err)
+    return
+  }
+  if (!resp.ok) {
+    console.warn(`${LOG_PREFIX} validate returned ${resp.status} — falling back to manual join`)
+    return
+  }
+
+  let payload
+  try {
+    payload = await resp.json()
+  } catch {
+    return
+  }
+  if (!payload?.success || !payload.foundryUser?.foundryUsername) return
+
+  // Find the user dropdown. Foundry v13/v14 renders the JoinGameForm
+  // with a `select[name="userid"]` (server-side selector) — older
+  // versions used `<input name="userid">`. Both selectors map to the
+  // same field; try both for forward-compat.
+  const userField = html.find('select[name="userid"], input[name="userid"]').first()
+  if (!userField.length) {
+    console.warn(`${LOG_PREFIX} couldn't find userid field — leaving form alone`)
+    return
+  }
+
+  const targetName = payload.foundryUser.foundryUsername
+  // For a <select>, find the <option> whose label matches the target
+  // username (Foundry stores the User name as the option text and the
+  // User _id as the option value).
+  if (userField.is('select')) {
+    const option = userField.find('option').filter((_, el) => el.textContent?.trim() === targetName).first()
+    if (!option.length) {
+      console.warn(
+        `${LOG_PREFIX} user "${targetName}" not in dropdown — GM must create it first; falling back to manual join`,
+      )
+      return
+    }
+    userField.val(option.val()).trigger('change')
+  } else {
+    // <input> path — set the value directly.
+    userField.val(targetName).trigger('change')
+  }
+
+  // Leave password empty by default. The world's allow-no-password
+  // setting determines whether submit succeeds without one.
+  console.log(`${LOG_PREFIX} auto-filled join form for "${targetName}" — submitting`)
+  const form = userField.closest('form')
+  const submitButton = form.find('button[type="submit"], button[name="join"]').first()
+  if (submitButton.length) submitButton.trigger('click')
+  else form.trigger('submit')
+}
+
+/**
  * Register Core Auth hooks for login bypass
  * This intercepts Foundry's login flow when Core Auth is enabled
  */
 export function registerCoreAuthHooks() {
   // Hook into the login form to add Core Auth buttons
   Hooks.on('renderJoinGameForm', (app, html, data) => {
+    // Server-validated auto-join is the priority path — fires when CFG
+    // gave us a token. Runs before the OAuth-button injection so the
+    // happy path lands in /game without ever showing the OAuth UI.
+    void tryServerValidatedAutoJoin(html)
+
     if (!isCoreAuthEnabled()) return
 
     const config = validateCoreAuthConfig()
