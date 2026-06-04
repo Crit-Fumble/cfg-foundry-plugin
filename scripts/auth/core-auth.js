@@ -534,16 +534,28 @@ export async function initializeCoreAuthBypass() {
  */
 async function tryServerValidatedAutoJoin(html) {
   if (!isCoreAuthEnabled()) return
-  const params = new URLSearchParams(window.location.search)
-  const authToken = params.get(CORE_AUTH_CONFIG.TOKEN_PARAM)
+  // CFG ships the token via the URL hash (#authToken=…) — not the query
+  // string — so Foundry's server never sees it and can't misinterpret it
+  // during /setup or /join init. We still accept the legacy
+  // `?authToken=` query path for back-compat with any older callers.
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const queryParams = new URLSearchParams(window.location.search)
+  const authToken =
+    hashParams.get(CORE_AUTH_CONFIG.TOKEN_PARAM) || queryParams.get(CORE_AUTH_CONFIG.TOKEN_PARAM)
   if (!authToken) return
 
-  // Strip the token out of the URL right away so a casual reload doesn't
+  // Strip the token from BOTH locations so a casual reload doesn't
   // re-attempt with a possibly-expired token + so it doesn't sit in the
   // browser history.
   if (window.history?.replaceState) {
     const url = new URL(window.location.href)
     url.searchParams.delete(CORE_AUTH_CONFIG.TOKEN_PARAM)
+    // Strip from the hash too.
+    if (hashParams.has(CORE_AUTH_CONFIG.TOKEN_PARAM)) {
+      hashParams.delete(CORE_AUTH_CONFIG.TOKEN_PARAM)
+      const remaining = hashParams.toString()
+      url.hash = remaining ? `#${remaining}` : ''
+    }
     window.history.replaceState({}, document.title, url.toString())
   }
 
