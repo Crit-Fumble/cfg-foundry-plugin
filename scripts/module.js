@@ -14,10 +14,6 @@
 
 import { CoreAPIClient } from './clients/api-client.js'
 import { CfgCampaignLinksDialog } from './views/cfg-campaign-links.js'
-// Deprecated / unwired surfaces left on disk for later cleanup:
-//   - views/campaign-manager.js: legacy GM dashboard, broken in v14
-//   - services/quest-sync.js, sync-service.js, chat-sync.js: tied to
-//     the autoSyncQuests / chatSyncEnabled settings, both removed
 import { mountCFGSidebar } from './views/sidebar.js'
 import { FilePickerCompat } from './utils/file-picker-compat.js'
 import { registerCfgLinkMenu } from './views/cfg-link-settings.js'

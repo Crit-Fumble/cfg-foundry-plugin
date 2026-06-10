@@ -113,7 +113,7 @@ export class CoreAPIClient {
     throw new Error(body?.error ?? `Core server error (HTTP ${res.status})`)
   }
 
-  // ── Public request method (used by sync-service and module internals) ────────
+  // ── Public request method (used by module internals) ─────────────────────────
 
   /** Generic fetch — parses response and throws on non-2xx. */
   async request(endpoint, options = {}) {
