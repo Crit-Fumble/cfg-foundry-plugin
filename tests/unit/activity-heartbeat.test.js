@@ -19,6 +19,7 @@ describe('ActivityHeartbeat', () => {
       { id: 'c', active: false },
     ]
     game.user = { id: 'a' }
+    game.world = { id: 'eberron-native' }
     const a = api()
 
     await new ActivityHeartbeat(a, 'inst-1')._tick()
@@ -26,6 +27,7 @@ describe('ActivityHeartbeat', () => {
     expect(a.post).toHaveBeenCalledWith('/api/v1/installations/inst-1/activity', {
       activeUserCount: 2,
       source: 'foundry-plugin',
+      activeWorldId: 'eberron-native',
     })
   })
 

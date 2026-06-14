@@ -68,6 +68,9 @@ export class ActivityHeartbeat {
       await this._api.post(`/api/v1/installations/${this._installationId}/activity`, {
         activeUserCount,
         source: 'foundry-plugin',
+        // Foundry's native world id — Core maps it to the platform world to
+        // resolve a per-world idle-shutdown override.
+        activeWorldId: game.world?.id ?? null,
       })
     } catch (err) {
       // Non-fatal — a missed beat just means the server reads the previous
