@@ -21,6 +21,7 @@ import { applyHostedContext, getHostKind } from './auth/host-context.js'
 import { mountConnectionBanner } from './views/connection-banner.js'
 import { maybeShowFirstRunPrompt } from './views/first-run-prompt.js'
 import { syncInstalledModules } from './sync/modules-sync.js'
+import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -47,6 +48,9 @@ let _linkedCampaignIds = []
 
 /** @type {CoreAPIClient|null} */
 let _api = null
+
+/** @type {ActivityHeartbeat|null} */
+let _activityHeartbeat = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -297,6 +301,16 @@ Hooks.once('ready', async () => {
   ])
 
   _showFeatureModeBanner()
+
+  // Active-user heartbeat (cfs#109) — reports game.users.active to Core so
+  // server-side idle-shutdown automation has a real signal. Only runs when
+  // this world is linked to an installation (cfg-hosted, or self-hosted
+  // after pairing); the single-reporter election lives inside the class.
+  const heartbeatInstallId = game.settings.get(MODULE_ID, 'installationId') || null
+  if (heartbeatInstallId) {
+    _activityHeartbeat = new ActivityHeartbeat(_api, heartbeatInstallId)
+    _activityHeartbeat.start()
+  }
 
   // CFG sidebar — Shell-based dock surfaced in the Foundry viewport. Auth
   // flows through the same-origin session cookie (cfg-hosted) or the
