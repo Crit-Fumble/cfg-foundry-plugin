@@ -30,6 +30,10 @@ describe('getHostKind', () => {
   beforeEach(() => {
     globalThis.window = globalThis.window || {}
     delete globalThis.window.__CFG_HOSTED_CONTEXT__
+    // Non-hosted path by default — self-hosted Foundry is never served on the
+    // `/servers/foundryvtt/` prefix, so the URL fallback stays off unless a
+    // test opts in.
+    globalThis.window.location = { pathname: '/game', origin: 'https://foundry.local' }
     settingsStore({})
   })
 
@@ -44,9 +48,33 @@ describe('getHostKind', () => {
     expect(getHostKind()).toBe('cfg-hosted')
   })
 
-  it("returns 'self-hosted' when the global is absent", async () => {
+  it("returns 'self-hosted' when the global is absent and the path is not hosted", async () => {
     const { getHostKind } = await loadHostContext()
     expect(getHostKind()).toBe('self-hosted')
+  })
+
+  it("returns 'cfg-hosted' from the URL path even when no global is injected", async () => {
+    // The common case today: the proxy hasn't injected __CFG_HOSTED_CONTEXT__,
+    // but the container is served under /servers/foundryvtt/<installationId>/.
+    // A world created via Foundry's own setup UI (no apiKey, no global) is
+    // still cfg-hosted by virtue of its route.
+    globalThis.window.location = {
+      pathname: '/servers/foundryvtt/cmpn6xzfa000h01qdjr15ey1t/game',
+      origin: 'https://core.crit-fumble.com',
+    }
+    const { getHostKind } = await loadHostContext()
+    expect(getHostKind()).toBe('cfg-hosted')
+  })
+
+  it("getHostedContext stays null on the path fallback — no auth payload without the global", async () => {
+    globalThis.window.location = {
+      pathname: '/servers/foundryvtt/cmpn6xzfa000h01qdjr15ey1t/game',
+      origin: 'https://core.crit-fumble.com',
+    }
+    const { getHostKind, getHostedContext } = await loadHostContext()
+    expect(getHostKind()).toBe('cfg-hosted')
+    // The path proves hosting, but only the injected global carries the apiKey.
+    expect(getHostedContext()).toBeNull()
   })
 
   it("returns 'self-hosted' when the global is missing required fields", async () => {

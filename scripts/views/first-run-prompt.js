@@ -9,8 +9,13 @@
  * The prompt is intentionally narrow: it fires only when ALL of these hold:
  *   1. The current Foundry user is the GM. Players can't pair — the API key
  *      is world-scoped and minted under the GM's account.
- *   2. The world is NOT cfg-hosted. CFG-hosted Foundry containers receive
- *      `window.__CFG_HOSTED_CONTEXT__` (#699) and auto-link without prompting.
+ *   2. The world is NOT cfg-hosted. A CFG-hosted Foundry container is any
+ *      world served under the proxy route `/servers/foundryvtt/<id>/...` (or
+ *      one that received the injected `window.__CFG_HOSTED_CONTEXT__`, #699):
+ *      it is implicitly a CFG world and is treated as already-linked — auth
+ *      flows through the same-origin session cookie, so no pair prompt. This
+ *      holds even for worlds created via Foundry's own setup UI inside the
+ *      container, which have no stored apiKey. See `getHostKind()`.
  *   3. The world has no stored CFG `apiKey` yet. A linked world stays linked.
  *   4. The GM hasn't dismissed the prompt with "Don't Show Again" before.
  *

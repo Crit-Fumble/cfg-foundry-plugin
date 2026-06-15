@@ -95,6 +95,19 @@ describe('shouldShowFirstRunPrompt — gating', () => {
     expect(shouldShowFirstRunPrompt()).toBe(false)
   })
 
+  it('returns false for cfg-hosted worlds detected via the proxy route (no global, no apiKey)', async () => {
+    // Regression: a world created via Foundry's OWN setup UI inside a CFG
+    // container has no injected global and no stored apiKey, but it is served
+    // under /servers/foundryvtt/<installationId>/ — so it must be treated as
+    // already-linked and must NOT prompt. (install cmpn6xzfa000h01qdjr15ey1t)
+    globalThis.window.location = {
+      pathname: '/servers/foundryvtt/cmpn6xzfa000h01qdjr15ey1t/game',
+      origin: 'https://core.crit-fumble.com',
+    }
+    const { shouldShowFirstRunPrompt } = await loadPrompt()
+    expect(shouldShowFirstRunPrompt()).toBe(false)
+  })
+
   it('returns false when the world is already linked (apiKey present)', async () => {
     settingsStore({
       coreApiUrl: 'https://cfg.test',

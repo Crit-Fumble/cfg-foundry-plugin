@@ -21,14 +21,36 @@
  *   - The apiKey is server-minted with the same scope as a user-paired key;
  *     the plugin treats it identically once stored.
  *
- * Detection is one-shot — the global is captured into module state on the
- * first read so a tampered global later in the page lifecycle can't downgrade
- * the host kind.
+ * URL-path fallback (#699 follow-up): the `__CFG_HOSTED_CONTEXT__` injection
+ * is not yet implemented on the proxy. Until it lands, the only signal a
+ * CFG-hosted container reliably emits is its route shape: the VTT proxy serves
+ * every hosted Foundry from `/servers/foundryvtt/<installationId>/...`. A world
+ * created via Foundry's OWN setup UI (not the CFG create-world flow) has no
+ * injected global and no stored apiKey, yet it is still cfg-hosted by virtue of
+ * the route it's served on. We therefore treat that path prefix as a
+ * cfg-hosted signal too — without it, such worlds wrongly fall through to the
+ * self-hosted pair prompt. Self-hosted / third-party Foundry never serves on
+ * this prefix, so the fallback can't misclassify a BYO instance.
+ *
+ * `getHostedContext()` (the auto-link auth payload) still requires the full
+ * injected global — the path alone can't mint an apiKey. Only `getHostKind()`
+ * honours the path fallback, which is exactly what gates the first-run prompt
+ * and the link-settings buttons.
+ *
+ * Detection is one-shot — the kind is captured into module state on the first
+ * read so a tampered global (or a later history.pushState) can't downgrade it.
  */
 
 'use strict'
 
 const MODULE_ID = 'crit-fumble-core'
+
+/**
+ * Route prefix the VTT proxy serves every cfg-hosted Foundry container under.
+ * `/servers/foundryvtt/<installationId>/...` is the one URL shape for all
+ * hosted installs — see cfg-core-server `routes/vtt-proxy.ts`.
+ */
+const CFG_HOSTED_PATH_PREFIX = '/servers/foundryvtt/'
 
 /**
  * @typedef {Object} HostedContext
@@ -48,7 +70,30 @@ let _cachedKind = null
 let _hasReadGlobal = false
 
 /**
+ * `true` when the current page is served under the cfg-hosted proxy route
+ * (`/servers/foundryvtt/<installationId>/...`). This is the URL-path fallback
+ * that classifies a hosted container even when the proxy hasn't injected
+ * `__CFG_HOSTED_CONTEXT__` (the common case today — see module header).
+ *
+ * @returns {boolean}
+ */
+function _isCfgHostedPath() {
+  try {
+    if (typeof window === 'undefined') return false
+    return Boolean(window.location?.pathname?.startsWith(CFG_HOSTED_PATH_PREFIX))
+  } catch {
+    return false
+  }
+}
+
+/**
  * Read the injected context once. Subsequent calls return the cached value.
+ *
+ * Note: the host *kind* may be 'cfg-hosted' (via the URL-path fallback) while
+ * this returns null — the path proves the container is hosted, but only the
+ * injected global carries the auth payload needed to auto-link. Callers that
+ * need the apiKey must null-check; callers that only need the kind use
+ * `getHostKind()`.
  *
  * @returns {HostedContext|null}
  */
@@ -63,14 +108,20 @@ export function getHostedContext() {
     raw = null
   }
   _cachedContext = _normalize(raw)
-  _cachedKind = _cachedContext ? 'cfg-hosted' : 'self-hosted'
+  // cfg-hosted when EITHER a well-formed global is injected OR the page is
+  // served on the hosted proxy route. The path fallback covers worlds created
+  // via Foundry's own setup UI (no global, no stored key) that are still
+  // running inside a CFG container.
+  _cachedKind = _cachedContext || _isCfgHostedPath() ? 'cfg-hosted' : 'self-hosted'
   return _cachedContext
 }
 
 /**
  * Returns 'cfg-hosted' when the injected global is present and well-formed,
- * 'self-hosted' otherwise. The host kind is the discriminator the rest of the
- * plugin (settings menu, pair flow, banner) branches on.
+ * OR when the page is served under the cfg-hosted proxy route
+ * (`/servers/foundryvtt/<installationId>/...`); 'self-hosted' otherwise. The
+ * host kind is the discriminator the rest of the plugin (first-run prompt,
+ * settings menu, pair flow, banner) branches on.
  *
  * @returns {HostKind}
  */
