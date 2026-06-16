@@ -422,8 +422,14 @@ export async function syncFoundryUser(authData) {
   const defaultRole = game.settings.get(MODULE_ID, 'defaultUserRole')
   const desiredRole = resolveFoundryRole(user.id, ownerCoreUserId, defaultRole)
 
-  // Look for existing user by Core user ID (stored in flags)
-  let existingUser = game.users.find((u) => u.getFlag(MODULE_ID, 'coreUserId') === user.id)
+  // Look for existing user by Core user ID (stored in flags). Accept the legacy
+  // `platformUserId` key too — earlier server builds (foundry-users-store) wrote
+  // the link under that name; without this a server pre-linked user wasn't found
+  // and fell back to name-matching. A match re-stamps `coreUserId` below, so
+  // legacy stamps self-heal on first join.
+  let existingUser = game.users.find(
+    (u) => (u.getFlag(MODULE_ID, 'coreUserId') ?? u.getFlag(MODULE_ID, 'platformUserId')) === user.id,
+  )
 
   // Also check by Foundry username (for migration)
   if (!existingUser) {
