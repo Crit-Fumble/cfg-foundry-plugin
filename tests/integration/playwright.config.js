@@ -40,6 +40,9 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     ...devices['Desktop Chrome'],
+    // Above Foundry's 1366x768 minimum (Desktop Chrome's 1280x720 trips its
+    // low-resolution gate, which can block sidebar/layout interactions).
+    viewport: { width: 1920, height: 1080 },
   },
 
   projects: [

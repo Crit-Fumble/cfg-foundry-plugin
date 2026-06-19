@@ -8,16 +8,17 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { ensureInGame } from '../shared/foundry-login.mjs'
 
 const API_KEY = process.env.CORE_TEST_API_KEY
 
 test.describe('Self-hosted: API Key Auth', () => {
   test.beforeEach(async ({ page }) => {
-    // Inject API key into module settings before the page loads
+    // Always join the world so the unguarded error-handling test below has a
+    // live game + module. Inject the cfk_ key only when provisioned, then reload
+    // so the module re-initialises in self-hosted mode.
+    await ensureInGame(page)
     if (API_KEY) {
-      await page.goto('/game')
-      await page.waitForSelector('#sidebar', { timeout: 30_000 })
-      await page.waitForFunction(() => window.game?.ready, { timeout: 30_000 })
       await page.evaluate(([key]) => game.settings.set('crit-fumble-core', 'apiKey', key), [API_KEY])
       await page.reload()
       await page.waitForSelector('#sidebar', { timeout: 30_000 })

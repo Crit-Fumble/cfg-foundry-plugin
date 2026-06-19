@@ -6,6 +6,7 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { ensureInGame } from '../shared/foundry-login.mjs'
 
 const API_KEY = process.env.CORE_TEST_API_KEY
 const CAMPAIGN_ID = process.env.CORE_TEST_CAMPAIGN_ID
@@ -14,9 +15,8 @@ test.describe('Self-hosted: System Report', () => {
   test.skip(!API_KEY || !CAMPAIGN_ID, 'Skipped: CORE_TEST_API_KEY and CORE_TEST_CAMPAIGN_ID required')
 
   test.beforeEach(async ({ page }) => {
-    await page.goto('/game')
-    await page.waitForSelector('#sidebar', { timeout: 30_000 })
-    await page.waitForFunction(() => window.game?.ready && window.CFGCore, { timeout: 30_000 })
+    await ensureInGame(page)
+    await page.waitForFunction(() => window.CFGCore, { timeout: 30_000 })
   })
 
   test('CFGCore initializes with API key and returns a featureMode', async ({ page }) => {

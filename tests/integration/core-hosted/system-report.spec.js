@@ -7,12 +7,12 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { ensureInGame } from '../shared/foundry-login.mjs'
 
 test.describe('Core-hosted: System Report', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/game')
-    await page.waitForSelector('#sidebar', { timeout: 30_000 })
-    await page.waitForFunction(() => window.game?.ready && window.CFGCore, { timeout: 30_000 })
+    await ensureInGame(page)
+    await page.waitForFunction(() => window.CFGCore, { timeout: 30_000 })
   })
 
   test('CFGCore is exposed on window after ready', async ({ page }) => {

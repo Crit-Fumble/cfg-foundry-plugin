@@ -6,13 +6,10 @@
  */
 
 import { test as setup, expect } from '@playwright/test'
+import { ensureInGame } from './foundry-login.mjs'
 
 setup('verify GM session and world ready', async ({ page }) => {
-  await page.goto('/game')
-
-  // World should load — sidebar is the reliable ready indicator
-  await page.waitForSelector('#sidebar', { timeout: 30_000 })
-  await page.waitForFunction(() => window.game?.ready, { timeout: 30_000 })
+  await ensureInGame(page)
 
   const isGM = await page.evaluate(() => game.user.isGM)
   const isReady = await page.evaluate(() => game.ready)

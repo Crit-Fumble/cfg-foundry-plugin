@@ -27,9 +27,12 @@ playwright/.cache/
 .env.*.local
 
 # Foundry integration tests — local secrets, GM auth state, Foundry runtime data,
-# and scratch discovery scripts. Only the world.json seed + compose are tracked.
+# and scratch discovery scripts. Only the world.json template + compose are tracked.
+# The world is copied to .worlds-runtime/ at `test:foundry:up`; Foundry mutates
+# that copy (lastPlayed, data dirs) so the tracked template stays pristine.
 tests/.env.test
 tests/.auth/
+tests/fixtures/.worlds-runtime/
 tests/fixtures/worlds/README.txt
 tests/fixtures/worlds/*/data/
 tests/_*.mjs

@@ -1,19 +1,20 @@
 ##
 ## Foundry VTT — Integration Test Stack
 ##
-## Runs a FoundryVTT v13 container for plugin integration tests.
+## Runs a FoundryVTT v14 container for plugin integration tests.
 ## The plugin source is bind-mounted read-only so tests always run against
 ## the current working tree without a separate build step.
 ##
-## Usage:
-##   cp .env.test.example .env.test   # fill in credentials
-##   docker compose --env-file .env.test up -d
-##   npm run test:integration
-##   docker compose --env-file .env.test down
+## Usage (via npm scripts, which also stage the world + sign the EULA):
+##   npm run test:foundry:up      # stage world copy, start container, launch world
+##   npm run test:foundry         # run the Playwright integration specs
+##   npm run test:foundry:down    # stop container, drop the runtime world copy
 ##
-## The test world (fixtures/worlds/cfg-test-world/) is pre-built with the
-## plugin enabled. Module settings (API URL, campaign ID, API key) are
-## injected at runtime by the Playwright globalSetup.
+## The test world template (fixtures/worlds/cfg-test-world/) is copied to
+## fixtures/.worlds-runtime/ before the container starts, and that copy is what
+## gets bind-mounted — so Foundry's runtime writes (lastPlayed, data dirs) never
+## dirty the tracked template. Module settings (API URL, campaign ID, API key)
+## are injected at runtime by the Playwright globalSetup.
 ##
 
 services:
@@ -42,8 +43,13 @@ services:
       # felddy v14 uses /data as the Foundry dataPath (v13 used /foundrydata).
       CONTAINER_CACHE: /data/cache
     volumes:
-      - ../../:/data/Data/modules/crit-fumble-core:ro
-      - ./fixtures/worlds:/data/Data/worlds
+      # The plugin repo root (one level up from tests/) is the module — its
+      # module.json must sit at the mount root for Foundry to detect it. NB: this
+      # is `../`, not `../../` (which is the workspaces/ parent and has no manifest).
+      - ../:/data/Data/modules/crit-fumble-core:ro
+      # The runtime copy (staged from fixtures/worlds by `test:foundry:up`), not
+      # the tracked template — Foundry mutates this dir and we keep git clean.
+      - ./fixtures/.worlds-runtime:/data/Data/worlds
       # dnd5e system comes from the platform's local catalog (read-only). The
       # Foundry cache (with the pre-downloaded foundryvtt-14.361.zip) is mounted
       # read-write: felddy v14 writes housekeeping (CACHEDIR.TAG, backoff_state)

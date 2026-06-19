@@ -20,6 +20,7 @@ import { chromium } from '@playwright/test'
 import { mkdir } from 'fs/promises'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { ensureInGame } from './foundry-login.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const AUTH_DIR = join(__dirname, '../../.auth')
@@ -56,57 +57,47 @@ async function waitForFoundry() {
   throw new Error(`[globalSetup] Foundry did not become ready within ${TIMEOUT_MS / 1000}s`)
 }
 
-async function loginAsGM(page) {
-  await page.goto('/')
-  await page.waitForLoadState('domcontentloaded')
+async function enableModule(page) {
+  // A pristine world has no modules enabled. Flip crit-fumble-core on in
+  // core.moduleConfiguration (the same setting the Manage Modules dialog writes)
+  // and reload so the module actually initialises — its settings + window.CFGCore
+  // only exist once it has run. Idempotent: a no-op if already enabled.
+  const enabled = await page.evaluate(async (moduleId) => {
+    const cfg = { ...(game.settings.get('core', 'moduleConfiguration') || {}) }
+    if (cfg[moduleId]) return false
+    cfg[moduleId] = true
+    await game.settings.set('core', 'moduleConfiguration', cfg)
+    return true
+  }, MODULE_ID)
 
-  // Already in-game (e.g. reused session)? Done.
-  if (await page.locator('#sidebar').count()) {
-    console.log('[globalSetup] Already in game')
-    return
+  if (enabled) {
+    console.log('[globalSetup] Enabled crit-fumble-core — reloading world')
+    await page.reload()
+    await page.waitForSelector('#sidebar', { timeout: 90_000 })
+    await page.waitForFunction(() => window.game?.ready, { timeout: 60_000 })
   }
 
-  // Join page (/join) — pick the Gamemaster user and submit. Foundry v14's join
-  // form has no stable `#join-game` id, so key off the userid select directly.
-  const gmSelect = page.locator('select[name="userid"]')
-  await gmSelect.waitFor({ timeout: 30_000 })
-  const options = await gmSelect.locator('option').all()
-  for (const opt of options) {
-    const value = await opt.getAttribute('value')
-    const text = (await opt.textContent()) || ''
-    if (value && /gamemaster|gm/i.test(text)) {
-      await gmSelect.selectOption(value)
-      break
-    }
-  }
-  // Fresh world's Gamemaster has no password.
-  const pw = page.locator('input[name="password"]')
-  if (await pw.count()) await pw.fill('')
-  await page.locator('button[name="join"], button:has-text("Join Game")').first().click()
-
-  // dnd5e first-load can be slow (data migration), so allow generous timeouts.
-  await page.waitForSelector('#sidebar', { timeout: 90_000 })
-  await page.waitForFunction(() => window.game?.ready, { timeout: 60_000 })
-  console.log('[globalSetup] Logged in as GM')
+  const active = await page.evaluate((id) => game.modules.get(id)?.active ?? false, MODULE_ID)
+  if (!active) throw new Error('[globalSetup] crit-fumble-core failed to activate after enabling')
+  console.log('[globalSetup] crit-fumble-core module active')
 }
 
 async function injectModuleSettings(page) {
-  if (!CORE_TEST_CAMPAIGN) {
-    console.warn('[globalSetup] CORE_TEST_CAMPAIGN_ID not set — skipping settings injection')
-    return
-  }
-
+  // Always set coreApiUrl + apiKey so the core-hosted specs have a defined base
+  // URL even without a provisioned campaign; campaignId only when configured.
   await page.evaluate(
     ({ moduleId, apiUrl, campaignId, apiKey }) => {
-      game.settings.set(moduleId, 'coreApiUrl', apiUrl)
-      game.settings.set(moduleId, 'campaignId', campaignId)
-      game.settings.set(moduleId, 'apiKey', apiKey)
+      if (apiUrl) game.settings.set(moduleId, 'coreApiUrl', apiUrl)
+      if (campaignId) game.settings.set(moduleId, 'campaignId', campaignId)
+      game.settings.set(moduleId, 'apiKey', apiKey || '')
     },
     { moduleId: MODULE_ID, apiUrl: CORE_API_URL, campaignId: CORE_TEST_CAMPAIGN, apiKey: CORE_TEST_API_KEY },
   )
 
   console.log(
-    `[globalSetup] Module settings injected — campaign: ${CORE_TEST_CAMPAIGN}, apiKey: ${CORE_TEST_API_KEY ? '(set)' : '(none)'}`,
+    `[globalSetup] Module settings injected — apiUrl: ${CORE_API_URL}, campaign: ${CORE_TEST_CAMPAIGN || '(none)'}, apiKey: ${
+      CORE_TEST_API_KEY ? '(set)' : '(none)'
+    }`,
   )
 }
 
@@ -121,17 +112,15 @@ export default async function globalSetup() {
   const page = await context.newPage()
 
   try {
-    await loginAsGM(page)
+    await ensureInGame(page)
+    console.log('[globalSetup] Logged in as GM')
+    await enableModule(page)
     await injectModuleSettings(page)
     await context.storageState({ path: AUTH_FILE })
     console.log(`[globalSetup] Auth state saved to ${AUTH_FILE}`)
-
-    // Foundry permits a single active GM connection. Leave the game cleanly so
-    // the slot is free for the setup/test projects that reuse this auth state —
-    // otherwise the next GM join races our still-open session and #sidebar never
-    // appears. The session cookie (already saved above) stays valid for rejoin.
-    await page.evaluate(() => globalThis.game?.logOut?.()).catch(() => {})
-    await new Promise((r) => setTimeout(r, 3000))
+    // Don't game.logOut() here — it destroys the session we just saved. Closing
+    // the context drops the websocket, freeing the single GM slot; each later
+    // project's ensureInGame() re-joins as GM (kicking any stale connection).
   } finally {
     await browser.close()
   }

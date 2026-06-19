@@ -6,14 +6,13 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { ensureInGame } from '../shared/foundry-login.mjs'
 
 const MODULE_ID = 'crit-fumble-core'
 
 test.describe('Core-hosted: Campaign Config', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/game')
-    await page.waitForSelector('#sidebar', { timeout: 30_000 })
-    await page.waitForFunction(() => window.game?.ready, { timeout: 30_000 })
+    await ensureInGame(page)
   })
 
   test('coreApiUrl world setting is readable', async ({ page }) => {
