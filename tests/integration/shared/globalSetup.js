@@ -60,27 +60,33 @@ async function loginAsGM(page) {
   await page.goto('/')
   await page.waitForLoadState('domcontentloaded')
 
-  // Join page — select GM and submit
-  const joinForm = page.locator('form#join-game')
-  if ((await joinForm.count()) > 0) {
-    const gmSelect = page.locator('select[name="userid"]')
-    if ((await gmSelect.count()) > 0) {
-      const options = await gmSelect.locator('option').all()
-      for (const opt of options) {
-        const text = await opt.textContent()
-        if (text?.toLowerCase().includes('gamemaster') || text?.toLowerCase().includes('gm')) {
-          await gmSelect.selectOption(await opt.getAttribute('value'))
-          break
-        }
-      }
-    }
-    const pw = page.locator('input[name="password"]')
-    if (await pw.isVisible()) await pw.fill('')
-    await page.locator('button[type="submit"], button:has-text("Join Game")').first().click()
+  // Already in-game (e.g. reused session)? Done.
+  if (await page.locator('#sidebar').count()) {
+    console.log('[globalSetup] Already in game')
+    return
   }
 
-  await page.waitForSelector('#sidebar', { timeout: 45_000 })
-  await page.waitForFunction(() => window.game?.ready, { timeout: 30_000 })
+  // Join page (/join) — pick the Gamemaster user and submit. Foundry v14's join
+  // form has no stable `#join-game` id, so key off the userid select directly.
+  const gmSelect = page.locator('select[name="userid"]')
+  await gmSelect.waitFor({ timeout: 30_000 })
+  const options = await gmSelect.locator('option').all()
+  for (const opt of options) {
+    const value = await opt.getAttribute('value')
+    const text = (await opt.textContent()) || ''
+    if (value && /gamemaster|gm/i.test(text)) {
+      await gmSelect.selectOption(value)
+      break
+    }
+  }
+  // Fresh world's Gamemaster has no password.
+  const pw = page.locator('input[name="password"]')
+  if (await pw.count()) await pw.fill('')
+  await page.locator('button[name="join"], button:has-text("Join Game")').first().click()
+
+  // dnd5e first-load can be slow (data migration), so allow generous timeouts.
+  await page.waitForSelector('#sidebar', { timeout: 90_000 })
+  await page.waitForFunction(() => window.game?.ready, { timeout: 60_000 })
   console.log('[globalSetup] Logged in as GM')
 }
 
@@ -119,6 +125,13 @@ export default async function globalSetup() {
     await injectModuleSettings(page)
     await context.storageState({ path: AUTH_FILE })
     console.log(`[globalSetup] Auth state saved to ${AUTH_FILE}`)
+
+    // Foundry permits a single active GM connection. Leave the game cleanly so
+    // the slot is free for the setup/test projects that reuse this auth state —
+    // otherwise the next GM join races our still-open session and #sidebar never
+    // appears. The session cookie (already saved above) stays valid for rejoin.
+    await page.evaluate(() => globalThis.game?.logOut?.()).catch(() => {})
+    await new Promise((r) => setTimeout(r, 3000))
   } finally {
     await browser.close()
   }
