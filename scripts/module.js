@@ -39,7 +39,7 @@ let _platformSystemSlug = null
 /**
  * CFG campaign ids that have linked THIS Foundry world via the N:M join
  * (`campaign_foundry_worlds`). Populated by `_resolveLinkedCampaigns` in
- * the ready hook. Per-campaign flows (`_reportSystem`,
+ * the ready hook. Per-campaign flows (`_resolveFeatureMode`,
  * `_checkRecommendedModules`) iterate this list; an empty list is
  * normal for unlinked worlds and just skips those flows.
  * @type {string[]}
@@ -292,7 +292,7 @@ Hooks.once('ready', async () => {
   // Report system to each linked campaign and check recommended modules
   // for each. Link this Foundry user to their platform account in parallel.
   await Promise.allSettled([
-    _reportSystem(),
+    _resolveFeatureMode(),
     game.user.isGM ? _checkRecommendedModules() : Promise.resolve(),
     // #339 — POST `game.modules` to CFG so the platform UI can list what's
     // installed in this Foundry world. GM-only; non-fatal on failure.
@@ -421,31 +421,29 @@ async function _resolveLinkedCampaigns() {
 }
 
 /**
- * Report this Foundry world's game system to each linked campaign and
- * adopt the FIRST linked campaign's `featureMode` + `platformSystemSlug`
- * for plugin-local state. Only the GM sends the PATCH; all users
- * benefit from the resulting feature-mode banner.
+ * Adopt the FIRST linked campaign's `featureMode` + `platformSystemSlug` for
+ * plugin-local state by READING its Foundry integration status. featureMode is
+ * derived server-side from the campaign's configured game system — there is no
+ * report-by-PATCH anymore (the old single-campaign `/api/campaigns/{id}/foundry`
+ * PATCH was retired). Every user can read it, so no GM gate.
  *
- * No-op when no campaigns are linked.
+ * No-op when no campaigns are linked (the world plays in 'narrative' mode).
  */
-async function _reportSystem() {
+async function _resolveFeatureMode() {
   if (!_api || _linkedCampaignIds.length === 0) return
 
   try {
-    if (game.user.isGM) {
-      let firstResult = null
-      for (const campaignId of _linkedCampaignIds) {
-        try {
-          const result = await _api.patch(`/api/campaigns/${campaignId}/foundry`, {
-            foundrySystemId: game.system.id,
-          })
-          if (!firstResult && result) firstResult = result
-        } catch (err) {
-          console.warn(`CFG Core | System reporter failed for ${campaignId} (non-fatal):`, err?.message ?? err)
+    for (const campaignId of _linkedCampaignIds) {
+      try {
+        const { foundry } = (await _api.getFoundryStatus(campaignId)) ?? {}
+        if (foundry?.featureMode) {
+          _featureMode = foundry.featureMode
+          _platformSystemSlug = foundry.platformSystemSlug ?? null
+          break // first linked campaign wins
         }
+      } catch (err) {
+        console.warn(`CFG Core | featureMode resolve failed for ${campaignId} (non-fatal):`, err?.message ?? err)
       }
-      if (firstResult?.featureMode) _featureMode = firstResult.featureMode
-      if (firstResult?.platformSystemSlug) _platformSystemSlug = firstResult.platformSystemSlug
     }
 
     console.log(
@@ -454,7 +452,7 @@ async function _reportSystem() {
         : `CFG Core | featureMode: narrative`,
     )
   } catch (err) {
-    console.warn('CFG Core | System reporter failed (non-fatal):', err?.message ?? err)
+    console.warn('CFG Core | featureMode resolution failed (non-fatal):', err?.message ?? err)
   }
 }
 

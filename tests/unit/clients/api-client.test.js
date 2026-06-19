@@ -247,36 +247,36 @@ describe('named campaign methods', () => {
     mockFetch.mockResolvedValue(makeResponse(200, {}))
   })
 
-  test('getCampaign() hits /api/campaigns/{id}', async () => {
+  test('getCampaign() hits /api/v1/player/campaigns/{id}', async () => {
     await api.getCampaign('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1')
     expect(mockFetch.mock.calls[0][1].method).toBe('GET')
   })
 
-  test('getFoundryConfig() hits /api/campaigns/{id}/foundry/config', async () => {
+  test('getFoundryConfig() hits /api/v1/player/campaigns/{id}/foundry/config', async () => {
     await api.getFoundryConfig('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/foundry/config')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/foundry/config')
   })
 
-  test('updateFoundry() PATCHes /api/campaigns/{id}/foundry', async () => {
-    await api.updateFoundry('camp-1', { foundrySystemId: 'dnd5e' })
-    expect(mockFetch.mock.calls[0][1].method).toBe('PATCH')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/foundry')
+  test('getFoundryStatus() GETs /api/v1/player/campaigns/{id}/foundry', async () => {
+    await api.getFoundryStatus('camp-1')
+    expect(mockFetch.mock.calls[0][1].method).toBe('GET')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/foundry')
   })
 
-  test('getParties() hits /api/campaigns/{id}/parties', async () => {
+  test('getParties() hits /api/v1/player/campaigns/{id}/parties', async () => {
     await api.getParties('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/parties')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/parties')
   })
 
-  test('getActiveSession() hits /api/campaigns/{id}/sessions/active', async () => {
+  test('getActiveSession() hits /api/v1/player/campaigns/{id}/sessions/active', async () => {
     await api.getActiveSession('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/sessions/active')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/sessions/active')
   })
 
-  test('getQuests() hits /api/campaigns/{id}/quests', async () => {
+  test('getQuests() hits /api/v1/player/campaigns/{id}/quests', async () => {
     await api.getQuests('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/quests')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/quests')
   })
 
   test('getQuests() appends query params', async () => {
@@ -284,31 +284,22 @@ describe('named campaign methods', () => {
     expect(mockFetch.mock.calls[0][0]).toContain('partyId=p1')
   })
 
-  test('updateQuest() PATCHes /api/campaigns/{id}/quests/{questId}', async () => {
+  test('updateQuest() PATCHes /api/v1/player/campaigns/{id}/quests/{questId}', async () => {
     await api.updateQuest('camp-1', 'q-1', { status: 'complete' })
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toContain('/api/campaigns/camp-1/quests/q-1')
+    expect(url).toContain('/api/v1/player/campaigns/camp-1/quests/q-1')
     expect(opts.method).toBe('PATCH')
   })
 
-  test('joinVoice() POSTs to /api/campaigns/{id}/stream/webrtc/join', async () => {
-    mockFetch.mockResolvedValueOnce(makeResponse(200, { token: 'tok', url: 'ws://lk', roomName: 'room' }))
-    const result = await api.joinVoice('camp-1')
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toContain('/api/campaigns/camp-1/stream/webrtc/join')
-    expect(opts.method).toBe('POST')
-    expect(result.token).toBe('tok')
-  })
-
-  test('getJournal() hits /api/campaigns/{id}/journal', async () => {
+  test('getJournal() hits /api/v1/player/campaigns/{id}/journal', async () => {
     await api.getJournal('camp-1')
-    expect(mockFetch.mock.calls[0][0]).toContain('/api/campaigns/camp-1/journal')
+    expect(mockFetch.mock.calls[0][0]).toContain('/api/v1/player/campaigns/camp-1/journal')
   })
 
-  test('gmAssist() POSTs prompt to /api/campaigns/{id}/gm-assist', async () => {
+  test('gmAssist() POSTs prompt to /api/v1/player/campaigns/{id}/gm-assist', async () => {
     await api.gmAssist('camp-1', 'describe the dungeon')
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toContain('/api/campaigns/camp-1/gm-assist')
+    expect(url).toContain('/api/v1/player/campaigns/camp-1/gm-assist')
     expect(opts.method).toBe('POST')
     expect(JSON.parse(opts.body).prompt).toBe('describe the dungeon')
   })

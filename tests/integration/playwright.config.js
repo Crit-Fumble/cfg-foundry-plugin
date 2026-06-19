@@ -3,13 +3,12 @@
  *
  * Runs against a local FoundryVTT container (port 30000).
  * Start the container first: npm run test:foundry:up (from package root)
+ * Provision the Core fixtures (for the self-hosted/link specs) with:
+ *   npm run test:foundry:provision
  *
- * Two test projects:
- *   core-hosted  — API client uses session cookies (no API key set)
- *   self-hosted  — API client uses cfk_ Bearer token (CORE_TEST_API_KEY required)
- *
- * Both depend on the shared auth setup project, which logs into Foundry as GM
- * and injects module settings into the running world.
+ * Projects:
+ *   setup        — logs into Foundry as GM, enables the module, injects settings
+ *   integration  — the world-centric specs under ./specs (depends on setup)
  */
 
 import { defineConfig, devices } from '@playwright/test'
@@ -52,16 +51,8 @@ export default defineConfig({
       testMatch: 'auth.setup.js',
     },
     {
-      name: 'core-hosted',
-      testDir: './core-hosted',
-      dependencies: ['setup'],
-      use: {
-        storageState: join(__dirname, '../.auth/foundry.json'),
-      },
-    },
-    {
-      name: 'self-hosted',
-      testDir: './self-hosted',
+      name: 'integration',
+      testDir: './specs',
       dependencies: ['setup'],
       use: {
         storageState: join(__dirname, '../.auth/foundry.json'),

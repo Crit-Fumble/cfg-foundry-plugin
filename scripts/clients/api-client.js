@@ -19,7 +19,7 @@
  *   // Self-hosted (API key)
  *   const api = new CoreAPIClient('https://core.crit-fumble.com', 'cfk_yourkey')
  *   const data = await api.get('/api/v1/player/campaigns/my-campaign/quests')
- *   await api.patch('/api/v1/player/campaigns/my-campaign/foundry', { foundrySystemId: 'dnd5e' })
+ *   const { foundry } = await api.getFoundryStatus('my-campaign') // featureMode, etc.
  */
 
 'use strict'
@@ -137,19 +137,26 @@ export class CoreAPIClient {
 
   // ── Campaign endpoints ────────────────────────────────────────────────────
 
-  /** GET /api/campaigns/{id} */
+  /** GET /api/v1/player/campaigns/{id} */
   getCampaign(id) {
-    return this.get(`/api/campaigns/${id}`)
+    return this.get(`/api/v1/player/campaigns/${id}`)
   }
 
-  /** GET /api/campaigns/{id}/foundry/config */
+  /** GET /api/v1/player/campaigns/{id}/foundry/config */
   getFoundryConfig(id) {
-    return this.get(`/api/campaigns/${id}/foundry/config`)
+    return this.get(`/api/v1/player/campaigns/${id}/foundry/config`)
   }
 
-  /** PATCH /api/campaigns/{id}/foundry */
-  updateFoundry(id, data) {
-    return this.patch(`/api/campaigns/${id}/foundry`, data)
+  /**
+   * GET /api/v1/player/campaigns/{id}/foundry
+   * Foundry integration status for a campaign — `featureMode`, `platformSystemSlug`,
+   * `foundrySystemId`, `isLinked`, heartbeat. featureMode is derived server-side
+   * from the campaign's configured game system; the plugin reads it (it is not
+   * reported by PATCH — the old `/api/campaigns/{id}/foundry` PATCH was retired
+   * along with the single-campaign model).
+   */
+  getFoundryStatus(id) {
+    return this.get(`/api/v1/player/campaigns/${id}/foundry`)
   }
 
   // ── Characters ────────────────────────────────────────────────────────────
@@ -211,59 +218,52 @@ export class CoreAPIClient {
 
   // ── Parties ───────────────────────────────────────────────────────────────
 
-  /** GET /api/campaigns/{id}/parties */
+  /** GET /api/v1/player/campaigns/{id}/parties */
   getParties(id) {
-    return this.get(`/api/campaigns/${id}/parties`)
+    return this.get(`/api/v1/player/campaigns/${id}/parties`)
   }
 
   // ── Sessions ──────────────────────────────────────────────────────────────
 
-  /** GET /api/campaigns/{id}/sessions/active */
+  /** GET /api/v1/player/campaigns/{id}/sessions/active */
   getActiveSession(id) {
-    return this.get(`/api/campaigns/${id}/sessions/active`)
+    return this.get(`/api/v1/player/campaigns/${id}/sessions/active`)
   }
 
-  /** GET /api/campaigns/{id}/sessions */
+  /** GET /api/v1/player/campaigns/{id}/sessions */
   getSessions(id) {
-    return this.get(`/api/campaigns/${id}/sessions`)
+    return this.get(`/api/v1/player/campaigns/${id}/sessions`)
   }
 
   // ── Quests ────────────────────────────────────────────────────────────────
 
-  /** GET /api/campaigns/{id}/quests */
+  /** GET /api/v1/player/campaigns/{id}/quests */
   getQuests(id, params = {}) {
     const qs = new URLSearchParams(params).toString()
-    return this.get(`/api/campaigns/${id}/quests${qs ? `?${qs}` : ''}`)
+    return this.get(`/api/v1/player/campaigns/${id}/quests${qs ? `?${qs}` : ''}`)
   }
 
-  /** PATCH /api/campaigns/{id}/quests/{questId} */
+  /** PATCH /api/v1/player/campaigns/{id}/quests/{questId} */
   updateQuest(campaignId, questId, data) {
-    return this.patch(`/api/campaigns/${campaignId}/quests/${questId}`, data)
-  }
-
-  // ── Voice ─────────────────────────────────────────────────────────────────
-
-  /** POST /api/campaigns/{id}/stream/webrtc/join — returns { token, url, roomName } */
-  joinVoice(id) {
-    return this.post(`/api/campaigns/${id}/stream/webrtc/join`, {})
+    return this.patch(`/api/v1/player/campaigns/${campaignId}/quests/${questId}`, data)
   }
 
   // ── Journal ───────────────────────────────────────────────────────────────
 
-  /** GET /api/campaigns/{id}/journal */
+  /** GET /api/v1/player/campaigns/{id}/journal */
   getJournal(id) {
-    return this.get(`/api/campaigns/${id}/journal`)
+    return this.get(`/api/v1/player/campaigns/${id}/journal`)
   }
 
   // ── GM Assist ─────────────────────────────────────────────────────────────
 
   /**
-   * POST /api/campaigns/{id}/gm-assist
+   * POST /api/v1/player/campaigns/{id}/gm-assist
    * @param {string} id  — campaign ID
    * @param {string} prompt
    * @returns {Promise<{response: string}>}
    */
   gmAssist(id, prompt) {
-    return this.post(`/api/campaigns/${id}/gm-assist`, { prompt })
+    return this.post(`/api/v1/player/campaigns/${id}/gm-assist`, { prompt })
   }
 }

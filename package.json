@@ -7,6 +7,7 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --coverage",
+    "test:foundry:provision": "node tests/integration/shared/provision-fixtures.mjs",
     "test:foundry:stage": "test -d tests/fixtures/.worlds-runtime || cp -R tests/fixtures/worlds tests/fixtures/.worlds-runtime",
     "test:foundry:up": "npm run test:foundry:stage && docker compose --env-file tests/.env.test -f tests/docker-compose.yml up -d && node tests/integration/shared/foundry-setup.mjs",
     "test:foundry": "npx playwright test --config tests/integration/playwright.config.js",

@@ -28,8 +28,8 @@ const AUTH_FILE = join(AUTH_DIR, 'foundry.json')
 
 const FOUNDRY_URL = process.env.FOUNDRY_URL || 'http://localhost:30000'
 const CORE_API_URL = process.env.CORE_API_URL || 'http://localhost:10001'
-const CORE_TEST_CAMPAIGN = process.env.CORE_TEST_CAMPAIGN_ID || ''
 const CORE_TEST_API_KEY = process.env.CORE_TEST_API_KEY || ''
+const FIXTURE = process.env.CORE_TEST_FOUNDRY_FIXTURE ? JSON.parse(process.env.CORE_TEST_FOUNDRY_FIXTURE) : null
 
 const POLL_MS = 5_000
 const TIMEOUT_MS = 180_000
@@ -83,21 +83,25 @@ async function enableModule(page) {
 }
 
 async function injectModuleSettings(page) {
-  // Always set coreApiUrl + apiKey so the core-hosted specs have a defined base
-  // URL even without a provisioned campaign; campaignId only when configured.
+  // World-centric baseline: the API base URL, the self-hosted key, and a
+  // standalone (unlinked) installationId. Specs switch installationId per
+  // scenario to drive which campaigns the world resolves as linked. There is no
+  // `campaignId` — that single-campaign setting was retired in favour of the
+  // N:M linkedCampaignIds() join.
+  const installationId = FIXTURE?.installations?.standalone ?? ''
   await page.evaluate(
-    ({ moduleId, apiUrl, campaignId, apiKey }) => {
+    ({ moduleId, apiUrl, apiKey, installationId }) => {
       if (apiUrl) game.settings.set(moduleId, 'coreApiUrl', apiUrl)
-      if (campaignId) game.settings.set(moduleId, 'campaignId', campaignId)
       game.settings.set(moduleId, 'apiKey', apiKey || '')
+      if (installationId) game.settings.set(moduleId, 'installationId', installationId)
     },
-    { moduleId: MODULE_ID, apiUrl: CORE_API_URL, campaignId: CORE_TEST_CAMPAIGN, apiKey: CORE_TEST_API_KEY },
+    { moduleId: MODULE_ID, apiUrl: CORE_API_URL, apiKey: CORE_TEST_API_KEY, installationId },
   )
 
   console.log(
-    `[globalSetup] Module settings injected — apiUrl: ${CORE_API_URL}, campaign: ${CORE_TEST_CAMPAIGN || '(none)'}, apiKey: ${
+    `[globalSetup] Module settings — apiUrl: ${CORE_API_URL}, apiKey: ${
       CORE_TEST_API_KEY ? '(set)' : '(none)'
-    }`,
+    }, installation: ${installationId || '(none)'}`,
   )
 }
 
