@@ -2,17 +2,18 @@
 /**
  * Foundry plugin manifest + zip builder (#531)
  *
- * Foundry's update-check fetches the URL in module.json `manifest`. Today that
- * URL hits Next.js and returns HTML, breaking every world load with
- * `Unexpected token '<'`. This script produces:
+ * Produces a self-contained, manually-installable bundle under the plugin's
+ * (gitignored) dist/:
  *
- *   apps/core-browser/public/foundry/modules/crit-fumble-core/
+ *   dist/
  *     module.json                            ← copy of plugin manifest
- *     crit-fumble-core-<version>.zip         ← downloadable plugin bundle
+ *     crit-fumble-core-<version>.zip         ← packed plugin bundle
  *
- * Next.js serves files in /public verbatim with the right Content-Type, so
- * Foundry sees `application/json` for the manifest and `application/zip` for
- * the download.
+ * NOTE on distribution: Foundry's auto-update fetches the URLs in module.json
+ * (`manifest` → raw.githubusercontent, `download` → repo archive). CFG-hosted
+ * worlds get the plugin copied straight from source on container launch
+ * (syncCfgPlugin). So this zip is NOT in the auto-update path — it's a
+ * convenience artifact for manual installs / release assets.
  *
  * No third-party deps — uses Node's built-in zlib for DEFLATE and a hand-rolled
  * minimum-viable ZIP writer. Foundry only needs the standard local-file +
@@ -32,9 +33,13 @@ import { fileURLToPath } from 'url'
 import { deflateRawSync } from 'zlib'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const PLUGIN_ROOT = resolve(HERE, '..') // packages/foundry-plugin
-const REPO_ROOT = resolve(PLUGIN_ROOT, '..', '..')
-const PUBLIC_OUT = resolve(REPO_ROOT, 'apps/core-browser/public/foundry/modules/crit-fumble-core')
+const PLUGIN_ROOT = resolve(HERE, '..')
+// Self-contained build output (gitignored). The old monorepo wrote this into
+// apps/core-browser/public so Next.js served it; post-monorepo the plugin is its
+// own repo and distribution is the GitHub URLs in module.json (manifest →
+// raw.githubusercontent, download → repo archive), so we just emit a local,
+// manually-installable bundle here — no cross-repo path assumptions.
+const DIST_OUT = resolve(PLUGIN_ROOT, 'dist')
 
 // Files / dirs Foundry needs at runtime. Anything else (tests, docs, the build
 // script itself, package-lock.json) stays out of the zip.
@@ -185,24 +190,21 @@ function buildZip(files) {
 
 // ── Write outputs ───────────────────────────────────────────────────────────
 
-mkdirSync(PUBLIC_OUT, { recursive: true })
+mkdirSync(DIST_OUT, { recursive: true })
 
 const zipName = `crit-fumble-core-${version}.zip`
-const zipPath = join(PUBLIC_OUT, zipName)
-const manifestOut = join(PUBLIC_OUT, 'module.json')
+const zipPath = join(DIST_OUT, zipName)
+const manifestOut = join(DIST_OUT, 'module.json')
 
-// Public manifest: same as the source manifest, with `download` pointing at
-// the zip we just built. Keep `manifest` self-referential so Foundry's update
-// check loops back here.
-const publicManifest = {
-  ...manifest,
-  download: `https://core.crit-fumble.com/foundry/modules/crit-fumble-core/${zipName}`,
-}
+// Bundle the source manifest verbatim alongside the zip — the auto-update URLs
+// (manifest/download) already live in module.json and aren't rewritten here,
+// since this artifact isn't served from a fixed URL.
+const publicManifest = { ...manifest }
 
 const zipBuf = buildZip(entries)
 writeFileSync(zipPath, zipBuf)
 writeFileSync(manifestOut, JSON.stringify(publicManifest, null, 2) + '\n')
 
 const sizeKb = (zipBuf.length / 1024).toFixed(1)
-console.log(`[build-zip] wrote ${entries.length} files into ${relative(REPO_ROOT, zipPath)} (${sizeKb} KB)`)
-console.log(`[build-zip] wrote manifest to ${relative(REPO_ROOT, manifestOut)}`)
+console.log(`[build-zip] wrote ${entries.length} files into ${relative(PLUGIN_ROOT, zipPath)} (${sizeKb} KB)`)
+console.log(`[build-zip] wrote manifest to ${relative(PLUGIN_ROOT, manifestOut)}`)
