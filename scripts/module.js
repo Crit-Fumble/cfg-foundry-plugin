@@ -22,13 +22,14 @@ import { mountConnectionBanner } from './views/connection-banner.js'
 import { maybeShowFirstRunPrompt } from './views/first-run-prompt.js'
 import { syncInstalledModules } from './sync/modules-sync.js'
 import { ActivityHeartbeat } from './services/activity-heartbeat.js'
+import { ProvisionDrain } from './services/provision-drain.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-const MODULE_VERSION = '2.0.0'
+const MODULE_VERSION = '2.2.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -51,6 +52,9 @@ let _api = null
 
 /** @type {ActivityHeartbeat|null} */
 let _activityHeartbeat = null
+
+/** @type {ProvisionDrain|null} */
+let _provisionDrain = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -310,6 +314,16 @@ Hooks.once('ready', async () => {
   if (heartbeatInstallId) {
     _activityHeartbeat = new ActivityHeartbeat(_api, heartbeatInstallId)
     _activityHeartbeat.start()
+  }
+
+  // Runtime player provisioning (cfs live-world SSO). When this client is a GM,
+  // drain the platform's pending-provision queue — create the reserved Foundry
+  // User docs (Foundry only lets a GM do this) so the proxy can SSO invited
+  // players into a RUNNING world. Single-GM election lives in the class, so it's
+  // safe that this starts in every GM browser AND the headless service-GM.
+  if (heartbeatInstallId && game.user.isGM) {
+    _provisionDrain = new ProvisionDrain(_api, heartbeatInstallId)
+    _provisionDrain.start()
   }
 
   // CFG sidebar — Shell-based dock surfaced in the Foundry viewport. Auth

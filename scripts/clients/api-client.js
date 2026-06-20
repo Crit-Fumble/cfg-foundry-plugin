@@ -266,4 +266,33 @@ export class CoreAPIClient {
   gmAssist(id, prompt) {
     return this.post(`/api/v1/player/campaigns/${id}/gm-assist`, { prompt })
   }
+
+  // ── Runtime player provisioning ───────────────────────────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/pending-provisions?world={worldId}
+   * The reserved Foundry seats a connected GM must create so the proxy can SSO
+   * invited players into the LIVE world (Foundry only lets a GM create User
+   * docs). Owner-session / installation-key scoped.
+   * @param {string} installationId
+   * @param {string} worldId — Foundry world folder (`game.world.id`)
+   * @returns {Promise<{ data: Array<{ nativeUserId: string, foundryUsername: string, role: number, password: string }> }>}
+   */
+  getPendingProvisions(installationId, worldId) {
+    return this.get(
+      `/api/v1/installations/${installationId}/foundry/pending-provisions?world=${encodeURIComponent(worldId)}`,
+    )
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/pending-provisions/confirm
+   * Mark a reserved seat provisioned once its Foundry User doc has been created;
+   * this is what flips the proxy SSO gate on for that player.
+   */
+  confirmProvision(installationId, worldId, nativeUserId) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/pending-provisions/confirm`, {
+      world: worldId,
+      nativeUserId,
+    })
+  }
 }
