@@ -12,11 +12,12 @@ function api() {
 }
 
 describe('ActivityHeartbeat', () => {
-  it('reports the active count when this client is the elected (smallest-id) reporter', async () => {
+  it('reports active-user + human-GM counts when elected reporter, EXCLUDING the service-GM', async () => {
     game.users = [
-      { id: 'a', active: true },
-      { id: 'b', active: true },
-      { id: 'c', active: false },
+      { id: 'a', active: true, isGM: true }, // human GM
+      { id: 'b', active: true, isGM: false }, // player
+      { id: 'c', active: false, isGM: true }, // offline GM
+      { id: 'CFGServiceGM0000', active: true, isGM: true }, // headless service-GM — excluded
     ]
     game.user = { id: 'a' }
     game.world = { id: 'eberron-native' }
@@ -25,10 +26,19 @@ describe('ActivityHeartbeat', () => {
     await new ActivityHeartbeat(a, 'inst-1')._tick()
 
     expect(a.post).toHaveBeenCalledWith('/api/v1/installations/inst-1/activity', {
-      activeUserCount: 2,
+      activeUserCount: 2, // a + b (service-GM excluded, c offline)
+      activeGmCount: 1, // a only (b is a player, c offline, service-GM excluded)
       source: 'foundry-plugin',
       activeWorldId: 'eberron-native',
     })
+  })
+
+  it('the service-GM is never the elected reporter (only it active → no heartbeat)', async () => {
+    game.users = [{ id: 'CFGServiceGM0000', active: true, isGM: true }]
+    game.user = { id: 'CFGServiceGM0000' }
+    const a = api()
+    await new ActivityHeartbeat(a, 'inst-1')._tick()
+    expect(a.post).not.toHaveBeenCalled()
   })
 
   it('stays quiet when another active client is the elected reporter', async () => {

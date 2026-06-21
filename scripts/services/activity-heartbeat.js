@@ -27,6 +27,12 @@
 const LOG = 'CFG Core | Activity |'
 const HEARTBEAT_MS = 60_000 // Matches the server's 3-min staleness window.
 
+// Matches SERVICE_GM_NATIVE_ID in cfg-core-server (admin-key.ts). The headless
+// service-GM is role-4 but must be excluded from the reported counts: its
+// presence must not keep the world alive (uptime billing), and it must not
+// register as a human GM (which would suppress its own provisioning trigger).
+const SERVICE_GM_ID = 'CFGServiceGM0000'
+
 export class ActivityHeartbeat {
   /**
    * @param {import('../clients/api-client.js').CoreAPIClient} apiClient
@@ -53,9 +59,12 @@ export class ActivityHeartbeat {
     }
   }
 
-  /** Am I the elected reporter for this tick? Smallest active-user id wins. */
+  /** Am I the elected reporter for this tick? Smallest active HUMAN id wins. The
+   *  service-GM is excluded so it never becomes the reporter — when only it is
+   *  connected there is intentionally NO heartbeat, so the world's activity goes
+   *  stale and idles out rather than the service-GM keeping it alive. */
   _isReporter() {
-    const activeIds = game.users.filter((u) => u.active).map((u) => u.id)
+    const activeIds = game.users.filter((u) => u.active && u.id !== SERVICE_GM_ID).map((u) => u.id)
     if (activeIds.length === 0) return false
     activeIds.sort()
     return game.user?.id === activeIds[0]
@@ -64,9 +73,14 @@ export class ActivityHeartbeat {
   async _tick() {
     try {
       if (!this._isReporter()) return
-      const activeUserCount = game.users.filter((u) => u.active).length
+      // Count HUMANS only — exclude the headless service-GM from both signals.
+      const humans = game.users.filter((u) => u.active && u.id !== SERVICE_GM_ID)
+      const activeUserCount = humans.length
+      const activeGmCount = humans.filter((u) => u.isGM).length
       await this._api.post(`/api/v1/installations/${this._installationId}/activity`, {
         activeUserCount,
+        // Zero human GMs + a queued provision is what triggers the service-GM.
+        activeGmCount,
         source: 'foundry-plugin',
         // Foundry's native world id — Core maps it to the platform world to
         // resolve a per-world idle-shutdown override.
