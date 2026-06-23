@@ -14,7 +14,7 @@
 
 import { CoreAPIClient } from './clients/api-client.js'
 import { CfgCampaignLinksDialog } from './views/cfg-campaign-links.js'
-import { mountCFGSidebar } from './views/sidebar.js'
+// import { mountCFGSidebar } from './views/sidebar.js' // disabled — see the mount call below
 import { FilePickerCompat } from './utils/file-picker-compat.js'
 import { registerCfgLinkMenu } from './views/cfg-link-settings.js'
 import { applyHostedContext, getHostKind } from './auth/host-context.js'
@@ -326,14 +326,15 @@ Hooks.once('ready', async () => {
     _provisionDrain.start()
   }
 
-  // CFG sidebar — Shell-based dock surfaced in the Foundry viewport. Auth
-  // flows through the same-origin session cookie (cfg-hosted) or the
-  // world-scoped pair-flow apiKey (self-hosted) — both attach to the
-  // iframe automatically via `credentials: 'include'`.
-  mountCFGSidebar({
-    coreUrl: apiUrl,
-    token: apiKey || null,
-  })
+  // CFG sidebar — DISABLED 2026-06-22. The collapsible "CFG" rail loaded an
+  // iframe to /foundry/sidebar, which 404s, and the rail isn't the surface we
+  // want anyway. Hidden pending a proper ApplicationV2 "Surface" window inside
+  // Foundry (tracked separately). sidebar.js (mount/unmount + its unit test) is
+  // kept intact; re-enable by uncommenting the import + this call.
+  // mountCFGSidebar({
+  //   coreUrl: apiUrl,
+  //   token: apiKey || null,
+  // })
 
   // Offline banner (#699). Subscribes to `pluginConnectionState` and surfaces
   // a small fixed-position pill whenever fetchCfg's last call hit the network
