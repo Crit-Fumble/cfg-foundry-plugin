@@ -19,6 +19,7 @@
 'use strict'
 
 import { setConnectionStatus } from './connection-state.js'
+import { getHostKind } from './host-context.js'
 
 const MODULE_ID = 'crit-fumble-core'
 const PAIR_PLATFORM = 'foundry'
@@ -84,7 +85,12 @@ export function getCfgApiKey() {
  */
 export async function fetchCfg(path, init = {}) {
   const endpoint = getCfgEndpoint()
-  const apiKey = getCfgApiKey()
+  // cfg-hosted Foundry is served same-origin with core, so the same-origin
+  // session cookie is the auth — never the (possibly-stale) pair-flow API key.
+  // Reserve the Bearer key + the cookie-less `credentials: 'omit'` path for
+  // genuinely self-hosted installs, whose Foundry origin ≠ CFG origin. (#43)
+  const cfgHosted = getHostKind() === 'cfg-hosted'
+  const apiKey = cfgHosted ? null : getCfgApiKey()
 
   const headers = new Headers(init.headers || {})
   // Strip caller-supplied auth — only this helper sets it.
@@ -105,9 +111,10 @@ export async function fetchCfg(path, init = {}) {
     response = await fetch(`${endpoint}${path}`, {
       ...init,
       headers,
-      // Self-hosted Foundry origin ≠ CFG origin, so cookies aren't usable.
-      // The Bearer token is the only auth on this path.
-      credentials: 'omit',
+      // cfg-hosted: same-origin → send the session cookie (the auth). Self-hosted:
+      // Foundry origin ≠ CFG origin, cookies aren't usable, the Bearer key is the
+      // only auth — omit cookies so a foreign cookie can't ride along. (#43)
+      credentials: cfgHosted ? 'include' : 'omit',
       signal: init.signal ?? controller.signal,
     })
   } catch (err) {

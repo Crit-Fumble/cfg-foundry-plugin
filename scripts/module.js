@@ -280,7 +280,12 @@ Hooks.once('ready', async () => {
   }
 
   const apiUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
-  const apiKey = game.settings.get(MODULE_ID, 'apiKey') || null
+  // cfg-hosted Foundry is served same-origin with core (/servers/foundryvtt/<slug>/…),
+  // so the same-origin session cookie is the auth — never the pair-flow API key,
+  // even if a stale one is stored from a prior self-hosted pair (the stale key
+  // 401s on the dev stack and breaks plugin↔core calls — #43). Reserve the key
+  // for genuinely self-hosted installs.
+  const apiKey = getHostKind() === 'cfg-hosted' ? null : game.settings.get(MODULE_ID, 'apiKey') || null
 
   // Core-hosted: apiKey null → session cookie auth.  Self-hosted: apiKey set → Bearer token.
   _api = new CoreAPIClient(apiUrl, apiKey)

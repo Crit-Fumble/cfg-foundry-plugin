@@ -40,7 +40,9 @@ describe('fetchCfg', () => {
     settingsStore({ coreApiUrl: 'https://cfg.test', apiKey: 'cfk_secret' })
     globalThis.fetch = jest.fn(async () => mockResponse({ json: { ok: true } }))
     globalThis.window = globalThis.window || {}
+    // Default: self-hosted (no cfg-hosted proxy route, no injected global).
     globalThis.window.location = { origin: 'https://foundry.local' }
+    delete globalThis.window.__CFG_HOSTED_CONTEXT__
   })
 
   it('attaches Bearer token from settings and strips caller-supplied auth', async () => {
@@ -72,6 +74,37 @@ describe('fetchCfg', () => {
     await fetchCfg('/x')
     const [url] = fetch.mock.calls[0]
     expect(url).toBe('https://core.crit-fumble.com/x')
+  })
+
+  // #43 — a cfg-hosted Foundry is served same-origin with core, so the session
+  // cookie is the auth. A stale stored API key (from a prior self-hosted pair)
+  // must NOT ride along as a Bearer — that's what 401'd the plugin↔core calls.
+  it('cfg-hosted (proxy route): uses the session cookie and never sends the stored API key', async () => {
+    globalThis.window.location = {
+      origin: 'https://core.crit-fumble.com',
+      pathname: '/servers/foundryvtt/abc123/game',
+    }
+    const { fetchCfg } = await loadPairFlow()
+    await fetchCfg('/api/v1/account/user')
+    const [url, init] = fetch.mock.calls[0]
+    expect(url).toBe('https://cfg.test/api/v1/account/user')
+    expect(init.credentials).toBe('include')
+    expect(init.headers.has('Authorization')).toBe(false)
+  })
+
+  it('cfg-hosted (injected global): cookie auth — the injected key is not sent as Bearer', async () => {
+    globalThis.window.location = { origin: 'https://core.crit-fumble.com', pathname: '/game' }
+    globalThis.window.__CFG_HOSTED_CONTEXT__ = {
+      endpoint: 'https://core.crit-fumble.com',
+      apiKey: 'cfk_injected',
+      installationId: 'inst-1',
+      cfgUserId: 'user-1',
+    }
+    const { fetchCfg } = await loadPairFlow()
+    await fetchCfg('/api/v1/account/user')
+    const [, init] = fetch.mock.calls[0]
+    expect(init.credentials).toBe('include')
+    expect(init.headers.has('Authorization')).toBe(false)
   })
 })
 
