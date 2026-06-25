@@ -304,3 +304,30 @@ describe('named campaign methods', () => {
     expect(JSON.parse(opts.body).prompt).toBe('describe the dungeon')
   })
 })
+
+// ── World actor mirror (cfs#17) ─────────────────────────────────────────────────
+
+describe('pushWorldActors', () => {
+  let api
+  beforeEach(() => {
+    api = new CoreAPIClient('https://core.crit-fumble.com')
+    mockFetch.mockResolvedValue(makeResponse(200, { ok: true }))
+  })
+
+  test('POSTs to /api/v1/foundry/worlds/{worldId}/actors with the body', async () => {
+    await api.pushWorldActors('my-world', { systemId: 'dnd5e', actors: [{ _id: 'a1', name: 'Hero' }] })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://core.crit-fumble.com/api/v1/foundry/worlds/my-world/actors')
+    expect(opts.method).toBe('POST')
+    const body = JSON.parse(opts.body)
+    expect(body.systemId).toBe('dnd5e')
+    expect(body.actors).toEqual([{ _id: 'a1', name: 'Hero' }])
+  })
+
+  test('url-encodes the world id', async () => {
+    await api.pushWorldActors('world/with spaces', { reconcile: true, keepActorIds: [] })
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      'https://core.crit-fumble.com/api/v1/foundry/worlds/world%2Fwith%20spaces/actors',
+    )
+  })
+})

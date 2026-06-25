@@ -23,6 +23,7 @@ import { maybeShowFirstRunPrompt } from './views/first-run-prompt.js'
 import { syncInstalledModules } from './sync/modules-sync.js'
 import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 import { ProvisionDrain } from './services/provision-drain.js'
+import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -55,6 +56,9 @@ let _activityHeartbeat = null
 
 /** @type {ProvisionDrain|null} */
 let _provisionDrain = null
+
+/** @type {WorldActorSnapshot|null} */
+let _worldActorSnapshot = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -329,6 +333,16 @@ Hooks.once('ready', async () => {
   if (heartbeatInstallId && game.user.isGM) {
     _provisionDrain = new ProvisionDrain(_api, heartbeatInstallId)
     _provisionDrain.start()
+  }
+
+  // Whole-world actor mirror (cfs#17) — snapshot every actor to the platform so
+  // their sheets stay viewable on the web once this world goes offline. GM-only
+  // (a GM sees all actors with full data); the single-reporter election lives in
+  // the class. Runs for any linked world — installation key (cfg-hosted) OR a
+  // paired key (self-hosted), which is what makes self-hosted sheets viewable.
+  if ((heartbeatInstallId || apiKey) && game.user.isGM) {
+    _worldActorSnapshot = new WorldActorSnapshot(_api)
+    _worldActorSnapshot.start()
   }
 
   // CFG sidebar — DISABLED 2026-06-22. The collapsible "CFG" rail loaded an

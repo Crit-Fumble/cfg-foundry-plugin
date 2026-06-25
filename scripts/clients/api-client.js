@@ -216,6 +216,23 @@ export class CoreAPIClient {
     return this.post(`/api/v1/player/campaigns/${id}/foundry/sync`, { actors })
   }
 
+  // ── Whole-world actor mirror (cfs#17) ───────────────────────────────────────
+
+  /**
+   * POST /api/v1/foundry/worlds/{worldId}/actors
+   * Mirror the world's actors to the platform so they stay viewable when the
+   * VTT is offline. Same auth as the world-status callback (installation key /
+   * session-cookie fallback). Body modes combine: pass `actors` to upsert a
+   * batch, and/or `{ reconcile: true, keepActorIds }` to drop stale rows.
+   *
+   * @param {string} worldId — Foundry world folder (game.world.id)
+   * @param {{ systemId?: string|null, actors?: Array, reconcile?: boolean, keepActorIds?: string[] }} body
+   * @returns {Promise<{ ok: boolean, upserted: number, linked: number, skipped: number, removed: number }>}
+   */
+  pushWorldActors(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/actors`, body)
+  }
+
   // ── Parties ───────────────────────────────────────────────────────────────
 
   /** GET /api/v1/player/campaigns/{id}/parties */
