@@ -24,6 +24,8 @@ import { syncInstalledModules } from './sync/modules-sync.js'
 import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 import { ProvisionDrain } from './services/provision-drain.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
+import { CharacterSyncManager } from './services/character-sync.js'
+import { CharacterPullSync } from './services/character-pull-sync.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -59,6 +61,9 @@ let _provisionDrain = null
 
 /** @type {WorldActorSnapshot|null} */
 let _worldActorSnapshot = null
+
+/** @type {CharacterPullSync|null} */
+let _characterPullSync = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -343,6 +348,17 @@ Hooks.once('ready', async () => {
   if ((heartbeatInstallId || apiKey) && game.user.isGM) {
     _worldActorSnapshot = new WorldActorSnapshot(_api)
     _worldActorSnapshot.start()
+  }
+
+  // Core→Foundry character write-back (cfs#17 #147) — pull the platform's
+  // pending+core FoundryActorSync records for each linked campaign and apply the
+  // edited sheet to the live actor, then push it back to mark the record synced.
+  // GM-only (only a GM can write actors with full data); the single-reporter
+  // election lives in the class. Gated identically to the world-actor mirror —
+  // a linked installation (cfg-hosted) OR a paired key (self-hosted).
+  if ((heartbeatInstallId || apiKey) && game.user.isGM) {
+    _characterPullSync = new CharacterPullSync(_api, new CharacterSyncManager(_api), () => _linkedCampaignIds)
+    _characterPullSync.start()
   }
 
   // CFG sidebar — DISABLED 2026-06-22. The collapsible "CFG" rail loaded an

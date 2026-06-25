@@ -39,6 +39,20 @@ describe('mapCharacterToActorData', () => {
     expect(data.items[0].name).toBe('Longsword')
   })
 
+  it('reads the nested sheetData shape too (list GET / pull-loop)', async () => {
+    const character = {
+      name: 'Aria',
+      sheetData: {
+        characterSheetData: {
+          foundry: { actor: { name: 'Aria', type: 'character', system: { attributes: { hp: { value: 7, max: 12 } } } } },
+        },
+      },
+    }
+    const data = await mgr().mapCharacterToActorData(character)
+    expect(data.system.attributes.hp.value).toBe(7)
+    expect(data.type).toBe('character')
+  })
+
   it('defaults name/type/items when the stored actor omits them', async () => {
     const character = { name: 'Bob', characterSheetData: { foundry: { actor: { system: { pools: {} } } } } }
     const data = await mgr().mapCharacterToActorData(character)

@@ -284,7 +284,11 @@ export class CharacterSyncManager {
    * @returns {object} Foundry actor data
    */
   async mapCharacterToActorData(character) {
-    const stored = character?.characterSheetData?.foundry?.actor
+    // The sheet arrives either flat (`characterSheetData`, e.g. the single-
+    // character GET) or nested (`sheetData.characterSheetData`, the list GET that
+    // the pull-loop uses). Accept both so write-back applies the real foundry.actor.
+    const stored =
+      character?.characterSheetData?.foundry?.actor ?? character?.sheetData?.characterSheetData?.foundry?.actor
     if (stored && stored.system && typeof stored.system === 'object') {
       return {
         name: stored.name || character.name,

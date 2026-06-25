@@ -176,11 +176,14 @@ export class CoreAPIClient {
 
   /**
    * GET /api/v1/player/campaigns/{id}/foundry/sync
-   * Returns all FoundryActorSync records for the campaign (GM only).
+   * Returns all FoundryActorSync records for the campaign (GM only). Each record
+   * carries `{ id, foundryActorId, syncStatus, lastSyncFrom, character: { id, name,
+   * characterRole, ownerId } }` — the pull-loop reads `syncStatus === 'pending'`
+   * with `lastSyncFrom === 'core'` to find platform edits awaiting apply.
    * @param {string} id — campaign ID
    * @returns {Promise<{ syncs: Array }>}
    */
-  getActorSyncStatus(id) {
+  getSyncRecords(id) {
     return this.get(`/api/v1/player/campaigns/${id}/foundry/sync`)
   }
 
