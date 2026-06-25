@@ -273,11 +273,35 @@ export class CharacterSyncManager {
   }
 
   /**
-   * Map Core character sheet to Foundry dnd5e actor data
+   * Map a Core character to Foundry actor data.
+   *
+   * cfs#17 #147: the platform's canonical sheet IS a Foundry actor stored at
+   * `characterSheetData.foundry.actor`, so we pass its `system` (and items)
+   * through VERBATIM — no per-system field mapping. Falls back to the legacy
+   * normalized mapper only for pre-Phase-2 characters that have no foundry.actor.
+   *
    * @param {object} character - Character from API
    * @returns {object} Foundry actor data
    */
   async mapCharacterToActorData(character) {
+    const stored = character?.characterSheetData?.foundry?.actor
+    if (stored && stored.system && typeof stored.system === 'object') {
+      return {
+        name: stored.name || character.name,
+        type: stored.type || 'character',
+        system: stored.system,
+        items: Array.isArray(stored.items) ? stored.items : [],
+      }
+    }
+    return this._mapLegacyCharacterToActorData(character)
+  }
+
+  /**
+   * Legacy normalized → dnd5e mapper (pre-Phase-2 characters with no foundry.actor).
+   * @param {object} character - Character from API
+   * @returns {object} Foundry actor data
+   */
+  async _mapLegacyCharacterToActorData(character) {
     const { name, characterSheetData } = character
     const sheet = characterSheetData
 
