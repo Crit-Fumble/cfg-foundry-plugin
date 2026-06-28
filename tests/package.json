@@ -11,6 +11,9 @@
     "test:integration:core": "npx playwright test --config=integration/playwright.config.js --project=core-hosted",
     "test:integration:self": "npx playwright test --config=integration/playwright.config.js --project=self-hosted"
   },
+  "overrides": {
+    "js-yaml": "^4.2.0"
+  },
   "devDependencies": {
     "jest": "^29.7.0",
     "dotenv": "^17.4.2"

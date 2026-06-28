@@ -19,7 +19,8 @@
     "prepare": "husky"
   },
   "overrides": {
-    "picomatch": "^4.0.2"
+    "picomatch": "^4.0.2",
+    "js-yaml": "^4.2.0"
   },
   "devDependencies": {
     "husky": "^9.1.7",
