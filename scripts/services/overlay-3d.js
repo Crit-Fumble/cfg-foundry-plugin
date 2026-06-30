@@ -556,10 +556,9 @@ export class Overlay3D {
   }
 
   /**
-   * On-screen control bar (camera mode + view presets + a controls hint) so the
-   * camera isn't console-only. Lives inside the overlay container with its own
-   * pointer-events, so it stays clickable even in tracked mode (where the
-   * container passes the mouse through to Foundry).
+   * A slim, non-interactive on-screen hint showing the mouse-camera controls in
+   * orbit mode — the one thing a toolbar can't convey (drag to rotate/tilt). All
+   * the buttons live in the top-level "3D View" scene-control group now.
    */
   _buildControlBar() {
     if (!this._container || this._controlBar) return
@@ -570,80 +569,26 @@ export class Overlay3D {
       top: '6px',
       left: '50%',
       transform: 'translateX(-50%)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '6px',
-      padding: '5px 8px',
-      background: 'rgba(11,14,19,0.82)',
-      border: '1px solid rgba(255,255,255,0.12)',
+      padding: '5px 10px',
+      background: 'rgba(11,14,19,0.7)',
+      border: '1px solid rgba(255,255,255,0.1)',
       borderRadius: '8px',
       font: '12px/1 system-ui, sans-serif',
       color: '#cdd3da',
-      pointerEvents: 'auto',
+      pointerEvents: 'none', // non-interactive hint — controls are in the 3D scene-control group
       userSelect: 'none',
-      boxShadow: '0 2px 10px rgba(0,0,0,0.4)',
+      opacity: '0.7',
     })
-    const mkBtn = (label, title, onClick) => {
-      const b = document.createElement('button')
-      b.textContent = label
-      b.title = title
-      Object.assign(b.style, {
-        cursor: 'pointer',
-        background: 'rgba(255,255,255,0.06)',
-        color: '#cdd3da',
-        border: '1px solid rgba(255,255,255,0.12)',
-        borderRadius: '5px',
-        padding: '4px 9px',
-        font: 'inherit',
-      })
-      b.addEventListener('click', (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        onClick()
-      })
-      return b
-    }
-    this._btnTracked = mkBtn('Top-down', 'Top-down view aligned to Foundry (no tilt)', () => this.setMode('tracked'))
-    this._btnOrbit = mkBtn('3D', 'Free-look 3D — drag to rotate/tilt, scroll to zoom', () => this.setMode('orbit'))
-    const sep = document.createElement('span')
-    Object.assign(sep.style, { width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.15)', margin: '0 2px' })
-    this._viewBtns = [
-      ['Top', 'top'],
-      ['Angle', 'angle'],
-      ['Low', 'low'],
-      ['Reset', 'default'],
-    ].map(([label, v]) =>
-      mkBtn(label, `3D camera angle: ${v}`, () => {
-        this.setMode('orbit')
-        this.setView(v)
-      }),
-    )
-    const sep2 = document.createElement('span')
-    Object.assign(sep2.style, { width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.15)', margin: '0 2px' })
-    this._btnSlice = mkBtn('Slice', 'Floor cutaway — show only the current/selected floor and the ones below it, hiding upper floors so their walls and ceilings don’t block the view', () => this.setSlice(!this._sliceFloors))
-    this._hint = document.createElement('span')
-    this._hint.textContent = 'drag rotate · scroll zoom · right-drag pan'
-    Object.assign(this._hint.style, { opacity: '0.65', marginLeft: '4px' })
-    bar.append(this._btnTracked, this._btnOrbit, sep, ...this._viewBtns, sep2, this._btnSlice, this._hint)
+    bar.textContent = 'drag rotate · scroll zoom · right-drag pan'
     this._container.appendChild(bar)
     this._controlBar = bar
     this._updateControlBar()
   }
 
-  /** Reflect the active mode in the control bar (highlight + view-button enablement). */
+  /** Show the camera-controls hint only in orbit mode (where drag/scroll apply). */
   _updateControlBar() {
     if (!this._controlBar) return
-    const orbit = this._mode === 'orbit'
-    const hi = (b, on) => {
-      if (!b) return
-      b.style.background = on ? 'rgba(90,140,220,0.55)' : 'rgba(255,255,255,0.06)'
-      b.style.borderColor = on ? 'rgba(150,185,255,0.85)' : 'rgba(255,255,255,0.12)'
-    }
-    hi(this._btnTracked, !orbit)
-    hi(this._btnOrbit, orbit)
-    hi(this._btnSlice, this._sliceFloors !== false)
-    for (const b of this._viewBtns || []) b.style.opacity = orbit ? '1' : '0.4'
-    if (this._hint) this._hint.style.display = orbit ? '' : 'none'
+    this._controlBar.style.display = this._mode === 'orbit' ? '' : 'none'
   }
 
   _buildGround(rect, cx, cz) {
