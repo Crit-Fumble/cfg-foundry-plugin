@@ -67,7 +67,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const src = 'icons/svg/mystery-man.svg'
     await canvas.scene.createEmbeddedDocuments('Token', [
       { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id, light: { dim: 26, bright: 13, color: '#ffce8a', luminosity: 0.4, alpha: 0.5 } },
-      { name: 'Flyer (hostile, +20ft)', x: 1150, y: 1150, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      { name: 'Flyer (upstairs +30ft)', x: 1500, y: 1300, elevation: 30, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
       { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
       { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
     ])
@@ -78,6 +78,14 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
       { c: [1000, 2000, 2000, 2000] },
       { c: [1000, 1000, 1000, 2000] },
       { c: [2000, 1000, 2000, 2000], flags: { 'wall-height': { bottom: 0, top: 30 } } },
+    ])
+    // Tiles as floors at different elevations (multi-floor "Levels"): a ground
+    // floor (elev 0) + a raised upper floor (elev 30) the flyer stands on.
+    const oldTiles = canvas.scene.tiles.map((t) => t.id)
+    if (oldTiles.length) await canvas.scene.deleteEmbeddedDocuments('Tile', oldTiles)
+    await canvas.scene.createEmbeddedDocuments('Tile', [
+      { x: 1050, y: 1050, width: 900, height: 900, elevation: 0 },
+      { x: 1350, y: 1150, width: 450, height: 450, elevation: 30 },
     ])
     // A map note pin — UI on the map, rendered as a flat marker (not 3D geometry).
     await canvas.scene.createEmbeddedDocuments('Note', [
@@ -95,6 +103,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     () =>
       canvas.tokens.placeables.length >= 4 &&
       canvas.walls.placeables.length >= 3 &&
+      canvas.tiles.placeables.length >= 2 &&
       canvas.notes.placeables.length >= 1 &&
       canvas.lighting.placeables.length >= 1,
     { timeout: 15_000 },

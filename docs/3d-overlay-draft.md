@@ -15,6 +15,9 @@ it on overlays a three.js canvas over the board that renders:
   coordinates;
 - **token elevation as real height** — elevated tokens float above the plane with a yellow stalk
   down to their ground position (negative elevation goes below);
+- **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
+  as a floor plane at its elevation, so a token on an upper floor stands on it. The floor band comes
+  from the Levels module (`flags.levels.rangeBottom`) when present, else the tile's own `elevation`;
 - **disposition** as a colored footprint disc (green friendly / blue neutral / red hostile);
 - **live multiplayer sync** — moving a token (any client) updates the 3D view, via Foundry's own
   `updateToken` / `moveToken` broadcasts. No new sync server.
@@ -87,7 +90,10 @@ lazy-loaded three.js (a single bundled file, fetched only on first toggle), live
 - **No in-Foundry UI to *assign* a model yet.** GLB loading works (see "3D model formats"), but you
   set `flags["crit-fumble-core"].modelSrc` via a macro/console for now — a Token-config "3D" tab +
   FilePicker picker is the next step.
-- **Tiles & lighting not in 3D yet** (walls now are — see above). The rest of Slice 2.
+- **Native v14 `Level`-document backgrounds not drawn yet** — multi-floor *tiles* now render at
+  their elevation (above), and the Levels module's `flags.levels.rangeBottom` floor band is honored,
+  but per-`Level` background/foreground images (v14's own native multi-floor) aren't yet rendered as
+  floor planes. Tile-based floors (the Levels-module pattern) already cover the common case. Follow-up.
 - **Move = snap, not animated.** We re-sync on `moveToken`; smooth interpolation is a follow-up.
 - **3D covers the board while on** (it's a view mode, not a side-by-side). Foundry UI stays usable.
 - **Camera does not track Foundry's 2D pan/zoom** — it's an independent orbit camera (intentional

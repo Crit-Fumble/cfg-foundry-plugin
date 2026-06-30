@@ -74,6 +74,8 @@ export class Overlay3D {
     this._notes = []
     /** @type {any[]} scene lights (ambient hemisphere/sun + AmbientLight placeables) */
     this._lights = []
+    /** @type {any[]} tile floor planes (rendered at their elevation / Levels floor) */
+    this._tiles = []
     /** @type {any} shared wall material */
     this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -117,6 +119,9 @@ export class Overlay3D {
       this._on('createWall', () => this._scheduleRebuild())
       this._on('updateWall', () => this._scheduleRebuild())
       this._on('deleteWall', () => this._scheduleRebuild())
+      this._on('createTile', () => this._scheduleRebuild())
+      this._on('updateTile', () => this._scheduleRebuild())
+      this._on('deleteTile', () => this._scheduleRebuild())
       this._on('createNote', () => this._scheduleRebuild())
       this._on('updateNote', () => this._scheduleRebuild())
       this._on('deleteNote', () => this._scheduleRebuild())
@@ -422,6 +427,7 @@ export class Overlay3D {
     this._buildGrid(rect, cx, cz)
     this._buildLights()
     this._buildWalls()
+    this._buildTiles()
     this._buildNotes()
 
     for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
@@ -703,6 +709,64 @@ export class Overlay3D {
   }
 
   /**
+   * Render tiles as floor planes at their elevation — this is how multi-floor
+   * "Levels" scenes stack in 3D (a tile is a floor surface). Elevation comes
+   * from the Levels module's floor band (flags.levels.rangeBottom) when present,
+   * else the tile's own elevation. Skipped in tracked mode (Foundry's floor
+   * already shows tiles flat).
+   */
+  _buildTiles() {
+    if (this._foundryFloor()) return
+    const THREE = this._THREE
+    const tiles = canvas?.tiles?.placeables || []
+    if (!tiles.length) return
+    const pxPerUnit = this._pxPerUnit()
+    for (const tile of tiles) {
+      try {
+        const d = tile.document
+        if (d?.hidden) continue
+        const w = Number(d.width) || 0
+        const h = Number(d.height) || 0
+        if (w < 1 || h < 1) continue
+        const elev = this._levelsElevation(d)
+        const elevPx = elev * pxPerUnit
+        const geo = new THREE.PlaneGeometry(w, h)
+        let mat
+        const src = d.texture?.src
+        if (src) {
+          const loader = new THREE.TextureLoader()
+          loader.setCrossOrigin('anonymous')
+          const tex = loader.load(src, () => this._render())
+          tex.colorSpace = THREE.SRGBColorSpace
+          mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1, side: THREE.DoubleSide, roughness: 0.95 })
+        } else {
+          // No texture → tint by elevation so stacked floors read at a glance.
+          mat = new THREE.MeshStandardMaterial({ color: elev > 0 ? 0x7a6a52 : 0x515b6b, transparent: true, opacity: 0.9, side: THREE.DoubleSide, roughness: 0.95 })
+        }
+        const plane = new THREE.Mesh(geo, mat)
+        plane.rotation.x = -Math.PI / 2
+        plane.position.set((Number(d.x) || 0) + w / 2, elevPx + 0.5, (Number(d.y) || 0) + h / 2)
+        plane.receiveShadow = true
+        plane.castShadow = true
+        this._scene.add(plane)
+        this._tiles.push(plane)
+      } catch {
+        /* skip a malformed tile */
+      }
+    }
+  }
+
+  /**
+   * Effective floor elevation for a document: the Levels module's floor bottom
+   * (flags.levels.rangeBottom) when present, else the document's own elevation.
+   */
+  _levelsElevation(doc) {
+    const lv = doc?.flags?.levels
+    if (lv && Number.isFinite(Number(lv.rangeBottom))) return Number(lv.rangeBottom)
+    return Number(doc?.elevation) || 0
+  }
+
+  /**
    * Render map note pins as flat billboard markers at their correct position.
    * Pins are UI on the map, not 3D geometry — so rather than hiding them under
    * the overlay, we float the pin icon just above the ground where the note
@@ -761,7 +825,7 @@ export class Overlay3D {
       // both at full rebuild and mid-`updateToken`, when the placeable's
       // `.center` still holds the pre-move value.
       const center = { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
-      const elevPx = (doc.elevation || 0) * this._pxPerUnit()
+      const elevPx = this._levelsElevation(doc) * this._pxPerUnit()
       const footprint = Math.max(w, h)
 
       const group = new THREE.Group()
@@ -1042,6 +1106,11 @@ export class Overlay3D {
     this._notes = []
     for (const l of this._lights) this._scene.remove(l)
     this._lights = []
+    for (const t of this._tiles) {
+      this._scene.remove(t)
+      this._disposeObject(t)
+    }
+    this._tiles = []
     this._ready = false
   }
 
