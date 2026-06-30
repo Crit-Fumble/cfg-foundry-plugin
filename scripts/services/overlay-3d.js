@@ -72,6 +72,8 @@ export class Overlay3D {
     this._walls = []
     /** @type {any[]} map-note billboard markers */
     this._notes = []
+    /** @type {any[]} scene lights (ambient hemisphere/sun + AmbientLight placeables) */
+    this._lights = []
     /** @type {any} shared wall material */
     this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -117,6 +119,9 @@ export class Overlay3D {
       this._on('createNote', () => this._scheduleRebuild())
       this._on('updateNote', () => this._scheduleRebuild())
       this._on('deleteNote', () => this._scheduleRebuild())
+      this._on('createAmbientLight', () => this._scheduleRebuild())
+      this._on('updateAmbientLight', () => this._scheduleRebuild())
+      this._on('deleteAmbientLight', () => this._scheduleRebuild())
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
@@ -259,10 +264,7 @@ export class Overlay3D {
 
     this._camera = orbit
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x202830, 1.15))
-    const sun = new THREE.DirectionalLight(0xffffff, 1.5)
-    sun.position.set(0.5, 1, 0.3)
-    scene.add(sun)
+    // Lighting is built from the scene's own settings in _buildLights().
 
     this._onResize = () => this._resize()
     window.addEventListener('resize', this._onResize)
@@ -314,6 +316,52 @@ export class Overlay3D {
   }
 
   /**
+   * The scene's configured background ("letterbox") color, read deprecation-free
+   * from the active Level (Scene#backgroundColor is deprecated in v14). Returns a
+   * value THREE.Color accepts (an 0xRRGGBB number or "#rrggbb").
+   */
+  _sceneBackgroundColor() {
+    try {
+      // Foundry's actual canvas clear color (scene background, darkness-adjusted —
+      // matches what Foundry displays); fall back to the configured color.
+      const env = canvas?.environment?.colors
+      const c = env?.rendererBackground ?? env?.sceneBackground
+      if (c != null) return Number(c)
+    } catch {
+      /* ignore */
+    }
+    try {
+      const levels = canvas?.scene?.levels?.contents ?? (Array.isArray(canvas?.scene?.levels) ? canvas.scene.levels : [])
+      for (const lvl of levels) {
+        const col = lvl?.background?.color
+        if (col != null) return Number(col) // Foundry Color is a Number subclass
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const raw = canvas?.scene?.toObject?.()
+      const hex = raw?.levels?.[0]?.background?.color || raw?.backgroundColor
+      if (hex) return hex
+    } catch {
+      /* ignore */
+    }
+    return 0x0b0e13
+  }
+
+  /** Use the scene's own background color as the 3D backdrop (not a hardcoded black). */
+  _applyBackground() {
+    if (!this._scene || !this._THREE) return
+    try {
+      const color = new this._THREE.Color(this._sceneBackgroundColor())
+      this._scene.background = color
+      if (this._container) this._container.style.background = `#${color.getHexString()}`
+    } catch {
+      /* keep the existing background on failure */
+    }
+  }
+
+  /**
    * Best-effort background image path. In v14 the background moved to `Level`
    * documents — we read those (and the live PIXI texture / raw source) and
    * deliberately avoid the deprecated `Scene#background` getter.
@@ -354,6 +402,7 @@ export class Overlay3D {
     }
     const THREE = this._THREE
     this._clearScene()
+    this._applyBackground()
 
     const rect = this._sceneRect()
     const cx = rect.x + rect.width / 2
@@ -361,6 +410,7 @@ export class Overlay3D {
 
     this._buildGround(rect, cx, cz)
     this._buildGrid(rect, cx, cz)
+    this._buildLights()
     this._buildWalls()
     this._buildNotes()
 
@@ -463,14 +513,17 @@ export class Overlay3D {
 
   _buildGrid(rect, cx, cz) {
     const THREE = this._THREE
+    const g = canvas?.scene?.grid
+    if (g && g.type === 0) return // gridless scene → no grid
     const size = canvas?.dimensions?.size || 100
     const span = Math.max(rect.width, rect.height)
     const divisions = Math.max(1, Math.round(span / size))
-    const grid = new THREE.GridHelper(span, divisions, 0x6688aa, 0x33445a)
+    const color = g?.color != null ? Number(g.color) : 0x6688aa
+    const grid = new THREE.GridHelper(span, divisions, color, color)
     grid.position.set(cx, 0.5, cz)
     if (grid.material) {
       grid.material.transparent = true
-      grid.material.opacity = 0.35
+      grid.material.opacity = g?.alpha != null ? Math.max(0.05, Number(g.alpha)) : 0.35
     }
     this._scene.add(grid)
     this._grid = grid
@@ -518,6 +571,57 @@ export class Overlay3D {
         this._walls.push(box)
       } catch {
         /* skip a malformed wall */
+      }
+    }
+  }
+
+  /**
+   * Build lighting from the scene's own settings: a hemisphere ambient from
+   * Foundry's computed daylight/darkness colors (modulated by the darkness
+   * level), a soft sun for form, and a point light for each AmbientLight
+   * placeable (colour + radius from its config).
+   */
+  _buildLights() {
+    const THREE = this._THREE
+    const env = canvas?.environment?.colors || {}
+    const num = (c, dflt) => (c != null ? Number(c) : dflt)
+    const daylight = num(env.ambientDaylight, 0xeeeeee)
+    const darkCol = num(env.ambientDarkness, 0x303030)
+    const brightest = num(env.ambientBrightest ?? env.bright, 0xffffff)
+    const darkness = Number(canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0)
+    const day = Math.max(0, Math.min(1, 1 - darkness))
+
+    // Ambient dims with darkness so colored lights read and night looks like night.
+    const hemi = new THREE.HemisphereLight(daylight, darkCol, 0.12 + 0.7 * day)
+    this._scene.add(hemi)
+    this._lights.push(hemi)
+
+    const sun = new THREE.DirectionalLight(brightest, 0.05 + 0.7 * day)
+    sun.position.set(0.4, 1, 0.5)
+    this._scene.add(sun)
+    this._lights.push(sun)
+
+    // AmbientLight placeables → point lights at their positions. decay = 0
+    // because the world is in pixel units (hundreds–thousands), where three's
+    // physical 1/d² falloff would make a point light effectively invisible; the
+    // `distance` gives the cutoff radius instead.
+    const pxPerUnit = this._pxPerUnit()
+    const size = canvas?.dimensions?.size || 100
+    for (const light of canvas?.lighting?.placeables || []) {
+      try {
+        const d = light.document
+        if (d?.hidden) continue
+        const cfg = d.config || {}
+        const color = cfg.color != null ? Number(cfg.color) : 0xffffff
+        const radius = Math.max(Number(cfg.bright) || 0, Number(cfg.dim) || 0) * pxPerUnit || size * 4
+        const intensity = 1.2 + (Number(cfg.luminosity) || 0)
+        const pl = new THREE.PointLight(color, intensity, radius, 0)
+        const elevPx = (Number(d.elevation) || 0) * pxPerUnit
+        pl.position.set(Number(d.x) || 0, elevPx + size * 0.6, Number(d.y) || 0)
+        this._scene.add(pl)
+        this._lights.push(pl)
+      } catch {
+        /* skip a malformed light */
       }
     }
   }
@@ -853,6 +957,8 @@ export class Overlay3D {
       this._disposeObject(s)
     }
     this._notes = []
+    for (const l of this._lights) this._scene.remove(l)
+    this._lights = []
     this._ready = false
   }
 

@@ -27,6 +27,7 @@ async function hideChrome(page) {
 }
 
 test('3D overlay — seed a scene and capture review angles', async ({ page }) => {
+  test.setTimeout(120_000) // scene setup + lighting + two camera modes + 6 captures
   const errors = []
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
   page.on('console', (m) => {
@@ -45,7 +46,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
         width: 2000,
         height: 2000,
         padding: 0.25,
-        backgroundColor: '#222a33',
+        backgroundColor: '#4f7a46',
         grid: { type: 1, size: 100, distance: 5, units: 'ft' },
       })
     }
@@ -79,9 +80,20 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     await canvas.scene.createEmbeddedDocuments('Note', [
       { x: 1750, y: 1300, text: 'Quest', texture: { src: 'icons/svg/book.svg' }, iconSize: 60, fontSize: 28, global: true },
     ])
+    // A warm ambient light + some darkness, to show the 3D uses the scene's lighting.
+    const lids = canvas.scene.lights.map((l) => l.id)
+    if (lids.length) await canvas.scene.deleteEmbeddedDocuments('AmbientLight', lids)
+    await canvas.scene.createEmbeddedDocuments('AmbientLight', [
+      { x: 1500, y: 1350, config: { color: '#ff8a3d', dim: 28, bright: 14, alpha: 0.6, luminosity: 0.5 } },
+    ])
+    await canvas.scene.update({ 'environment.darknessLevel': 0.45 }).catch(() => {})
   }, MODEL_URL)
   await page.waitForFunction(
-    () => canvas.tokens.placeables.length >= 4 && canvas.walls.placeables.length >= 3 && canvas.notes.placeables.length >= 1,
+    () =>
+      canvas.tokens.placeables.length >= 4 &&
+      canvas.walls.placeables.length >= 3 &&
+      canvas.notes.placeables.length >= 1 &&
+      canvas.lighting.placeables.length >= 1,
     { timeout: 15_000 },
   )
 
