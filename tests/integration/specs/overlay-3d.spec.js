@@ -113,12 +113,43 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.hasCanvas).toBe(true)
   expect(info.toggle).toBe(true)
 
-  // Capture the 3D view from several review angles.
+  // --- Tracked (top-down) mode — the camera mirrors Foundry, so canvas-anchored
+  //     UI lines up over the 3D. Pan Foundry to frame the room + select a token
+  //     so its HUD shows, then prove the projection matches Foundry's. ---
+  expect(await page.evaluate(() => window.CFGCore.overlay3D.getMode())).toBe('tracked')
+  await page.evaluate(async () => {
+    await canvas.pan({ x: 1500, y: 1500, scale: 0.42 })
+    const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
+    t?.control({ releaseOthers: true })
+  })
+  await page.waitForTimeout(900)
+
+  const align = await page.evaluate(() => {
+    const inst = window.CFGCore.overlay3D._instance
+    const t = canvas.tokens.controlled[0] || canvas.tokens.placeables[0]
+    const c = t.center
+    const f = canvas.clientCoordinatesFromCanvas({ x: c.x, y: c.y }) // Foundry screen px
+    const THREE = inst._THREE
+    const v = new THREE.Vector3(c.x, 0, c.y).project(inst._trackedCamera) // tracked-cam projection
+    const sx = ((v.x + 1) / 2) * window.innerWidth
+    const sy = ((1 - v.y) / 2) * window.innerHeight
+    return { foundry: [Math.round(f.x), Math.round(f.y)], three: [Math.round(sx), Math.round(sy)], dx: Math.round(sx - f.x), dy: Math.round(sy - f.y) }
+  })
+  console.log('[overlay-3d] tracked projection vs Foundry:', JSON.stringify(align))
+  expect(Math.abs(align.dx), `x off by ${align.dx}px`).toBeLessThan(3)
+  expect(Math.abs(align.dy), `y off by ${align.dy}px`).toBeLessThan(3)
+
+  await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
+  await page.screenshot({ path: join(SHOTS, '02-tracked.png') })
+
+  // --- Orbit (free-look) mode — review angles. ---
+  await page.evaluate(() => window.CFGCore.overlay3D.setMode('orbit'))
+  await page.waitForTimeout(500)
   const views = [
-    ['02-3d-default', 'default'],
-    ['03-3d-top', 'top'],
-    ['04-3d-angle', 'angle'],
-    ['05-3d-low', 'low'],
+    ['03-orbit-default', 'default'],
+    ['04-orbit-top', 'top'],
+    ['05-orbit-angle', 'angle'],
+    ['06-orbit-low', 'low'],
   ]
   for (const [name, preset] of views) {
     await page.evaluate((p) => window.CFGCore.overlay3D.setView(p), preset)

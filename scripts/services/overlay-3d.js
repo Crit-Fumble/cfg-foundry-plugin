@@ -52,9 +52,19 @@ export class Overlay3D {
     this._container = null
     this._renderer = null
     this._scene = null
-    this._camera = null
+    this._camera = null // active camera (tracked ortho OR orbit perspective)
+    this._orbitCamera = null
+    this._trackedCamera = null
     this._controls = null
     this._raf = null
+    this._tickerFn = null
+    /**
+     * 'tracked' = orthographic top-down camera mirroring Foundry's 2D pan/zoom,
+     * so canvas-anchored UI (HUD, tooltips, pins) lines up over the 3D.
+     * 'orbit' = free-look perspective camera (2D UI hidden — option A).
+     * @type {'tracked'|'orbit'}
+     */
+    this._mode = 'tracked'
 
     this._ground = null
     this._grid = null
@@ -113,6 +123,13 @@ export class Overlay3D {
       // both so position + elevation stay live regardless of how it changed.
       this._on('moveToken', (doc) => this._onUpdateToken(doc))
       this._on('updateScene', () => this._scheduleRebuild())
+      // Tracked mode follows Foundry's camera: re-sync on every pan/zoom.
+      this._on('canvasPan', () => {
+        if (this._visible && this._mode === 'tracked') {
+          this._syncTrackedCamera()
+          this._render()
+        }
+      })
 
       this._exposeApi()
       // Scene controls may already have been prepared before this ready-time
@@ -138,6 +155,8 @@ export class Overlay3D {
       isReady: () => this._ready,
       rebuild: () => this.rebuild(),
       setView: (preset) => this.setView(preset),
+      setMode: (m) => this.setMode(m),
+      getMode: () => this._mode,
       destroy: () => this.destroy(),
       tokenCount: () => this._tokens.size,
       _instance: this,
@@ -159,12 +178,7 @@ export class Overlay3D {
         await this._mount()
         await this.rebuild()
         if (this._container) this._container.style.display = 'block'
-        // Option A: hide 2D-anchored interactive UI (Token HUD, tooltips) that
-        // Foundry positions for the top-down camera — it would float at the
-        // wrong spot over the orbit 3D view. Selection/HUD/measuring happen in
-        // 2D (toggle 3D off). The proper fix is to couple the camera/render so
-        // this UI aligns (tracked separately).
-        document.body.classList.add('cfg-3d-active')
+        this._applyMode() // active camera + input routing + UI-hide (orbit only)
         this._startLoop()
       } else {
         this._stopLoop()
@@ -224,14 +238,26 @@ export class Overlay3D {
     scene.background = new THREE.Color(0x0b0e13)
     this._scene = scene
 
-    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 5_000_000)
-    this._camera = camera
-
-    const controls = new this._OrbitControls(camera, renderer.domElement)
+    // Orbit (free-look) perspective camera.
+    const orbit = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 5_000_000)
+    this._orbitCamera = orbit
+    const controls = new this._OrbitControls(orbit, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
     controls.maxPolarAngle = Math.PI * 0.495 // don't drop below the ground plane
     this._controls = controls
+
+    // Tracked top-down orthographic camera — mirrors Foundry's 2D pan/zoom so
+    // world points project to the same screen pixels Foundry uses (its HUD,
+    // tooltips, and pins then line up over the 3D). Looks straight down -Y with
+    // up = -Z, so world +X → screen-right and world +Z (canvas y) → screen-down.
+    const ow = window.innerWidth
+    const oh = window.innerHeight
+    const ortho = new THREE.OrthographicCamera(-ow / 2, ow / 2, oh / 2, -oh / 2, 1, 200000)
+    ortho.up.set(0, 0, -1)
+    this._trackedCamera = ortho
+
+    this._camera = orbit
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x202830, 1.15))
     const sun = new THREE.DirectionalLight(0xffffff, 1.5)
@@ -244,10 +270,24 @@ export class Overlay3D {
   }
 
   _resize() {
-    if (!this._renderer || !this._camera) return
-    this._renderer.setSize(window.innerWidth, window.innerHeight)
-    this._camera.aspect = window.innerWidth / Math.max(1, window.innerHeight)
-    this._camera.updateProjectionMatrix()
+    if (!this._renderer) return
+    const w = window.innerWidth
+    const h = window.innerHeight
+    this._renderer.setSize(w, h)
+    if (this._orbitCamera) {
+      this._orbitCamera.aspect = w / Math.max(1, h)
+      this._orbitCamera.updateProjectionMatrix()
+    }
+    if (this._trackedCamera) {
+      const o = this._trackedCamera
+      o.left = -w / 2
+      o.right = w / 2
+      o.top = h / 2
+      o.bottom = -h / 2
+      o.updateProjectionMatrix()
+    }
+    if (this._mode === 'tracked') this._syncTrackedCamera()
+    this._render()
   }
 
   /* ------------------------------------------------------------------ */
@@ -326,9 +366,10 @@ export class Overlay3D {
 
     for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
 
-    // Cache framing, then apply the default review angle.
+    // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
-    this.setView('default')
+    if (this._mode === 'orbit') this.setView('default')
+    else this._syncTrackedCamera()
     this._ready = true
     this._render()
   }
@@ -338,7 +379,7 @@ export class Overlay3D {
    * 'low'. Also a natural hook for a future in-UI view switcher.
    */
   setView(preset = 'default') {
-    if (!this._camera || !this._controls || !this._frame) return
+    if (!this._orbitCamera || !this._controls || !this._frame) return
     const { cx, cz, span } = this._frame
     const views = {
       default: { x: cx, y: span * 0.85, z: cz + span * 0.95 },
@@ -347,10 +388,55 @@ export class Overlay3D {
       low: { x: cx + span * 0.1, y: span * 0.18, z: cz + span * 1.05 },
     }
     const v = views[preset] || views.default
-    this._camera.position.set(v.x, v.y, v.z)
+    this._orbitCamera.position.set(v.x, v.y, v.z)
     this._controls.target.set(cx, 0, cz)
     this._controls.update()
     this._render()
+  }
+
+  /**
+   * Mirror Foundry's 2D camera with the tracked orthographic camera so world
+   * points project to the same screen pixels Foundry uses — its canvas-anchored
+   * UI (HUD, tooltips, pins) then lines up over the 3D. Foundry maps
+   * screen = (world - stage.pivot) * stage.scale + screenCenter.
+   */
+  _syncTrackedCamera() {
+    const cam = this._trackedCamera
+    const stage = canvas?.stage
+    if (!cam || !stage) return
+    const px = stage.pivot?.x ?? 0
+    const pz = stage.pivot?.y ?? 0
+    cam.position.set(px, 100000, pz)
+    cam.lookAt(px, 0, pz)
+    cam.zoom = stage.scale?.x || 1 // 1 world unit → `scale` screen px, like Foundry
+    cam.updateProjectionMatrix()
+  }
+
+  /** Apply the current camera mode: active camera, input routing, UI-hide. */
+  _applyMode() {
+    const orbit = this._mode === 'orbit'
+    this._camera = orbit ? this._orbitCamera : this._trackedCamera
+    if (this._controls) this._controls.enabled = orbit
+    if (this._container) {
+      // Tracked: let the mouse fall through to Foundry (pan/zoom/select) — the
+      // camera follows. Orbit: capture events for OrbitControls.
+      this._container.style.pointerEvents = orbit ? 'auto' : 'none'
+    }
+    // Orbit hides the misaligned 2D UI (option A); tracked lets it show (aligned).
+    document.body.classList.toggle('cfg-3d-active', this._visible && orbit)
+    if (orbit) this.setView('default')
+    else this._syncTrackedCamera()
+    this._render()
+  }
+
+  /**
+   * Switch camera mode: 'tracked' (top-down, follows Foundry — UI aligns over
+   * the 3D) or 'orbit' (free-look perspective — UI hidden).
+   */
+  setMode(mode) {
+    mode = mode === 'orbit' ? 'orbit' : 'tracked'
+    this._mode = mode
+    if (this._mounted && this._visible) this._applyMode()
   }
 
   _buildGround(rect, cx, cz) {
@@ -678,29 +764,48 @@ export class Overlay3D {
   /* ------------------------------------------------------------------ */
 
   _startLoop() {
-    if (this._raf) return
-    const tick = () => {
-      this._raf = requestAnimationFrame(tick)
-      this._controls?.update()
-      this._renderer?.render(this._scene, this._camera)
+    if (this._tickerFn) return
+    this._tickerFn = () => this._tick()
+    // Hook Foundry's existing render loop (its PIXI ticker) so we render in
+    // lockstep with the board and stay synced to every pan/zoom frame.
+    if (canvas?.app?.ticker) canvas.app.ticker.add(this._tickerFn, this)
+    else {
+      const loop = () => {
+        this._raf = requestAnimationFrame(loop)
+        this._tick()
+      }
+      loop()
     }
-    tick()
   }
 
   _stopLoop() {
+    if (this._tickerFn && canvas?.app?.ticker) canvas.app.ticker.remove(this._tickerFn, this)
+    this._tickerFn = null
     if (this._raf) {
       cancelAnimationFrame(this._raf)
       this._raf = null
     }
   }
 
-  /** Single render (used when the loop is idle, e.g. async texture arrival). */
+  /** Per-frame: keep the tracked camera synced (or orbit damping), then render. */
+  _tick() {
+    if (!this._visible || !this._renderer || !this._camera) return
+    if (this._mode === 'tracked') this._syncTrackedCamera()
+    else this._controls?.update()
+    try {
+      this._renderer.render(this._scene, this._camera)
+    } catch {
+      /* renderer not ready yet — the next tick will catch up */
+    }
+  }
+
+  /** Single render outside the loop (e.g. async texture/model arrival). */
   _render() {
     if (this._renderer && this._scene && this._camera) {
       try {
         this._renderer.render(this._scene, this._camera)
       } catch {
-        /* renderer not ready yet — the loop will catch up */
+        /* not ready */
       }
     }
   }
