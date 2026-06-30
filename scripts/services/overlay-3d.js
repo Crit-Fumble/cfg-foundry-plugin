@@ -195,6 +195,7 @@ export class Overlay3D {
         await this.rebuild()
         if (this._container) this._container.style.display = 'block'
         this._applyMode() // active camera + input routing + UI-hide (orbit only)
+        this._updateControlBar()
         this._startLoop()
       } else {
         this._stopLoop()
@@ -279,6 +280,7 @@ export class Overlay3D {
     this._camera = orbit
 
     // Lighting is built from the scene's own settings in _buildLights().
+    this._buildControlBar()
 
     this._onResize = () => this._resize()
     window.addEventListener('resize', this._onResize)
@@ -529,6 +531,94 @@ export class Overlay3D {
       this._applyMode()
       this.rebuild() // floor/bg/grid differ per mode (tracked = Foundry's canvas)
     }
+    this._updateControlBar()
+  }
+
+  /**
+   * On-screen control bar (camera mode + view presets + a controls hint) so the
+   * camera isn't console-only. Lives inside the overlay container with its own
+   * pointer-events, so it stays clickable even in tracked mode (where the
+   * container passes the mouse through to Foundry).
+   */
+  _buildControlBar() {
+    if (!this._container || this._controlBar) return
+    const bar = document.createElement('div')
+    bar.id = 'cfg-3d-controls'
+    Object.assign(bar.style, {
+      position: 'fixed',
+      top: '6px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      padding: '5px 8px',
+      background: 'rgba(11,14,19,0.82)',
+      border: '1px solid rgba(255,255,255,0.12)',
+      borderRadius: '8px',
+      font: '12px/1 system-ui, sans-serif',
+      color: '#cdd3da',
+      pointerEvents: 'auto',
+      userSelect: 'none',
+      boxShadow: '0 2px 10px rgba(0,0,0,0.4)',
+    })
+    const mkBtn = (label, title, onClick) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.title = title
+      Object.assign(b.style, {
+        cursor: 'pointer',
+        background: 'rgba(255,255,255,0.06)',
+        color: '#cdd3da',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '5px',
+        padding: '4px 9px',
+        font: 'inherit',
+      })
+      b.addEventListener('click', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onClick()
+      })
+      return b
+    }
+    this._btnTracked = mkBtn('Top-down', 'Top-down view aligned to Foundry (no tilt)', () => this.setMode('tracked'))
+    this._btnOrbit = mkBtn('3D', 'Free-look 3D — drag to rotate/tilt, scroll to zoom', () => this.setMode('orbit'))
+    const sep = document.createElement('span')
+    Object.assign(sep.style, { width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.15)', margin: '0 2px' })
+    this._viewBtns = [
+      ['Top', 'top'],
+      ['Angle', 'angle'],
+      ['Low', 'low'],
+      ['Reset', 'default'],
+    ].map(([label, v]) =>
+      mkBtn(label, `3D camera angle: ${v}`, () => {
+        this.setMode('orbit')
+        this.setView(v)
+      }),
+    )
+    this._hint = document.createElement('span')
+    this._hint.textContent = 'drag rotate · scroll zoom · right-drag pan'
+    Object.assign(this._hint.style, { opacity: '0.65', marginLeft: '4px' })
+    bar.append(this._btnTracked, this._btnOrbit, sep, ...this._viewBtns, this._hint)
+    this._container.appendChild(bar)
+    this._controlBar = bar
+    this._updateControlBar()
+  }
+
+  /** Reflect the active mode in the control bar (highlight + view-button enablement). */
+  _updateControlBar() {
+    if (!this._controlBar) return
+    const orbit = this._mode === 'orbit'
+    const hi = (b, on) => {
+      if (!b) return
+      b.style.background = on ? 'rgba(90,140,220,0.55)' : 'rgba(255,255,255,0.06)'
+      b.style.borderColor = on ? 'rgba(150,185,255,0.85)' : 'rgba(255,255,255,0.12)'
+    }
+    hi(this._btnTracked, !orbit)
+    hi(this._btnOrbit, orbit)
+    for (const b of this._viewBtns || []) b.style.opacity = orbit ? '1' : '0.4'
+    if (this._hint) this._hint.style.display = orbit ? '' : 'none'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1341,6 +1431,7 @@ export class Overlay3D {
     this._renderer?.forceContextLoss?.()
     if (this._container?.parentElement) this._container.parentElement.removeChild(this._container)
     this._container = null
+    this._controlBar = null
     this._renderer = null
     this._scene = null
     this._camera = null
