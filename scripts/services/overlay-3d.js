@@ -60,6 +60,8 @@ export class Overlay3D {
     this._grid = null
     /** @type {any[]} extruded wall meshes */
     this._walls = []
+    /** @type {any[]} map-note billboard markers */
+    this._notes = []
     /** @type {any} shared wall material */
     this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -102,6 +104,9 @@ export class Overlay3D {
       this._on('createWall', () => this._scheduleRebuild())
       this._on('updateWall', () => this._scheduleRebuild())
       this._on('deleteWall', () => this._scheduleRebuild())
+      this._on('createNote', () => this._scheduleRebuild())
+      this._on('updateNote', () => this._scheduleRebuild())
+      this._on('deleteNote', () => this._scheduleRebuild())
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
@@ -186,12 +191,13 @@ export class Overlay3D {
 
     const container = document.createElement('div')
     container.id = OVERLAY_ID
-    // z-index 40: above the PIXI board (0), below Foundry's UI panels (~60+),
-    // so the sidebar + scene controls stay visible and clickable on top.
+    // Sit above the PIXI board (#board, z-index 0) but BELOW Foundry's UI
+    // panels (#ui-left / #ui-right are z-index 30), so the scene controls,
+    // sidebar, hotbar, nav, players, and chat keep rendering over the 3D view.
     Object.assign(container.style, {
       position: 'fixed',
       inset: '0',
-      zIndex: '40',
+      zIndex: '25',
       display: 'none',
       pointerEvents: 'auto', // OrbitControls needs the events while 3D is up
       background: '#0b0e13',
@@ -308,6 +314,7 @@ export class Overlay3D {
     this._buildGround(rect, cx, cz)
     this._buildGrid(rect, cx, cz)
     this._buildWalls()
+    this._buildNotes()
 
     for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
 
@@ -417,6 +424,48 @@ export class Overlay3D {
         this._walls.push(box)
       } catch {
         /* skip a malformed wall */
+      }
+    }
+  }
+
+  /**
+   * Render map note pins as flat billboard markers at their correct position.
+   * Pins are UI on the map, not 3D geometry — so rather than hiding them under
+   * the overlay, we float the pin icon just above the ground where the note
+   * sits. (Other canvas markers — sound/light icons, templates — could be added
+   * the same way.)
+   */
+  _buildNotes() {
+    const THREE = this._THREE
+    const notes = canvas?.notes?.placeables || []
+    if (!notes.length) return
+    for (const note of notes) {
+      try {
+        const doc = note.document
+        const x = note.center?.x ?? doc.x ?? 0
+        const z = note.center?.y ?? doc.y ?? 0
+        const sizePx = doc.iconSize || 50
+        const mat = new THREE.SpriteMaterial({ color: 0xffd54f, transparent: true, depthTest: false })
+        const sprite = new THREE.Sprite(mat)
+        sprite.renderOrder = 10 // keep pins visible above geometry
+        sprite.scale.set(sizePx, sizePx, 1)
+        sprite.position.set(x, sizePx / 2 + 12, z) // float just above the ground
+        const src = doc.texture?.src
+        if (src) {
+          const loader = new THREE.TextureLoader()
+          loader.setCrossOrigin('anonymous')
+          loader.load(src, (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace
+            mat.map = tex
+            mat.color.set(0xffffff)
+            mat.needsUpdate = true
+            this._render()
+          })
+        }
+        this._scene.add(sprite)
+        this._notes.push(sprite)
+      } catch {
+        /* skip a malformed note */
       }
     }
   }
@@ -686,6 +735,11 @@ export class Overlay3D {
     this._walls = []
     this._wallMat?.dispose?.()
     this._wallMat = null
+    for (const s of this._notes) {
+      this._scene.remove(s)
+      this._disposeObject(s)
+    }
+    this._notes = []
     this._ready = false
   }
 

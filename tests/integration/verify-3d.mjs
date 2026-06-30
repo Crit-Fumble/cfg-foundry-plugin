@@ -76,10 +76,10 @@ try {
     const src = 'icons/svg/mystery-man.svg'
     const modelSrc = 'http://localhost:30000/modules/crit-fumble-core/tests/fixtures/sample-tree.glb'
     await canvas.scene.createEmbeddedDocuments('Token', [
-      { name: 'Ground (friendly)', x: 500, y: 800, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
-      { name: 'Flyer (hostile, +20ft)', x: 950, y: 800, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
-      { name: 'Giant (neutral, 2x2)', x: 1350, y: 1000, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
-      { name: 'Tree (GLB model)', x: 650, y: 1150, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc } } },
+      { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
+      { name: 'Flyer (hostile, +20ft)', x: 1150, y: 1150, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
+      { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc } } },
     ])
   })
   await page.waitForFunction(() => canvas.tokens.placeables.length >= 4, { timeout: 15_000 })
@@ -90,9 +90,10 @@ try {
     const wids = canvas.scene.walls.map((w) => w.id)
     if (wids.length) await canvas.scene.deleteEmbeddedDocuments('Wall', wids)
     await canvas.scene.createEmbeddedDocuments('Wall', [
-      { c: [400, 600, 1600, 600] },
-      { c: [400, 600, 400, 1400] },
-      { c: [1600, 600, 1600, 1400], flags: { 'wall-height': { bottom: 0, top: 30 } } },
+      { c: [1000, 1000, 2000, 1000] },
+      { c: [1000, 2000, 2000, 2000] },
+      { c: [1000, 1000, 1000, 2000] },
+      { c: [2000, 1000, 2000, 2000], flags: { 'wall-height': { bottom: 0, top: 30 } } },
     ])
   })
   await page.waitForFunction(() => canvas.walls.placeables.length >= 3, { timeout: 10_000 })
@@ -132,7 +133,7 @@ try {
     const inst = window.CFGCore.overlay3D._instance
     const before = t ? { x: t.document.x, y: t.document.y, e: t.document.elevation } : null
     const gBefore = t && inst._tokens.get(t.id) ? { ...inst._tokens.get(t.id).position } : null
-    if (t) await t.document.update({ x: 1200, y: 500, elevation: 40 }, { teleport: true })
+    if (t) await t.document.update({ x: 1700, y: 1300, elevation: 40 }, { teleport: true })
     const after = t ? { x: t.document.x, y: t.document.y, e: t.document.elevation } : null
     // give the hook a tick
     await new Promise((r) => setTimeout(r, 400))

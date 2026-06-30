@@ -62,18 +62,28 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const actor = game.actors.find((a) => a.name === 'CFG Dummy') ?? (await Actor.create({ name: 'CFG Dummy', type: 'character' }))
     const src = 'icons/svg/mystery-man.svg'
     await canvas.scene.createEmbeddedDocuments('Token', [
-      { name: 'Ground (friendly)', x: 500, y: 800, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
-      { name: 'Flyer (hostile, +20ft)', x: 950, y: 800, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
-      { name: 'Giant (neutral, 2x2)', x: 1350, y: 1000, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
-      { name: 'Tree (GLB model)', x: 650, y: 1150, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
+      { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
+      { name: 'Flyer (hostile, +20ft)', x: 1150, y: 1150, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
+      { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
     ])
+    // A centered room with corners on the scene grid, fully inside the scene
+    // rect (no padding overhang) — makes wall/token alignment obvious.
     await canvas.scene.createEmbeddedDocuments('Wall', [
-      { c: [400, 600, 1600, 600] },
-      { c: [400, 600, 400, 1400] },
-      { c: [1600, 600, 1600, 1400], flags: { 'wall-height': { bottom: 0, top: 30 } } },
+      { c: [1000, 1000, 2000, 1000] },
+      { c: [1000, 2000, 2000, 2000] },
+      { c: [1000, 1000, 1000, 2000] },
+      { c: [2000, 1000, 2000, 2000], flags: { 'wall-height': { bottom: 0, top: 30 } } },
+    ])
+    // A map note pin — UI on the map, rendered as a flat marker (not 3D geometry).
+    await canvas.scene.createEmbeddedDocuments('Note', [
+      { x: 1750, y: 1300, text: 'Quest', texture: { src: 'icons/svg/book.svg' }, iconSize: 60, fontSize: 28, global: true },
     ])
   }, MODEL_URL)
-  await page.waitForFunction(() => canvas.tokens.placeables.length >= 4 && canvas.walls.placeables.length >= 3, { timeout: 15_000 })
+  await page.waitForFunction(
+    () => canvas.tokens.placeables.length >= 4 && canvas.walls.placeables.length >= 3 && canvas.notes.placeables.length >= 1,
+    { timeout: 15_000 },
+  )
 
   // Baseline: the normal Foundry 2D canvas.
   await hideChrome(page)
