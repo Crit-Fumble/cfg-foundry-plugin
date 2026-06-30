@@ -25,6 +25,13 @@ it on overlays a three.js canvas over the board that renders:
   button) for the full multi-floor dollhouse. Native Level maps + tokens slice precisely (they're
   document-based); walls/tiles/lights follow Foundry's placeables (the current floor), so below-floor
   walls aren't drawn yet — a doc-based follow-up if full lower-floor geometry is wanted;
+- **walls anchored to their floor + clipped to the slice** — a wall's vertical band is its native v14
+  Level band (worldspace, so it sits at its floor's height, not the ground), or the `wall-height`
+  flag, or the building span for an all-floors wall. When slicing, a tall multi-floor wall is clipped
+  to the active floor's ceiling, so only its current-floor section shows and it can't block the view;
+- **elevation is worldspace + level-relative** (verified): a token's base ring sits at its Level's
+  `elevation.base × pxPerUnit` and the mini at its absolute `elevation × pxPerUnit`; level maps at the
+  Level's base. So a flier on the upper floor is anchored to the upper floor, not the ground;
 - an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
   toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
 - a **top-level "3D View" scene-control group** (its own left-toolbar button, not a tool buried

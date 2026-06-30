@@ -747,6 +747,52 @@ export class Overlay3D {
     return lvl ? this._levelBase(lvl) : 0
   }
 
+  /** A Level's top elevation in grid units; +Infinity for an open (null) top. */
+  _levelTop(level) {
+    const t = level?.elevation?.top
+    if (t === null || t === undefined) return Infinity
+    return Number.isFinite(Number(t)) ? Number(t) : Infinity
+  }
+
+  /** Default wall height in grid-distance units (~2 grid squares) when unknown. */
+  _defaultWallUnits() {
+    const d = canvas?.dimensions
+    return d?.distance ? Number(d.distance) * 2 : 10
+  }
+
+  /**
+   * A wall's vertical band [bottom, top] in grid units (worldspace elevation).
+   * Priority: the community wall-height flag (absolute), else the native v14
+   * Level band(s) the wall belongs to — so a wall sits at its floor's height in
+   * worldspace, not at the ground — else a sensible default. An empty levels-set
+   * means "all floors", so the wall spans the whole building.
+   */
+  _wallBand(doc) {
+    const wh = doc?.flags?.['wall-height'] || {}
+    const hasFlag = Number.isFinite(wh.bottom) || Number.isFinite(wh.top)
+    const defUnits = this._defaultWallUnits()
+    if (hasFlag) {
+      const bottom = Number.isFinite(wh.bottom) ? Number(wh.bottom) : 0
+      const top = Number.isFinite(wh.top) ? Number(wh.top) : bottom + defUnits
+      return { bottom, top }
+    }
+    const lvls = canvas?.scene?.levels
+    const ids = doc?.levels && typeof doc.levels[Symbol.iterator] === 'function' ? [...doc.levels] : []
+    const pool = (ids.length ? ids.map((id) => lvls?.get?.(id)) : lvls?.contents || []).filter(Boolean)
+    if (pool.length) {
+      let bottom = Infinity
+      let top = -Infinity
+      for (const l of pool) {
+        bottom = Math.min(bottom, this._levelBase(l))
+        top = Math.max(top, this._levelTop(l))
+      }
+      if (!Number.isFinite(bottom)) bottom = 0
+      if (!Number.isFinite(top)) top = bottom + defUnits
+      return { bottom, top }
+    }
+    return { bottom: 0, top: defUnits }
+  }
+
   /**
    * The active "viewed" floor for the slice: a selected token's level (focus)
    * takes priority, then Foundry's currently-viewed level (canvas.level), then
@@ -827,7 +873,6 @@ export class Overlay3D {
     const placeables = canvas?.walls?.placeables || []
     if (!placeables.length) return
     const pxPerUnit = this._pxPerUnit()
-    const defaultHeightPx = (canvas?.dimensions?.size || 100) * 2
     this._wallMat = new THREE.MeshStandardMaterial({
       color: 0x9098a3,
       roughness: 0.9,
@@ -843,11 +888,18 @@ export class Overlay3D {
         const c = doc?.c
         if (!Array.isArray(c) || c.length < 4) continue
         const [x1, y1, x2, y2] = c
-        const wh = doc.flags?.['wall-height'] || {}
-        const bottom = Number.isFinite(wh.bottom) ? wh.bottom : 0
-        const top = Number.isFinite(wh.top) ? wh.top : null
-        const basePx = bottom * pxPerUnit
-        const heightPx = top != null ? Math.max(1, (top - bottom) * pxPerUnit) : defaultHeightPx
+        const band = this._wallBand(doc)
+        let wbottom = band.bottom
+        let wtop = band.top
+        // Cutaway: clip a tall, multi-floor wall to the active floor's ceiling so
+        // only its current-floor section shows and it can't block the view down.
+        if (this._sliceFloors !== false) {
+          const ceil = this._levelTop(this._activeLevel())
+          if (Number.isFinite(ceil)) wtop = Math.min(wtop, ceil)
+        }
+        if (wtop - wbottom < 0.01) continue // nothing left after the cut
+        const basePx = wbottom * pxPerUnit
+        const heightPx = Math.max(1, (wtop - wbottom) * pxPerUnit)
         const dx = x2 - x1
         const dz = y2 - y1
         const len = Math.hypot(dx, dz)
