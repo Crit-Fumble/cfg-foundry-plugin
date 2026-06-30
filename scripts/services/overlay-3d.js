@@ -80,12 +80,8 @@ export class Overlay3D {
     this._fpLastTick = 0
     this._fpCommitAt = 0
     this._fpDirty = false
-    /** @type {boolean} first-person drag-look active */
-    this._looking = false
-    /** @type {((e: MouseEvent) => void)|null} first-person drag-look mouse handlers */
-    this._mouseDownHandler = null
-    this._mouseMoveHandler = null
-    this._mouseUpHandler = null
+    /** @type {((e: WheelEvent) => void)|null} first-person wheel-turn handler */
+    this._wheelHandler = null
 
     this._ground = null
     this._grid = null
@@ -668,77 +664,68 @@ export class Overlay3D {
 
   /**
    * Enable/disable first-person input: WASD (capture phase, preempting Foundry's
-   * keys) + click-and-drag mouse-look (MMO-style — hold + drag to turn; the
-   * cursor stays visible, matching Foundry's own interaction model).
+   * keys) for movement — W/S forward/back, A/D strafe — and the mouse WHEEL for
+   * turning (Foundry's rotation snap: 15°, or 45° with Shift). Turning is a
+   * deliberate, separate action, so strafing never changes facing.
    */
   _setFpInput(on) {
     if (on && !this._keyHandler) {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
-      this._mouseDownHandler = (e) => this._onMouseDown(e)
-      this._mouseMoveHandler = (e) => this._onMouseMove(e)
-      this._mouseUpHandler = () => this._onMouseUp()
+      this._wheelHandler = (e) => this._onWheel(e)
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
-      this._container?.addEventListener('mousedown', this._mouseDownHandler)
-      document.addEventListener('mousemove', this._mouseMoveHandler, true)
-      document.addEventListener('mouseup', this._mouseUpHandler, true)
+      this._container?.addEventListener('wheel', this._wheelHandler, { passive: false, capture: true })
       this._keys = { w: false, a: false, s: false, d: false }
-      this._looking = false
       this._fpCenter = null
       this._fpLastTick = 0
       this._fpPitch = 0
-      if (this._container) this._container.style.cursor = 'grab'
+      if (this._container) this._container.style.cursor = ''
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
       window.removeEventListener('keyup', this._keyUpHandler, true)
-      this._container?.removeEventListener('mousedown', this._mouseDownHandler)
-      document.removeEventListener('mousemove', this._mouseMoveHandler, true)
-      document.removeEventListener('mouseup', this._mouseUpHandler, true)
+      this._container?.removeEventListener('wheel', this._wheelHandler, { capture: true })
       this._keyHandler = null
       this._keyUpHandler = null
-      this._mouseDownHandler = null
-      this._mouseMoveHandler = null
-      this._mouseUpHandler = null
-      this._looking = false
+      this._wheelHandler = null
       this._keys = { w: false, a: false, s: false, d: false }
       if (this._container) this._container.style.cursor = ''
+      // First-person drives the token via rapid movement commits, which leave a
+      // movement-ruler "ghost" path in canvas.tokens._rulerPaths that Foundry does
+      // NOT clear on its own — a trailing duplicate token on the 2D canvas. Clear
+      // it on exit. (Verified live: only _rulerPaths.removeChildren() removes it.)
+      try {
+        canvas?.tokens?._rulerPaths?.removeChildren?.()
+      } catch {
+        /* nothing to clear */
+      }
     }
   }
 
-  /** Start a click-and-drag look (left button); the cursor stays visible. */
-  _onMouseDown(event) {
+  /**
+   * First-person: the mouse WHEEL turns the facing, using Foundry's own rotation
+   * snap — 15° per notch, 45° with Shift. Turning is deliberate and separate from
+   * A/D strafe. The camera turns immediately; the new facing is committed to the
+   * token. (Foundry's native wheel-rotate does not reach the overlay in first
+   * person, so the overlay turns the token directly with the same snap feel.)
+   */
+  _onWheel(event) {
     if (this._mode !== 'firstperson' || !this._visible) return
-    if (event.button !== 0) return // left-drag to look
-    this._looking = true
-    if (this._container) this._container.style.cursor = 'grabbing'
-  }
-
-  /** While dragging: movementX yaws the facing, movementY pitches the camera. */
-  _onMouseMove(event) {
-    if (!this._looking || this._mode !== 'firstperson' || !this._visible) return
-    this._applyLook(event.movementX || 0, event.movementY || 0)
-  }
-
-  /** End the drag-look. */
-  _onMouseUp() {
-    if (!this._looking) return
-    this._looking = false
-    if (this._container) this._container.style.cursor = 'grab'
-  }
-
-  /** Apply a look delta (px): yaw the heading (committed to the token), pitch the camera (local, clamped). */
-  _applyLook(dx, dy) {
-    const sens = this._mouseSensitivity() * 0.15 // degrees per pixel
-    this._fpHeading = (((this._fpHeading + dx * sens) % 360) + 360) % 360
-    this._fpPitch = Math.max(-80, Math.min(80, (this._fpPitch || 0) - dy * sens))
-    this._fpDirty = true
+    const tok = this._firstPersonToken()
+    if (!tok?.document) return
+    event.preventDefault?.()
+    event.stopImmediatePropagation?.()
+    if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    const step = event.shiftKey ? 45 : 15
+    this._fpHeading = (((this._fpHeading + (event.deltaY > 0 ? step : -step)) % 360) + 360) % 360
+    this._fpPositionCamera(tok) // turn the camera now
+    this._fpCommitNow(tok) // commit the new facing to the token (a discrete intent)
   }
 
   /**
    * First-person WASD keydown: track held keys (fine movement runs per frame),
    * and step one grid on the initial press in grid mode — W/S forward/back, A/D
-   * strafe left/right along the facing (turning is mouse-look). Walls block
+   * strafe left/right along the facing (turning is the mouse wheel). Walls block
    * movement. Intercepted so Foundry's own keys don't also fire; ignored while
    * typing in a field.
    */
@@ -824,7 +811,7 @@ export class Overlay3D {
   /**
    * The user-facing view mode: '2d' (overlay off, normal Foundry), 'topdown'
    * (mirrors Foundry), 'free' (orbit camera), or 'firstperson' (camera at the
-   * controlled token, facing its rotation; WASD turns/moves it).
+   * controlled token; WASD to move — A/D strafe — and the mouse wheel to turn).
    */
   async setViewMode(mode) {
     if (mode === '2d') {
@@ -900,7 +887,7 @@ export class Overlay3D {
     const m = this._mode
     this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'drag to look · WASD move (A/D strafe)' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson' ? 'WASD move · A/D strafe · scroll to turn (Shift = 45°)' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1390,7 +1377,12 @@ export class Overlay3D {
         }
         const plane = new THREE.Mesh(geo, mat)
         plane.rotation.x = -Math.PI / 2
-        plane.position.set((Number(d.x) || 0) + w / 2, elevPx + 0.5, (Number(d.y) || 0) + h / 2)
+        // A Tile's (x,y) is its anchor/origin, and the default texture anchor is
+        // centered (anchorX/anchorY = 0.5) — so (x,y) is ALREADY the tile's center,
+        // unlike a Token whose (x,y) is the top-left. A PlaneGeometry is centered on
+        // its own position, so place it at (x,y) directly; adding half-size would
+        // double-shift it off the grid (verified: tile center 1100,1600 → 1260,1760).
+        plane.position.set(Number(d.x) || 0, elevPx + 0.5, Number(d.y) || 0)
         plane.receiveShadow = true
         plane.castShadow = true
         this._scene.add(plane)
@@ -1925,7 +1917,7 @@ export class Overlay3D {
           firstperson: {
             name: 'firstperson',
             order: 2,
-            title: 'First Person (camera at the selected token; WASD to move, A/D to turn)',
+            title: 'First Person (camera at the selected token; WASD to move — A/D strafe — scroll to turn)',
             icon: 'fa-solid fa-person',
             toggle: true,
             active: vm === 'firstperson',
@@ -2022,16 +2014,6 @@ export class Overlay3D {
     }
   }
 
-  /** First-person mouse-look sensitivity (a multiplier; default 1). */
-  _mouseSensitivity() {
-    try {
-      const v = Number(game?.settings?.get?.('crit-fumble-core', 'overlay3dMouseSensitivity'))
-      if (Number.isFinite(v) && v > 0) return v
-    } catch {
-      /* not registered yet */
-    }
-    return 1
-  }
 
   /** First-person fine movement: true → W/S move smoothly; false (default) → one grid step per press. */
   _fineMovement() {
@@ -2091,15 +2073,6 @@ export class Overlay3D {
           /* non-fatal */
         }
       },
-    })
-    reg('overlay3dMouseSensitivity', {
-      name: '3D View — First-person mouse sensitivity',
-      hint: 'How fast first-person mouse-look turns the view. 1 = default.',
-      scope: 'client',
-      config: true,
-      type: Number,
-      range: { min: 0.2, max: 3, step: 0.1 },
-      default: 1,
     })
     reg('overlay3dFineMovement', {
       name: '3D View — First-person fine movement',

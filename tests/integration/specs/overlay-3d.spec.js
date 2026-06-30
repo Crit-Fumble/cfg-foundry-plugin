@@ -215,6 +215,24 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   console.log('[overlay-3d] native Level background planes (slice off):', levelBgCount)
   expect(levelBgCount, 'Ground + Upper level maps both render with slice off').toBeGreaterThanOrEqual(2)
 
+  // A Tile sits centered in its grid square exactly like a token. A Tile's (x,y) is
+  // its (default-centered) texture anchor — already the tile CENTER — so the 3D mesh
+  // world (x,z) must equal Foundry's own tile center, NOT center+half-size. Regression
+  // guard for the half-size off-grid tile shift.
+  const tileAlign = await page.evaluate(() => {
+    const inst = window.CFGCore.overlay3D._instance
+    const doc = canvas.scene.tiles.find((t) => t.x === 1100 && t.y === 1600)
+    const placeable = canvas.tiles.get(doc.id)
+    const mesh = inst._tiles.find(
+      (m) => Math.abs((m.geometry?.parameters?.width ?? 0) - doc.width) < 1e-6 && Math.abs((m.geometry?.parameters?.height ?? 0) - doc.height) < 1e-6,
+    )
+    return { foundryCenter: [placeable.center.x, placeable.center.y], topLeft: [doc.x, doc.y], mesh: mesh ? [mesh.position.x, mesh.position.z] : null }
+  })
+  console.log('[overlay-3d] tile alignment (foundryCenter vs mesh):', JSON.stringify(tileAlign))
+  expect(tileAlign.mesh, 'ground tile mesh exists in orbit mode').not.toBeNull()
+  expect(Math.abs(tileAlign.mesh[0] - tileAlign.foundryCenter[0]), `tile world-x off by ${tileAlign.mesh[0] - tileAlign.foundryCenter[0]}`).toBeLessThan(0.5)
+  expect(Math.abs(tileAlign.mesh[1] - tileAlign.foundryCenter[1]), `tile world-z off by ${tileAlign.mesh[1] - tileAlign.foundryCenter[1]}`).toBeLessThan(0.5)
+
   const views = [
     ['03-orbit-default', 'default'],
     ['04-orbit-top', 'top'],
@@ -348,25 +366,22 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   await hideChrome(page)
   await page.screenshot({ path: join(SHOTS, '09-first-person-after-move.png') })
 
-  // (b) Mouse-look turns the facing (camera-driven; pointer-lock in real use).
+  // (b) The mouse WHEEL turns the facing — Foundry's rotation snap (15°, 45° with
+  //     Shift). Turning is deliberate + separate from A/D strafe (the original bug:
+  //     A/D must never turn; the wheel turns).
+  const wheel = (shiftKey) => page.evaluate((sk) => window.CFGCore.overlay3D._instance._onWheel({ deltaY: 100, shiftKey: sk, preventDefault() {}, stopImmediatePropagation() {} }), shiftKey)
   await reset(tokenId)
   await page.waitForTimeout(300)
-  const lookB = (await read(tokenId)).rotation
-  await page.evaluate(() => window.CFGCore.overlay3D._instance._applyLook(200, 0)) // +x look delta
-  await page.waitForTimeout(300) // throttled commit
-  const lookA = (await read(tokenId)).rotation
-  console.log('[overlay-3d] mouse-look turn:', lookB, '→', lookA)
-  expect(lookA !== lookB, 'a horizontal mouse-look delta turns the facing').toBe(true)
-
-  // Drag-look plumbing (MMO-style): left mousedown on the view starts looking, mouseup ends it.
-  const looking = await page.evaluate(() => {
-    document.getElementById('cfg-3d-overlay').dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }))
-    const during = window.CFGCore.overlay3D._instance._looking
-    document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }))
-    return { during, after: window.CFGCore.overlay3D._instance._looking }
-  })
-  expect(looking.during, 'left-drag starts drag-look').toBe(true)
-  expect(looking.after, 'mouseup ends drag-look').toBe(false)
+  const turnB = (await read(tokenId)).rotation
+  await wheel(false)
+  await page.waitForTimeout(300)
+  const turn15 = (await read(tokenId)).rotation
+  console.log('[overlay-3d] wheel turn:', turnB, '→', turn15)
+  expect((((turn15 - turnB) % 360) + 360) % 360, 'one wheel notch turns 15°').toBe(15)
+  await wheel(true)
+  await page.waitForTimeout(300)
+  const turn45 = (await read(tokenId)).rotation
+  expect((((turn45 - turn15) % 360) + 360) % 360, 'Shift+wheel turns 45°').toBe(45)
 
   // (c) Fine movement: hold W, position changes smoothly.
   await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', true))
@@ -393,6 +408,28 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   const wallA = await read(tokenId)
   console.log('[overlay-3d] wall collision:', JSON.stringify({ wallB, wallA }))
   expect(wallA.x, 'a wall blocks the forward step into it').toBe(wallB.x)
+
+  // (e) Ghost: first-person drives the token via rapid movement commits, which leave
+  //     a movement-ruler path in canvas.tokens._rulerPaths. Returning to 2D must clear
+  //     it — no trailing "ghost token" left on Foundry's 2D canvas.
+  await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false))
+  await reset(tokenId)
+  await page.waitForTimeout(250)
+  await tap('w')
+  await page.waitForTimeout(180)
+  await tap('d')
+  await page.waitForTimeout(300)
+  await page.evaluate(async () => {
+    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: false } })
+  })
+  await page.waitForTimeout(700)
+  const ghost = await page.evaluate(() => ({
+    viewMode: window.CFGCore.overlay3D.getViewMode(),
+    rulerPaths: canvas.tokens._rulerPaths?.children?.length ?? -1,
+  }))
+  console.log('[overlay-3d] post-FP ghost check:', JSON.stringify(ghost))
+  expect(ghost.viewMode, 'back to 2D after first-person').toBe('2d')
+  expect(ghost.rulerPaths, 'no leftover movement-ruler ghost on the 2D canvas').toBe(0)
 
   // Restore default first-person setting.
   await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false))
