@@ -18,6 +18,10 @@ it on overlays a three.js canvas over the board that renders:
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
   as a floor plane at its elevation, so a token on an upper floor stands on it. The floor band comes
   from the Levels module (`flags.levels.rangeBottom`) when present, else the tile's own `elevation`;
+- **native v14 `Level` background maps** — each Level's background image renders as a floor plane at
+  its `elevation.bottom` (foreground/roof at `elevation.top`); the image's own alpha (via `alphaTest`)
+  lets a holed upper floor reveal the floor below. In v14 the scene's base map *is* the first Level,
+  so this one path draws both the base map and every stacked floor;
 - **disposition** as a colored footprint disc (green friendly / blue neutral / red hostile);
 - **live multiplayer sync** — moving a token (any client) updates the 3D view, via Foundry's own
   `updateToken` / `moveToken` broadcasts. No new sync server.
@@ -90,10 +94,13 @@ lazy-loaded three.js (a single bundled file, fetched only on first toggle), live
 - **No in-Foundry UI to *assign* a model yet.** GLB loading works (see "3D model formats"), but you
   set `flags["crit-fumble-core"].modelSrc` via a macro/console for now — a Token-config "3D" tab +
   FilePicker picker is the next step.
-- **Native v14 `Level`-document backgrounds not drawn yet** — multi-floor *tiles* now render at
-  their elevation (above), and the Levels module's `flags.levels.rangeBottom` floor band is honored,
-  but per-`Level` background/foreground images (v14's own native multi-floor) aren't yet rendered as
-  floor planes. Tile-based floors (the Levels-module pattern) already cover the common case. Follow-up.
+- **Native v14 `Level` background/foreground maps now render** (`_buildLevelBackgrounds`) at each
+  level's elevation, with image-alpha transparency so floors stack and the lower one shows through an
+  upper floor's holes. Remaining level follow-ups: only `textures.fit: 'fill'` (the default) is
+  honored exactly — other fit modes fall back to fill; **video** backgrounds are skipped (image-only);
+  and orbit shows *all* floors at once (a later option could hide floors outside the viewed level's
+  `visibility.levels` set). `alphaThreshold` is mapped to three.js `alphaTest` — a close visual
+  approximation of Foundry's separate surface-occlusion pipeline, not a 1:1 reproduction.
 - **Move = snap, not animated.** We re-sync on `moveToken`; smooth interpolation is a follow-up.
 - **3D covers the board while on** (it's a view mode, not a side-by-side). Foundry UI stays usable.
 - **Camera does not track Foundry's 2D pan/zoom** — it's an independent orbit camera (intentional

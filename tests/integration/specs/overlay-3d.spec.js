@@ -17,6 +17,10 @@ import { ensureInGame } from '../shared/foundry-login.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SHOTS = join(__dirname, '../../test-results/3d')
 const MODEL_URL = 'http://localhost:30000/modules/crit-fumble-core/tests/fixtures/sample-tree.glb'
+// Native v14 Level background maps — relative FilePathField-valid paths served
+// from the module's fixtures dir (the overlay resolves them to absolute URLs).
+const LEVEL_GROUND_SRC = 'modules/crit-fumble-core/tests/fixtures/level-ground.png'
+const LEVEL_UPPER_SRC = 'modules/crit-fumble-core/tests/fixtures/level-upper.png'
 
 /** Hide Foundry's notification toasts (incl. the headless "no GPU" banner) for clean shots. */
 async function hideChrome(page) {
@@ -58,7 +62,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   await page.waitForFunction(() => globalThis.canvas?.ready === true, { timeout: 60_000 })
 
   // Tokens (incl. a GLB-model token) + walls (incl. a Wall-Height tall one).
-  await page.evaluate(async (MODEL_URL) => {
+  await page.evaluate(async ({ MODEL_URL, LEVEL_GROUND_SRC, LEVEL_UPPER_SRC }) => {
     const tIds = canvas.scene.tokens.map((t) => t.id)
     if (tIds.length) await canvas.scene.deleteEmbeddedDocuments('Token', tIds)
     const wIds = canvas.scene.walls.map((w) => w.id)
@@ -67,7 +71,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const src = 'icons/svg/mystery-man.svg'
     await canvas.scene.createEmbeddedDocuments('Token', [
       { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id, light: { dim: 26, bright: 13, color: '#ffce8a', luminosity: 0.4, alpha: 0.5 } },
-      { name: 'Flyer (upstairs +30ft)', x: 1500, y: 1300, elevation: 30, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      { name: 'Upstairs (Upper level, +20ft)', x: 1500, y: 1300, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
       { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
       { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
     ])
@@ -79,14 +83,35 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
       { c: [1000, 1000, 1000, 2000] },
       { c: [2000, 1000, 2000, 2000], flags: { 'wall-height': { bottom: 0, top: 30 } } },
     ])
-    // Tiles as floors at different elevations (multi-floor "Levels"): a ground
-    // floor (elev 0) + a raised upper floor (elev 30) the flyer stands on.
+    // Tiles as floor surfaces at their elevation: a ground rug (elev 0, in a
+    // corner so it doesn't cover the hole) + a platform on the upper floor
+    // (elev 10) the "Upstairs" token stands on.
     const oldTiles = canvas.scene.tiles.map((t) => t.id)
     if (oldTiles.length) await canvas.scene.deleteEmbeddedDocuments('Tile', oldTiles)
     await canvas.scene.createEmbeddedDocuments('Tile', [
-      { x: 1050, y: 1050, width: 900, height: 900, elevation: 0 },
-      { x: 1350, y: 1150, width: 450, height: 450, elevation: 30 },
+      { x: 1100, y: 1600, width: 320, height: 320, elevation: 0 },
+      { x: 1380, y: 1180, width: 360, height: 360, elevation: 20 },
     ])
+    // Native v14 Levels: in v14 the scene's base map IS the first Level. Make it
+    // the Ground floor (opaque map, elev 0-20), then add an Upper floor (elev
+    // 20-40) whose map is transparent in the centre — so in 3D the ground shows
+    // through the hole. Idempotent: update-or-create so re-runs reset elevations.
+    const ground = canvas.scene.levels.contents[0]
+    if (ground) {
+      await ground.update({ name: 'Ground', 'elevation.bottom': 0, 'elevation.top': 20, 'background.src': LEVEL_GROUND_SRC, sort: 0 })
+    } else {
+      await canvas.scene.createEmbeddedDocuments('Level', [
+        { name: 'Ground', elevation: { bottom: 0, top: 20 }, background: { src: LEVEL_GROUND_SRC }, sort: 0 },
+      ])
+    }
+    const upper = canvas.scene.levels.contents.find((l) => l.name === 'Upper')
+    if (upper) {
+      await upper.update({ 'elevation.bottom': 20, 'elevation.top': 40, 'background.src': LEVEL_UPPER_SRC, sort: 10 })
+    } else {
+      await canvas.scene.createEmbeddedDocuments('Level', [
+        { name: 'Upper', elevation: { bottom: 20, top: 40 }, background: { src: LEVEL_UPPER_SRC }, sort: 10 },
+      ])
+    }
     // A map note pin — UI on the map, rendered as a flat marker (not 3D geometry).
     await canvas.scene.createEmbeddedDocuments('Note', [
       { x: 1750, y: 1300, text: 'Quest', texture: { src: 'icons/svg/book.svg' }, iconSize: 60, fontSize: 28, global: true },
@@ -98,12 +123,13 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
       { x: 1500, y: 1350, config: { color: '#ff8a3d', dim: 28, bright: 14, alpha: 0.6, luminosity: 0.5 } },
     ])
     await canvas.scene.update({ 'environment.darknessLevel': 0.25 }).catch(() => {})
-  }, MODEL_URL)
+  }, { MODEL_URL, LEVEL_GROUND_SRC, LEVEL_UPPER_SRC })
   await page.waitForFunction(
     () =>
       canvas.tokens.placeables.length >= 4 &&
       canvas.walls.placeables.length >= 3 &&
       canvas.tiles.placeables.length >= 2 &&
+      canvas.scene.levels.contents.filter((l) => l.background?.src).length >= 2 &&
       canvas.notes.placeables.length >= 1 &&
       canvas.lighting.placeables.length >= 1,
     { timeout: 15_000 },
@@ -169,6 +195,13 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // --- Orbit (free-look) mode — review angles. ---
   await page.evaluate(() => window.CFGCore.overlay3D.setMode('orbit'))
   await page.waitForTimeout(500)
+
+  // Native v14 Level backgrounds render only in orbit (tracked uses Foundry's own
+  // floor). Both floor maps should be present as planes at their elevations.
+  const levelBgCount = await page.evaluate(() => window.CFGCore.overlay3D._instance._levelBackgrounds.length)
+  console.log('[overlay-3d] native Level background planes (orbit):', levelBgCount)
+  expect(levelBgCount, 'Ground + Upper level maps should render as planes').toBeGreaterThanOrEqual(2)
+
   const views = [
     ['03-orbit-default', 'default'],
     ['04-orbit-top', 'top'],

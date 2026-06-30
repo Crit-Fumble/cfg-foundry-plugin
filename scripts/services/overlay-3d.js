@@ -76,6 +76,8 @@ export class Overlay3D {
     this._lights = []
     /** @type {any[]} tile floor planes (rendered at their elevation / Levels floor) */
     this._tiles = []
+    /** @type {any[]} native v14 Level background/foreground map planes (one per floor, at its elevation) */
+    this._levelBackgrounds = []
     /** @type {any} shared wall material */
     this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -122,6 +124,9 @@ export class Overlay3D {
       this._on('createTile', () => this._scheduleRebuild())
       this._on('updateTile', () => this._scheduleRebuild())
       this._on('deleteTile', () => this._scheduleRebuild())
+      this._on('createLevel', () => this._scheduleRebuild())
+      this._on('updateLevel', () => this._scheduleRebuild())
+      this._on('deleteLevel', () => this._scheduleRebuild())
       this._on('createNote', () => this._scheduleRebuild())
       this._on('updateNote', () => this._scheduleRebuild())
       this._on('deleteNote', () => this._scheduleRebuild())
@@ -423,7 +428,12 @@ export class Overlay3D {
     const cx = rect.x + rect.width / 2
     const cz = rect.y + rect.height / 2
 
-    this._buildGround(rect, cx, cz)
+    // Native v14 Level backgrounds first — in v14 the scene's base map IS the
+    // first Level, so this renders the base map and every stacked floor at its
+    // own elevation. Fall back to a single ground plane only when no Level has
+    // an image (degenerate/programmatic scene → blank-slate boot).
+    const levelMaps = this._buildLevelBackgrounds(rect, cx, cz)
+    if (!levelMaps) this._buildGround(rect, cx, cz)
     this._buildGrid(rect, cx, cz)
     this._buildLights()
     this._buildWalls()
@@ -540,6 +550,112 @@ export class Overlay3D {
     plane.receiveShadow = true
     this._scene.add(plane)
     this._ground = plane
+  }
+
+  /**
+   * Render native v14 `Level` map images as floor planes at each level's elevation.
+   * In v14 a Scene's map is decomposed into embedded Level documents — the base
+   * map is the first level, and stacked floors are further levels at higher
+   * elevations. Each level's `background` (at elevation.bottom) and optional
+   * `foreground` roof (at elevation.top) render as scene-rect-sized quads.
+   *
+   * Transparency comes from the image's OWN alpha channel via three.js `alphaTest`
+   * (a hard cutout, seeded from the level's `alphaThreshold`) — so a holed upper
+   * floor reveals the floor below it, without the depth-sort/z-fight problems that
+   * `transparent` blending brings to stacked coplanar floors. (Foundry's own
+   * `alphaThreshold` actually drives a CPU hit-test + a separate surface-occlusion
+   * shader; we approximate the visible result with the texture's alpha + alphaTest.)
+   *
+   * @returns {number} how many background quads were drawn (0 → caller draws the
+   *   fallback ground plane). Skipped entirely in tracked mode (Foundry's own
+   *   canvas already shows the correct floor).
+   */
+  _buildLevelBackgrounds(rect, cx, cz) {
+    if (this._foundryFloor()) return 0
+    const scene = canvas?.scene
+    const levels = scene?.levels?.contents ?? (Array.isArray(scene?.levels) ? scene.levels : [])
+    if (!levels.length) return 0
+    // Sort by `sort` so equal-elevation floors keep a stable stacking order.
+    const sorted = [...levels].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0))
+    let backgrounds = 0
+    for (const level of sorted) {
+      if (this._addLevelQuad(level, level.background, 'bottom', rect, cx, cz)) backgrounds += 1
+      // Foreground (roof/overhead) at the band top — optional, still meaningful in 3D.
+      this._addLevelQuad(level, level.foreground, 'top', rect, cx, cz)
+    }
+    return backgrounds
+  }
+
+  /**
+   * Add one scene-rect-sized textured quad for a level's background or foreground.
+   * @returns {boolean} true if a quad was added (a usable image src was present).
+   */
+  _addLevelQuad(level, texData, which, rect, cx, cz) {
+    const src = texData?.src
+    if (!src) return false
+    if (/\.(webm|mp4|m4v|ogv)$/i.test(src)) return false // video src: image-only for now
+    const THREE = this._THREE
+    const t = level?.textures || {}
+    const geo = new THREE.PlaneGeometry(rect.width, rect.height) // fit='fill' (default) — texture stretches to the scene rect
+    const loader = new THREE.TextureLoader()
+    loader.setCrossOrigin('anonymous')
+    const tex = loader.load(this._assetUrl(src), () => this._render())
+    tex.colorSpace = THREE.SRGBColorSpace
+    const at = Number(texData.alphaThreshold)
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: 0.95,
+      metalness: 0,
+      side: THREE.DoubleSide,
+      alphaTest: Number.isFinite(at) ? at : 0.75, // image alpha → see-through holes to the floor below
+    })
+    const tint = Number(texData.tint)
+    if (Number.isFinite(tint) && tint !== 0xffffff) mat.color.set(tint) // Foundry Color is a Number subclass
+    const plane = new THREE.Mesh(geo, mat)
+    plane.rotation.x = -Math.PI / 2 // lay flat on XZ
+    const rot = Number(t.rotation)
+    if (Number.isFinite(rot) && rot !== 0) plane.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), -(rot * Math.PI) / 180)
+    let y = this._levelElevPx(level, which)
+    if (which === 'top') y += 0.6 // nudge a roof above the band top (avoids z-fight on a thin level)
+    const ox = Number(t.offsetX) || 0
+    const oz = Number(t.offsetY) || 0
+    plane.position.set(cx + ox, y, cz + oz)
+    plane.receiveShadow = true // floors catch token/wall shadows; they don't cast (holes can't cast a solid shadow)
+    this._scene.add(plane)
+    this._levelBackgrounds.push(plane)
+    return true
+  }
+
+  /**
+   * A level's elevation in pixels for the given edge ('bottom' for a background,
+   * 'top' for a foreground). Honors the null→±Infinity open-band contract by
+   * falling back to the client-derived finite `elevation.base` (never ±Infinity).
+   */
+  _levelElevPx(level, which) {
+    const e = level?.elevation || {}
+    let v = which === 'top' ? e.top : e.bottom
+    if (!Number.isFinite(Number(v))) v = Number(e.base)
+    if (!Number.isFinite(v)) v = 0
+    return v * this._pxPerUnit()
+  }
+
+  /**
+   * Resolve a Foundry asset path (stored relative by FilePathField, e.g.
+   * "modules/.../floor.png") to an absolute URL three.js's loaders can fetch.
+   * Honors Foundry's route prefix via getRoute; passes absolute/data/blob through.
+   */
+  _assetUrl(src) {
+    if (!src || /^(https?:|data:|blob:)/i.test(src)) return src
+    try {
+      const route = typeof foundry?.utils?.getRoute === 'function' ? foundry.utils.getRoute(src) : src
+      return new URL(route, window.location.origin).href
+    } catch {
+      try {
+        return new URL(src, document.baseURI).href
+      } catch {
+        return src
+      }
+    }
   }
 
   _buildGrid(rect, cx, cz) {
@@ -1111,6 +1227,11 @@ export class Overlay3D {
       this._disposeObject(t)
     }
     this._tiles = []
+    for (const m of this._levelBackgrounds) {
+      this._scene.remove(m)
+      this._disposeObject(m)
+    }
+    this._levelBackgrounds = []
     this._ready = false
   }
 
