@@ -69,6 +69,16 @@ export class Overlay3D {
     this._keyHandler = null
     /** @type {string|null} last token the user controlled (the first-person subject) */
     this._lastTokenId = null
+    /** @type {{w:boolean,a:boolean,s:boolean,d:boolean}} held WASD keys (first-person) */
+    this._keys = { w: false, a: false, s: false, d: false }
+    /** @type {((e: KeyboardEvent) => void)|null} first-person key-up handler */
+    this._keyUpHandler = null
+    // First-person local camera state — driven smoothly, committed to the token on a throttle.
+    this._fpHeading = 0
+    this._fpCenter = null
+    this._fpLastTick = 0
+    this._fpCommitAt = 0
+    this._fpDirty = false
 
     this._ground = null
     this._grid = null
@@ -142,6 +152,7 @@ export class Overlay3D {
       // Remember the controlled token (the first-person subject) + focus-follow slice.
       this._on('controlToken', (token, controlled) => {
         if (controlled && token?.id) this._lastTokenId = token.id
+        if (this._mode === 'firstperson') this._fpCenter = null // re-anchor first-person to the new subject
         // Rebuild on focus-follow (slice) or in first-person (to hide the new subject).
         if (this._focusFollowEnabled() || this._mode === 'firstperson') this._scheduleRebuild()
       })
@@ -531,42 +542,134 @@ export class Overlay3D {
     return placeables.find((t) => t.document?.isOwner) || placeables[0] || null
   }
 
-  _syncFirstPersonCamera() {
+  /**
+   * First-person movement controller, run per frame. Drives a LOCAL camera
+   * heading + ground point so continuous turn/move stay smooth (60fps) while the
+   * token document is committed on a throttle (~11/s). Discrete steps (15°/45°
+   * turn, one-grid move) are applied on keydown. Walls block all movement.
+   */
+  _fpStep(now) {
     const cam = this._orbitCamera
     if (!cam) return
     const tok = this._firstPersonToken()
     if (!tok?.document) return
-    const doc = tok.document
-    const { w, h } = this._tokenSizePx(doc)
-    const c = tok.center || { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
+    if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    const dt = this._fpLastTick ? Math.min(0.1, (now - this._fpLastTick) / 1000) : 0
+    this._fpLastTick = now
+    const k = this._keys
+    let driving = false
+    if (dt > 0) {
+      if (this._turnMode() === 'continuous' && (k.a || k.d)) {
+        const TURN = 140 // deg/sec
+        this._fpHeading = (((this._fpHeading + TURN * dt * ((k.d ? 1 : 0) - (k.a ? 1 : 0))) % 360) + 360) % 360
+        driving = true
+      }
+      if (this._fineMovement() && (k.w || k.s)) {
+        const size = canvas?.dimensions?.size || 100
+        const sign = (k.w ? 1 : 0) - (k.s ? 1 : 0)
+        const theta = (this._fpHeading + 90) * (Math.PI / 180)
+        const dest = { x: this._fpCenter.x + Math.cos(theta) * size * 3.5 * dt * sign, y: this._fpCenter.y + Math.sin(theta) * size * 3.5 * dt * sign }
+        if (!this._moveBlocked(this._fpCenter, dest)) this._fpCenter = dest
+        driving = true
+      }
+    }
+    if (driving) {
+      this._fpDirty = true
+      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle doc/network writes
+    } else if (!k.w && !k.a && !k.s && !k.d) {
+      this._fpSyncLocalFromToken(tok) // idle → follow the token (external moves, discrete commits)
+    }
+    this._fpPositionCamera(tok)
+  }
+
+  /** Position the first-person camera from the local heading + ground point. */
+  _fpPositionCamera(tok) {
+    const cam = this._orbitCamera
+    if (!cam || !this._fpCenter) return
     const ppu = this._pxPerUnit()
     const size = canvas?.dimensions?.size || 100
-    const eyeY = (Number(doc.elevation) || 0) * ppu + size * 0.9 // ~eye height above the floor
-    const theta = ((Number(doc.rotation) || 0) + 90) * (Math.PI / 180)
+    const eyeY = (Number(tok.document.elevation) || 0) * ppu + size * 0.9 // ~eye height above the floor
+    const theta = (this._fpHeading + 90) * (Math.PI / 180)
     cam.up.set(0, 1, 0)
-    cam.position.set(c.x, eyeY, c.y)
-    cam.lookAt(c.x + Math.cos(theta) * size, eyeY, c.y + Math.sin(theta) * size)
+    cam.position.set(this._fpCenter.x, eyeY, this._fpCenter.y)
+    cam.lookAt(this._fpCenter.x + Math.cos(theta) * size, eyeY, this._fpCenter.y + Math.sin(theta) * size)
     cam.updateProjectionMatrix()
   }
 
+  /** Initialize the local camera state from a token (centre + facing). */
+  _fpSyncLocalFromToken(tok) {
+    const doc = tok.document
+    const { w, h } = this._tokenSizePx(doc)
+    this._fpCenter = tok.center ? { x: tok.center.x, y: tok.center.y } : { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
+    this._fpHeading = Number(doc.rotation) || 0
+  }
+
+  /** Commit the local camera state (position + facing) to the token document. */
+  _fpCommitNow(tok) {
+    try {
+      const doc = tok.document
+      const { w, h } = this._tokenSizePx(doc)
+      doc.update(
+        { x: Math.round(this._fpCenter.x - w / 2), y: Math.round(this._fpCenter.y - h / 2), rotation: Math.round(this._fpHeading) },
+        { teleport: true },
+      )
+    } catch {
+      /* permission / movement rejected — ignore */
+    }
+    this._fpCommitAt = typeof performance !== 'undefined' ? performance.now() : 0
+    this._fpDirty = false
+  }
+
+  /** One grid-step forward/back along the facing, blocked by walls. */
+  _fpGridStep(tok, sign) {
+    const size = canvas?.dimensions?.size || 100
+    const theta = (this._fpHeading + 90) * (Math.PI / 180)
+    const dest = { x: this._fpCenter.x + Math.cos(theta) * size * sign, y: this._fpCenter.y + Math.sin(theta) * size * sign }
+    if (this._moveBlocked(this._fpCenter, dest)) return // a wall blocks the step
+    this._fpCenter = dest
+    this._fpCommitNow(tok)
+  }
+
+  /** Whether a move origin→dest crosses a movement-blocking wall. */
+  _moveBlocked(origin, dest) {
+    try {
+      const backend = CONFIG?.Canvas?.polygonBackends?.move
+      if (backend?.testCollision) return !!backend.testCollision(origin, dest, { type: 'move', mode: 'any' })
+      if (canvas?.walls?.checkCollision) return !!canvas.walls.checkCollision({ A: origin, B: dest }, { type: 'move', mode: 'any' })
+    } catch {
+      /* on error, don't block movement */
+    }
+    return false
+  }
+
   /**
-   * Enable/disable the first-person WASD key handler. Listens in the capture
-   * phase so it preempts Foundry's own movement keys while first-person is active.
+   * Enable/disable the first-person keyboard. Listens in the capture phase so it
+   * preempts Foundry's own movement keys while first-person is active.
    */
   _setKeyboard(on) {
     if (on && !this._keyHandler) {
       this._keyHandler = (e) => this._onKeyDown(e)
+      this._keyUpHandler = (e) => this._onKeyUp(e)
       window.addEventListener('keydown', this._keyHandler, true)
+      window.addEventListener('keyup', this._keyUpHandler, true)
+      this._keys = { w: false, a: false, s: false, d: false }
+      this._fpCenter = null
+      this._fpLastTick = 0
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
+      window.removeEventListener('keyup', this._keyUpHandler, true)
       this._keyHandler = null
+      this._keyUpHandler = null
+      this._keys = { w: false, a: false, s: false, d: false }
     }
   }
 
   /**
-   * First-person WASD: A/D turn the controlled token left/right (±45°), W/S move
-   * it forward/backward one grid step along its facing. Intercepts the keys so
-   * Foundry's own movement doesn't also fire. Ignored while typing in a field.
+   * First-person WASD keydown: track held keys (continuous turn/move run per
+   * frame), and apply discrete steps on the initial press — A/D turn ±15°/45°
+   * (per the turn setting), W/S step one grid along the facing (per the movement
+   * setting). Walls block movement. Intercepted so Foundry's own keys don't also
+   * fire; ignored while typing in a field.
    */
   _onKeyDown(event) {
     if (this._mode !== 'firstperson' || !this._visible) return
@@ -579,19 +682,27 @@ export class Overlay3D {
     if (!tok?.document) return
     event.preventDefault()
     event.stopImmediatePropagation()
-    const doc = tok.document
-    const size = canvas?.dimensions?.size || 100
-    const rot = Number(doc.rotation) || 0
-    if (key === 'a' || key === 'd') {
-      const next = (((rot + (key === 'd' ? 45 : -45)) % 360) + 360) % 360
-      doc.update({ rotation: next })
-    } else {
-      const theta = (rot + 90) * (Math.PI / 180)
-      const sign = key === 'w' ? 1 : -1
-      doc.update(
-        { x: Math.round((doc.x || 0) + Math.cos(theta) * size * sign), y: Math.round((doc.y || 0) + Math.sin(theta) * size * sign), rotation: rot },
-        { teleport: true },
-      )
+    this._keys[key] = true
+    if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    if (event.repeat) return // discrete steps fire once per press; continuous is per-frame
+    if ((key === 'a' || key === 'd') && this._turnMode() !== 'continuous') {
+      const step = this._turnMode() === '15' ? 15 : 45
+      this._fpHeading = (((this._fpHeading + (key === 'd' ? step : -step)) % 360) + 360) % 360
+      this._fpCommitNow(tok)
+    }
+    if ((key === 'w' || key === 's') && !this._fineMovement()) {
+      this._fpGridStep(tok, key === 'w' ? 1 : -1)
+    }
+  }
+
+  /** First-person WASD keyup: release the key; commit the final pose when idle. */
+  _onKeyUp(event) {
+    const key = (event.key || '').toLowerCase()
+    if (key !== 'w' && key !== 'a' && key !== 's' && key !== 'd') return
+    this._keys[key] = false
+    if (!this._keys.w && !this._keys.a && !this._keys.s && !this._keys.d && this._fpDirty) {
+      const tok = this._firstPersonToken()
+      if (tok?.document) this._fpCommitNow(tok)
     }
   }
 
@@ -625,7 +736,7 @@ export class Overlay3D {
     }
     this._setKeyboard(m === 'firstperson') // WASD only in first-person
     if (m === 'orbit') this.setView('default')
-    else if (m === 'firstperson') this._syncFirstPersonCamera()
+    else if (m === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     else this._syncTrackedCamera()
     this._render()
   }
@@ -1612,7 +1723,7 @@ export class Overlay3D {
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
     if (this._mode === 'tracked') this._syncTrackedCamera()
-    else if (this._mode === 'firstperson') this._syncFirstPersonCamera()
+    else if (this._mode === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     else this._controls?.update()
     try {
       this._renderer.render(this._scene, this._camera)
@@ -1847,6 +1958,26 @@ export class Overlay3D {
     }
   }
 
+  /** First-person turn mode: 'continuous' (default) | '15' | '45' (degrees per A/D press). */
+  _turnMode() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dTurnMode')
+      if (v === '15' || v === '45') return v
+    } catch {
+      /* not registered yet */
+    }
+    return 'continuous'
+  }
+
+  /** First-person fine movement: true → W/S move smoothly; false (default) → one grid step per press. */
+  _fineMovement() {
+    try {
+      return game?.settings?.get?.('crit-fumble-core', 'overlay3dFineMovement') === true
+    } catch {
+      return false
+    }
+  }
+
   /** Register the client settings for the 3D view (GPU preference + shadows). */
   _registerSettings() {
     const notify = () => {
@@ -1896,6 +2027,23 @@ export class Overlay3D {
           /* non-fatal */
         }
       },
+    })
+    reg('overlay3dTurnMode', {
+      name: '3D View — First-person turn',
+      hint: 'How A/D rotate your view in first-person: smoothly (hold to turn), or in fixed steps per press.',
+      scope: 'client',
+      config: true,
+      type: String,
+      choices: { continuous: 'Continuous (hold to turn)', 15: 'Step 15°', 45: 'Step 45°' },
+      default: 'continuous',
+    })
+    reg('overlay3dFineMovement', {
+      name: '3D View — First-person fine movement',
+      hint: 'On: W/S move smoothly (hold to walk). Off: W/S step one grid square per press. Walls block movement either way.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: false,
     })
   }
 

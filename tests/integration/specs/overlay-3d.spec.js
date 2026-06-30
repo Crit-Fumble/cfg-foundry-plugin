@@ -256,7 +256,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
 })
 
 test('3D controls — iterate the menu view modes + first-person WASD', async ({ page }) => {
-  test.setTimeout(90_000)
+  test.setTimeout(120_000)
   await ensureInGame(page)
   await expect.poll(() => page.evaluate(() => !!window.CFGCore?.overlay3D), { timeout: 30_000 }).toBe(true)
   await page.evaluate(async () => {
@@ -316,15 +316,69 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
       const d = canvas.scene.tokens.get(tid)
       return { x: d.x, y: d.y, rotation: d.rotation }
     }, id)
+  const key = (k, type) => page.evaluate(([kk, tt]) => window.dispatchEvent(new KeyboardEvent(tt, { key: kk, bubbles: true, cancelable: true })), [k, type])
+  const tap = async (k) => {
+    await key(k, 'keydown')
+    await key(k, 'keyup')
+  }
+
+  // (a) Discrete (45° turn step + one grid move along the new facing).
+  await page.evaluate(async () => {
+    await game.settings.set('crit-fumble-core', 'overlay3dTurnMode', '45')
+    await game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false)
+  })
   const before = await read(tokenId)
-  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true, cancelable: true })))
+  await tap('d')
+  await page.waitForTimeout(300)
+  await tap('w')
   await page.waitForTimeout(500)
-  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true, cancelable: true })))
-  await page.waitForTimeout(800)
   const after = await read(tokenId)
-  console.log('[overlay-3d] first-person WASD before/after:', JSON.stringify({ before, after }))
-  expect(after.rotation, 'D turns the token +45°').toBe((((before.rotation + 45) % 360) + 360) % 360)
-  expect(after.x !== before.x || after.y !== before.y, 'W moves the token along its facing').toBe(true)
+  console.log('[overlay-3d] discrete WASD before/after:', JSON.stringify({ before, after }))
+  expect(after.rotation, 'D (45° step) turns the token +45°').toBe((((before.rotation + 45) % 360) + 360) % 360)
+  expect(after.x !== before.x || after.y !== before.y, 'W steps one grid along the facing').toBe(true)
   await hideChrome(page)
   await page.screenshot({ path: join(SHOTS, '09-first-person-after-move.png') })
+
+  // (b) Continuous turn: hold A, the heading changes smoothly per frame.
+  await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dTurnMode', 'continuous'))
+  const rotB = (await read(tokenId)).rotation
+  await key('a', 'keydown')
+  await page.waitForTimeout(450)
+  await key('a', 'keyup')
+  await page.waitForTimeout(200)
+  const rotA = (await read(tokenId)).rotation
+  console.log('[overlay-3d] continuous turn:', rotB, '→', rotA)
+  expect(rotA !== rotB, 'holding A turns continuously').toBe(true)
+
+  // (c) Fine movement: hold W, position changes smoothly.
+  await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', true))
+  const posB = await read(tokenId)
+  await key('w', 'keydown')
+  await page.waitForTimeout(450)
+  await key('w', 'keyup')
+  await page.waitForTimeout(200)
+  const posA = await read(tokenId)
+  console.log('[overlay-3d] fine move:', JSON.stringify({ posB, posA }))
+  expect(posA.x !== posB.x || posA.y !== posB.y, 'holding W moves continuously').toBe(true)
+
+  // (d) Wall collision: pressed against a wall, a step into it is blocked.
+  await page.evaluate(async (tid) => {
+    await game.settings.set('crit-fumble-core', 'overlay3dTurnMode', '45')
+    await game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false)
+    const d = canvas.scene.tokens.get(tid)
+    await d.update({ x: 1880, y: 1450, rotation: 270 }, { teleport: true }) // by the east wall (x=2000), facing east
+  }, tokenId)
+  await page.waitForTimeout(350)
+  const wallB = await read(tokenId)
+  await tap('w') // step east, into the wall
+  await page.waitForTimeout(400)
+  const wallA = await read(tokenId)
+  console.log('[overlay-3d] wall collision:', JSON.stringify({ wallB, wallA }))
+  expect(wallA.x, 'a wall blocks the step into it').toBe(wallB.x)
+
+  // Restore default first-person settings.
+  await page.evaluate(async () => {
+    await game.settings.set('crit-fumble-core', 'overlay3dTurnMode', 'continuous')
+    await game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false)
+  })
 })
