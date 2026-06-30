@@ -56,6 +56,10 @@ export class Overlay3D {
 
     this._ground = null
     this._grid = null
+    /** @type {any[]} extruded wall meshes */
+    this._walls = []
+    /** @type {any} shared wall material */
+    this._wallMat = null
     /** @type {Map<string, any>} tokenId → THREE.Group */
     this._tokens = new Map()
 
@@ -79,6 +83,9 @@ export class Overlay3D {
       this._on('canvasTearDown', () => this._clearScene())
       this._on('createToken', () => this._scheduleRebuild())
       this._on('deleteToken', () => this._scheduleRebuild())
+      this._on('createWall', () => this._scheduleRebuild())
+      this._on('updateWall', () => this._scheduleRebuild())
+      this._on('deleteWall', () => this._scheduleRebuild())
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
@@ -147,10 +154,11 @@ export class Overlay3D {
 
   async _ensureThree() {
     if (this._THREE) return
-    // Lazy: only fetch ~2MB of three.js when the user actually opens 3D.
-    this._THREE = await import('../lib/three.module.js')
-    const oc = await import('../lib/OrbitControls.js')
-    this._OrbitControls = oc.OrbitControls
+    // Lazy: only fetch the bundled three.js (~730 KB, built via `npm run
+    // build:three`) when the user actually opens the 3D view.
+    const bundle = await import('../lib/three.bundle.js')
+    this._THREE = bundle.THREE
+    this._OrbitControls = bundle.OrbitControls
   }
 
   async _mount() {
@@ -281,6 +289,7 @@ export class Overlay3D {
 
     this._buildGround(rect, cx, cz)
     this._buildGrid(rect, cx, cz)
+    this._buildWalls()
 
     for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
 
@@ -330,6 +339,52 @@ export class Overlay3D {
     }
     this._scene.add(grid)
     this._grid = grid
+  }
+
+  /**
+   * Extrude walls into 3D. Height uses the community "Wall Height" convention
+   * (`flags["wall-height"].top/bottom`, in grid distance units); walls without
+   * it get a sensible default height. (Walls still drive vision/movement on
+   * Foundry's 2D layer — here they are purely visual structure.)
+   */
+  _buildWalls() {
+    const THREE = this._THREE
+    const placeables = canvas?.walls?.placeables || []
+    if (!placeables.length) return
+    const pxPerUnit = this._pxPerUnit()
+    const defaultHeightPx = (canvas?.dimensions?.size || 100) * 2
+    this._wallMat = new THREE.MeshStandardMaterial({
+      color: 0x9098a3,
+      roughness: 0.9,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+    })
+    for (const w of placeables) {
+      try {
+        const doc = w.document
+        const c = doc?.c
+        if (!Array.isArray(c) || c.length < 4) continue
+        const [x1, y1, x2, y2] = c
+        const wh = doc.flags?.['wall-height'] || {}
+        const bottom = Number.isFinite(wh.bottom) ? wh.bottom : 0
+        const top = Number.isFinite(wh.top) ? wh.top : null
+        const basePx = bottom * pxPerUnit
+        const heightPx = top != null ? Math.max(1, (top - bottom) * pxPerUnit) : defaultHeightPx
+        const dx = x2 - x1
+        const dz = y2 - y1
+        const len = Math.hypot(dx, dz)
+        if (len < 1) continue
+        const box = new THREE.Mesh(new THREE.BoxGeometry(len, heightPx, 6), this._wallMat)
+        box.position.set((x1 + x2) / 2, basePx + heightPx / 2, (y1 + y2) / 2)
+        box.rotation.y = -Math.atan2(dz, dx)
+        this._scene.add(box)
+        this._walls.push(box)
+      } catch {
+        /* skip a malformed wall */
+      }
+    }
   }
 
   /** Token footprint in pixels, derived from the document (valid mid-update). */
@@ -533,6 +588,13 @@ export class Overlay3D {
       this._disposeObject(this._grid)
       this._grid = null
     }
+    for (const box of this._walls) {
+      this._scene.remove(box)
+      box.geometry?.dispose?.()
+    }
+    this._walls = []
+    this._wallMat?.dispose?.()
+    this._wallMat = null
     this._ready = false
   }
 

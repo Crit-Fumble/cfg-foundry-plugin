@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build:zip": "node scripts/build-zip.js",
+    "build:three": "esbuild scripts/lib/three-bundle.entry.mjs --bundle --format=esm --minify --legal-comments=none --outfile=scripts/lib/three.bundle.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --coverage",
@@ -23,7 +24,9 @@
     "js-yaml": "^4.2.0"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "three": "^0.184.0"
   }
 }

@@ -81,6 +81,20 @@ try {
     ])
   })
   await page.waitForFunction(() => canvas.tokens.placeables.length >= 3, { timeout: 15_000 })
+
+  // Walls — two default-height, one taller via the Wall Height convention.
+  log('placing walls')
+  await page.evaluate(async () => {
+    const wids = canvas.scene.walls.map((w) => w.id)
+    if (wids.length) await canvas.scene.deleteEmbeddedDocuments('Wall', wids)
+    await canvas.scene.createEmbeddedDocuments('Wall', [
+      { c: [400, 600, 1600, 600] },
+      { c: [400, 600, 400, 1400] },
+      { c: [1600, 600, 1600, 1400], flags: { 'wall-height': { bottom: 0, top: 30 } } },
+    ])
+  })
+  await page.waitForFunction(() => canvas.walls.placeables.length >= 3, { timeout: 10_000 })
+
   await page.screenshot({ path: join(OUT, '3d-00-foundry-2d.png') })
   log('captured 2D baseline')
 

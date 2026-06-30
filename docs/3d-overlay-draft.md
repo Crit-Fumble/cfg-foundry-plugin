@@ -50,15 +50,16 @@ to prove live sync, and asserts the toggle is registered. Screenshots:
 ## What works vs what's stubbed
 
 **Works (verified):** toggle registration (v14 `getSceneControlButtons` Record API), ground plane +
-grid, token billboards, elevation float + stalk, disposition colors, orbit camera, lazy-loaded
-three.js (only fetched on first toggle), live `updateToken` + `moveToken` sync, clean toggle-off,
-all 207 plugin unit tests still pass.
+grid, token billboards, elevation float + stalk, disposition colors, **walls extruded with the
+`flags["wall-height"].top/bottom` convention** (sensible default height when absent), orbit camera,
+lazy-loaded three.js (a single bundled file, fetched only on first toggle), live `updateToken` +
+`moveToken` sync, clean toggle-off, all 207 plugin unit tests still pass.
 
 **Stubbed / not yet (by design — later slices):**
 
 - **No GLB 3D models yet** (Slice 3). Tokens are 2D-art billboards. The plan: a `flags["crit-fumble-core"].modelSrc`
   on the token + Foundry's FilePicker → per-user S3, with the billboard as fallback.
-- **No walls / tiles / lighting in 3D yet** (Slice 2 structure). Only the ground + tokens are built.
+- **Tiles & lighting not in 3D yet** (walls now are — see above). The rest of Slice 2.
 - **Move = snap, not animated.** We re-sync on `moveToken`; smooth interpolation is a follow-up.
 - **3D covers the board while on** (it's a view mode, not a side-by-side). Foundry UI stays usable.
 - **Camera does not track Foundry's 2D pan/zoom** — it's an independent orbit camera (intentional
@@ -67,28 +68,30 @@ all 207 plugin unit tests still pass.
 ## Decisions made autonomously (flag if you'd change them)
 
 - **Branch** `feat/3d-overlay-draft` (not `main`) — it's a draft for review.
-- **Vendored three.js r184** (`scripts/lib/three.module.js` + `three.core.js`) + `OrbitControls.js`
-  copied from core-browser's node_modules, import patched to the local path. ~2 MB in the repo.
-  Loaded **lazily** (dynamic import on first toggle) so the plugin never depends on it at load and
-  unused sessions pay nothing. **Open decision:** add a real bundler/min build vs keep vendored ESM.
+- **three.js is bundled** into a single minified `scripts/lib/three.bundle.js` (~730 KB) via
+  `npm run build:three` (esbuild; `three` is a pinned devDependency). Loaded **lazily** (dynamic
+  import on first toggle) so the plugin never depends on it at load and unused sessions pay nothing.
+  Rebuild after bumping three with `npm run build:three`.
 - **No `module.json` change** — the service is imported by the existing `scripts/module.js` esmodule,
   so edits are picked up on a browser reload (no container restart).
 - The verify harness uses a **`{teleport: true}`** move because v13+ routes x/y/elevation through the
   movement pipeline (a plain `update({x,y})` enqueues an async movement that hasn't committed yet).
 
-## Open questions for you
+## Decisions applied (2026-06-30)
 
-- three.js packaging: vendored ESM (current) vs add a bundler + minified build?
-- Wall height for Slice 2: adopt the community `flags["wall-height"].top/bottom` convention, or our
-  own namespace?
-- Dice: reuse **Dice So Nice!** (AGPL three.js, already the ecosystem standard) inside Foundry, or
-  our own?
-- Keep `tests/integration/verify-3d.mjs` as a committed manual-verify tool, or fold it into the
-  Playwright `specs/` suite?
+- **Packaging:** bundle three.js per-repo (esbuild → `scripts/lib/three.bundle.js`); **not** served
+  from a core URL (that would couple the plugin to core's uptime and break offline / self-hosted
+  Foundry). core-browser already carries `three` as an npm dependency, so it's bundled there by Next.
+- **Walls:** use the community `flags["wall-height"].top/bottom` convention — done.
+- **Dice:** deferred — no 3D dice for now (Dice So Nice! remains the option if we revisit).
+
+Still open: keep `tests/integration/verify-3d.mjs` as a committed manual-verify tool, or fold it into
+the Playwright `specs/` suite?
 
 ## Files
 
 - `scripts/services/overlay-3d.js` — the Overlay3D service (renderer, sync, toggle).
 - `scripts/module.js` — import + start in the `ready` hook (one import line + one start block).
-- `scripts/lib/` — vendored three.js + OrbitControls.
+- `scripts/lib/three.bundle.js` — bundled three.js + OrbitControls (built artifact);
+  `scripts/lib/three-bundle.entry.mjs` — its build entry (`npm run build:three`).
 - `tests/integration/verify-3d.mjs` — standalone Playwright verification + screenshots.
