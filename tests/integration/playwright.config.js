@@ -14,6 +14,8 @@
 import { defineConfig, devices } from '@playwright/test'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { existsSync, readdirSync } from 'fs'
+import { homedir } from 'os'
 import dotenv from 'dotenv'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -22,6 +24,31 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: join(__dirname, '../.env.test') })
 
 const FOUNDRY_URL = process.env.FOUNDRY_URL || 'http://localhost:30000'
+
+// GL backend: hardware (this machine's GPU) by default, software (SwiftShader,
+// headless) when CFG3D_GL=software. Hardware needs the FULL Chromium (headed) —
+// the headless shell can't reach the GPU. We point at the newest installed
+// Playwright Chromium so no extra download is needed (CFG3D_CHROME overrides).
+const SOFTWARE = process.env.CFG3D_GL === 'software'
+function findFullChromium() {
+  if (process.env.CFG3D_CHROME) return process.env.CFG3D_CHROME
+  try {
+    const base = join(homedir(), 'Library', 'Caches', 'ms-playwright')
+    const dirs = readdirSync(base)
+      .filter((d) => /^chromium-\d+$/.test(d))
+      .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]))
+    for (const d of dirs) {
+      for (const arch of ['chrome-mac-arm64', 'chrome-mac-x64']) {
+        const p = join(base, d, arch, 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')
+        if (existsSync(p)) return p
+      }
+    }
+  } catch {
+    /* fall through to Playwright's default resolution */
+  }
+  return undefined
+}
+const HW_CHROMIUM = SOFTWARE ? undefined : findFullChromium()
 
 export default defineConfig({
   testDir: '.',
@@ -39,6 +66,15 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     ...devices['Desktop Chrome'],
+    // Hardware GL by default (this machine's GPU; runs headed via the full
+    // Chromium). Set CFG3D_GL=software for headless SwiftShader (CI / no display).
+    headless: SOFTWARE,
+    launchOptions: {
+      executablePath: HW_CHROMIUM,
+      args: SOFTWARE
+        ? ['--ignore-gpu-blocklist', '--enable-unsafe-swiftshader']
+        : ['--ignore-gpu-blocklist', '--use-angle=metal'],
+    },
     // Above Foundry's 1366x768 minimum (Desktop Chrome's 1280x720 trips its
     // low-resolution gate, which can block sidebar/layout interactions).
     viewport: { width: 1920, height: 1080 },

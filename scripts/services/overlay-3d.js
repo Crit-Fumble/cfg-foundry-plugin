@@ -106,6 +106,7 @@ export class Overlay3D {
       } catch {
         /* allowlist may be frozen on some builds — non-fatal */
       }
+      this._registerSettings()
       this._registerControl()
       // Live sync (free via Foundry's broadcast). Structural changes → rebuild;
       // a token update → move just that token.
@@ -232,10 +233,12 @@ export class Overlay3D {
     document.body.appendChild(container)
     this._container = container
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    const renderer = this._createRenderer(THREE)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.shadowMap.enabled = this._shadowsEnabled() // walls block light → shadows
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
     container.appendChild(renderer.domElement)
     this._renderer = renderer
 
@@ -567,6 +570,8 @@ export class Overlay3D {
         const box = new THREE.Mesh(new THREE.BoxGeometry(len, heightPx, 6), this._wallMat)
         box.position.set((x1 + x2) / 2, basePx + heightPx / 2, (y1 + y2) / 2)
         box.rotation.y = -Math.atan2(dz, dx)
+        box.castShadow = true
+        box.receiveShadow = true
         this._scene.add(box)
         this._walls.push(box)
       } catch {
@@ -591,37 +596,85 @@ export class Overlay3D {
     const darkness = Number(canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0)
     const day = Math.max(0, Math.min(1, 1 - darkness))
 
+    const rect = this._sceneRect()
+    const cx = rect.x + rect.width / 2
+    const cz = rect.y + rect.height / 2
+    const span = Math.max(rect.width, rect.height)
+    const pxPerUnit = this._pxPerUnit()
+    const size = canvas?.dimensions?.size || 100
+
     // Ambient dims with darkness so colored lights read and night looks like night.
-    const hemi = new THREE.HemisphereLight(daylight, darkCol, 0.12 + 0.7 * day)
+    const hemi = new THREE.HemisphereLight(daylight, darkCol, 0.1 + 0.6 * day)
     this._scene.add(hemi)
     this._lights.push(hemi)
 
-    const sun = new THREE.DirectionalLight(brightest, 0.05 + 0.7 * day)
-    sun.position.set(0.4, 1, 0.5)
+    // Sun — the main shadow caster (walls block it → dynamic shadows on the floor).
+    // A low, side-on angle gives long, readable shadows.
+    const shadows = this._shadowsEnabled()
+    const sun = new THREE.DirectionalLight(brightest, 0.35 + 0.7 * day)
+    sun.position.set(cx - span * 0.55, span * 0.5, cz - span * 0.4)
+    sun.target.position.set(cx, 0, cz)
+    sun.castShadow = shadows
+    sun.shadow.mapSize.set(1024, 1024)
+    const sc = sun.shadow.camera
+    sc.left = -span * 0.7
+    sc.right = span * 0.7
+    sc.top = span * 0.7
+    sc.bottom = -span * 0.7
+    sc.near = span * 0.05
+    sc.far = span * 2.6
+    sun.shadow.bias = -0.0004
+    sun.shadow.normalBias = size * 0.04
+    this._scene.add(sun.target)
     this._scene.add(sun)
-    this._lights.push(sun)
+    this._lights.push(sun, sun.target)
 
-    // AmbientLight placeables → point lights at their positions. decay = 0
-    // because the world is in pixel units (hundreds–thousands), where three's
-    // physical 1/d² falloff would make a point light effectively invisible; the
-    // `distance` gives the cutoff radius instead.
-    const pxPerUnit = this._pxPerUnit()
-    const size = canvas?.dimensions?.size || 100
+    // Helper: a Foundry LightData → a three.js point light. decay 0 because the
+    // world is in pixel units (physical 1/d^2 falloff would make it invisible);
+    // `distance` is the cutoff radius. The first few cast shadows (walls block
+    // them) — capped for performance.
+    let shadowBudget = shadows ? 4 : 0
+    const addPointLight = (cfg, x, y, elevPx) => {
+      if (!cfg) return
+      const dim = Number(cfg.dim) || 0
+      const bright = Number(cfg.bright) || 0
+      if (dim <= 0 && bright <= 0) return
+      const color = cfg.color != null ? Number(cfg.color) : 0xffffff
+      const radius = Math.max(dim, bright) * pxPerUnit || size * 4
+      const pl = new THREE.PointLight(color, 1.3 + (Number(cfg.luminosity) || 0), radius, 0)
+      pl.position.set(x, elevPx + size * 0.6, y)
+      if (shadowBudget > 0) {
+        shadowBudget--
+        pl.castShadow = true
+        pl.shadow.mapSize.set(512, 512)
+        pl.shadow.camera.near = size * 0.2
+        pl.shadow.camera.far = radius
+        pl.shadow.bias = -0.0006
+        pl.shadow.normalBias = size * 0.05
+      }
+      this._scene.add(pl)
+      this._lights.push(pl)
+    }
+
+    // AmbientLight placeables → point lights.
     for (const light of canvas?.lighting?.placeables || []) {
       try {
         const d = light.document
         if (d?.hidden) continue
-        const cfg = d.config || {}
-        const color = cfg.color != null ? Number(cfg.color) : 0xffffff
-        const radius = Math.max(Number(cfg.bright) || 0, Number(cfg.dim) || 0) * pxPerUnit || size * 4
-        const intensity = 1.2 + (Number(cfg.luminosity) || 0)
-        const pl = new THREE.PointLight(color, intensity, radius, 0)
-        const elevPx = (Number(d.elevation) || 0) * pxPerUnit
-        pl.position.set(Number(d.x) || 0, elevPx + size * 0.6, Number(d.y) || 0)
-        this._scene.add(pl)
-        this._lights.push(pl)
+        addPointLight(d.config, Number(d.x) || 0, Number(d.y) || 0, (Number(d.elevation) || 0) * pxPerUnit)
       } catch {
-        /* skip a malformed light */
+        /* skip */
+      }
+    }
+
+    // Token-emitted light (token.light) → point lights at the token position.
+    for (const tok of canvas?.tokens?.placeables || []) {
+      try {
+        const d = tok.document
+        const { w, h } = this._tokenSizePx(d)
+        addPointLight(d?.light, (Number(d.x) || 0) + w / 2, (Number(d.y) || 0) + h / 2, (Number(d.elevation) || 0) * pxPerUnit)
+      } catch {
+        /* skip */
       }
     }
   }
@@ -794,6 +847,12 @@ export class Overlay3D {
             // Sit the model's base on the elevation plane (group origin y = 0).
             box = new THREE.Box3().setFromObject(model)
             model.position.y -= box.min.y
+            model.traverse((c) => {
+              if (c.isMesh) {
+                c.castShadow = true
+                c.receiveShadow = true
+              }
+            })
             group.add(model)
             this._render()
           } catch (e) {
@@ -1023,6 +1082,83 @@ export class Overlay3D {
       } catch (err) {
         console.warn('CFG Core | Overlay3D control registration failed:', err)
       }
+    })
+  }
+
+  /**
+   * Create the WebGL renderer, preferring the high-performance (discrete) GPU
+   * and trying a hardware-backed context first — falling back to software only
+   * if no hardware GPU is available. Controlled by the "3D View — GPU" setting.
+   */
+  _createRenderer(THREE) {
+    const powerPreference = this._gpuPreference()
+    const opts = { antialias: true, powerPreference }
+    if (powerPreference !== 'low-power') {
+      try {
+        const r = new THREE.WebGLRenderer({ ...opts, failIfMajorPerformanceCaveat: true })
+        console.log('CFG Core | Overlay3D: hardware WebGL renderer')
+        return r
+      } catch (e) {
+        console.warn('CFG Core | Overlay3D: no hardware GPU — using software WebGL.', e?.message || e)
+      }
+    }
+    return new THREE.WebGLRenderer(opts)
+  }
+
+  _gpuPreference() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dGpu')
+      if (v === 'low-power' || v === 'default') return v
+    } catch {
+      /* not registered yet */
+    }
+    return 'high-performance'
+  }
+
+  _shadowsEnabled() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dShadows')
+      if (typeof v === 'boolean') return v
+    } catch {
+      /* not registered yet */
+    }
+    return true
+  }
+
+  /** Register the client settings for the 3D view (GPU preference + shadows). */
+  _registerSettings() {
+    const notify = () => {
+      try {
+        ui.notifications?.info?.('CFG 3D: toggle the 3D view off and on to apply.')
+      } catch {
+        /* non-fatal */
+      }
+    }
+    const reg = (key, data) => {
+      try {
+        game.settings.register('crit-fumble-core', key, data)
+      } catch {
+        /* already registered / unavailable */
+      }
+    }
+    reg('overlay3dGpu', {
+      name: '3D View — GPU',
+      hint: 'Prefer the high-performance GPU for the 3D view; falls back to software if no hardware GPU is available.',
+      scope: 'client',
+      config: true,
+      type: String,
+      choices: { 'high-performance': 'High performance (GPU)', default: 'Default', 'low-power': 'Low power' },
+      default: 'high-performance',
+      onChange: notify,
+    })
+    reg('overlay3dShadows', {
+      name: '3D View — Dynamic shadows',
+      hint: 'Walls and objects cast shadows from lights. Turn off on low-end GPUs.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: true,
+      onChange: notify,
     })
   }
 

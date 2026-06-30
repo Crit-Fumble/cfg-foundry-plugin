@@ -63,7 +63,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const actor = game.actors.find((a) => a.name === 'CFG Dummy') ?? (await Actor.create({ name: 'CFG Dummy', type: 'character' }))
     const src = 'icons/svg/mystery-man.svg'
     await canvas.scene.createEmbeddedDocuments('Token', [
-      { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
+      { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id, light: { dim: 26, bright: 13, color: '#ffce8a', luminosity: 0.4, alpha: 0.5 } },
       { name: 'Flyer (hostile, +20ft)', x: 1150, y: 1150, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
       { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
       { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
@@ -86,7 +86,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     await canvas.scene.createEmbeddedDocuments('AmbientLight', [
       { x: 1500, y: 1350, config: { color: '#ff8a3d', dim: 28, bright: 14, alpha: 0.6, luminosity: 0.5 } },
     ])
-    await canvas.scene.update({ 'environment.darknessLevel': 0.45 }).catch(() => {})
+    await canvas.scene.update({ 'environment.darknessLevel': 0.25 }).catch(() => {})
   }, MODEL_URL)
   await page.waitForFunction(
     () =>
