@@ -62,6 +62,8 @@ export class Overlay3D {
     this._walls = []
     /** @type {any} shared wall material */
     this._wallMat = null
+    /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
+    this._frame = null
     /** @type {Map<string, any>} tokenId → THREE.Group */
     this._tokens = new Map()
 
@@ -130,6 +132,7 @@ export class Overlay3D {
       isVisible: () => this._visible,
       isReady: () => this._ready,
       rebuild: () => this.rebuild(),
+      setView: (preset) => this.setView(preset),
       destroy: () => this.destroy(),
       tokenCount: () => this._tokens.size,
       _instance: this,
@@ -308,14 +311,30 @@ export class Overlay3D {
 
     for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
 
-    // Frame the scene: camera above + behind the south edge, looking at center.
-    const span = Math.max(rect.width, rect.height)
-    this._camera.position.set(cx, span * 0.85, cz + span * 0.95)
-    if (this._controls) {
-      this._controls.target.set(cx, 0, cz)
-      this._controls.update()
-    }
+    // Cache framing, then apply the default review angle.
+    this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
+    this.setView('default')
     this._ready = true
+    this._render()
+  }
+
+  /**
+   * Move the camera to a named review angle: 'default' | 'top' | 'angle' |
+   * 'low'. Also a natural hook for a future in-UI view switcher.
+   */
+  setView(preset = 'default') {
+    if (!this._camera || !this._controls || !this._frame) return
+    const { cx, cz, span } = this._frame
+    const views = {
+      default: { x: cx, y: span * 0.85, z: cz + span * 0.95 },
+      top: { x: cx, y: span * 1.5, z: cz + span * 0.04 },
+      angle: { x: cx + span * 0.75, y: span * 0.6, z: cz + span * 0.75 },
+      low: { x: cx + span * 0.1, y: span * 0.18, z: cz + span * 1.05 },
+    }
+    const v = views[preset] || views.default
+    this._camera.position.set(v.x, v.y, v.z)
+    this._controls.target.set(cx, 0, cz)
+    this._controls.update()
     this._render()
   }
 

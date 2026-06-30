@@ -53,6 +53,19 @@ export default defineConfig({
     {
       name: 'integration',
       testDir: './specs',
+      testIgnore: 'overlay-3d.spec.js',
+      dependencies: ['setup'],
+      use: {
+        storageState: join(__dirname, '../.auth/foundry.json'),
+      },
+    },
+    {
+      // Screenshot-review run for the 3D overlay — `npm run test:foundry:3d`.
+      // Kept out of the `integration` project (testIgnore above) so the normal
+      // suite doesn't pay for the camera-angle captures.
+      name: '3d-screenshots',
+      testDir: './specs',
+      testMatch: 'overlay-3d.spec.js',
       dependencies: ['setup'],
       use: {
         storageState: join(__dirname, '../.auth/foundry.json'),

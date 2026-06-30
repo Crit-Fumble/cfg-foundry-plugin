@@ -48,17 +48,27 @@ OBJ would only come later as a server-side OBJ→GLB conversion if there's deman
 4. To restart Foundry if needed: `cd workspaces/cfg-foundry-plugin && npm run test:foundry:up`
    (idempotent); stop with `npm run test:foundry:down`.
 
-## Re-run the automated verification (screenshots)
+## Tests & screenshots
+
+**Screenshot-review suite** (Playwright spec `tests/integration/specs/overlay-3d.spec.js`):
 
 ```bash
 cd workspaces/cfg-foundry-plugin
-node tests/integration/verify-3d.mjs          # headless; screenshots → tests/test-results/
-HEADED=1 node tests/integration/verify-3d.mjs  # headed, real GPU (no SW-GL warning banner)
+npm run test:foundry:up    # once, if Foundry isn't already running
+npm run test:foundry:3d    # seeds a scene + captures 5 review angles
 ```
 
-It logs in, builds a scene + 3 tokens at different elevations, toggles the overlay, moves a token
-to prove live sync, and asserts the toggle is registered. Screenshots:
-`3d-00-foundry-2d.png` (2D baseline), `3d-01-overlay-on.png`, `3d-02-after-move.png`.
+Asserts the overlay mounts, the toggle is registered, and 4 tokens + 3 walls build, then captures
+`tests/test-results/3d/`: `01-foundry-2d.png` (2D baseline), `02-3d-default.png`, `03-3d-top.png`
+(near top-down), `04-3d-angle.png` (3/4), `05-3d-low.png` (eye-level). The Foundry "no GPU" banner is
+hidden in these shots (a headless software-GL artifact, absent in a real browser).
+
+**Live-sync quick check** (standalone — moves a token and proves the 3D follows):
+
+```bash
+node tests/integration/verify-3d.mjs           # headless
+HEADED=1 node tests/integration/verify-3d.mjs  # real GPU
+```
 
 > The orange "hardware acceleration not enabled" banner in the headless screenshots is a Foundry
 > warning because headless Chromium uses software GL — it will **not** appear in your real browser.
@@ -105,8 +115,8 @@ lazy-loaded three.js (a single bundled file, fetched only on first toggle), live
 - **3D model format:** glTF/GLB only (Blender-native, single-file, three.js-native); OBJ deferred to
   a possible later server-side conversion. See "3D model formats".
 
-Still open: keep `tests/integration/verify-3d.mjs` as a committed manual-verify tool, or fold it into
-the Playwright `specs/` suite?
+Both now exist: a proper Playwright spec (`specs/overlay-3d.spec.js`, screenshot review via
+`npm run test:foundry:3d`) and the standalone `verify-3d.mjs` (live-sync quick check).
 
 ## Files
 
@@ -116,4 +126,5 @@ the Playwright `specs/` suite?
   `scripts/lib/three-bundle.entry.mjs` — its build entry (`npm run build:three`).
 - `tests/integration/make-sample-glb.mjs` + `tests/fixtures/sample-tree.glb` — a generated sample
   model used to verify GLB loading.
-- `tests/integration/verify-3d.mjs` — standalone Playwright verification + screenshots.
+- `tests/integration/specs/overlay-3d.spec.js` — screenshot-review spec (`npm run test:foundry:3d`);
+  `tests/integration/verify-3d.mjs` — standalone live-sync quick check.
