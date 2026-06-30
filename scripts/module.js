@@ -26,6 +26,7 @@ import { ProvisionDrain } from './services/provision-drain.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { CharacterSyncManager } from './services/character-sync.js'
 import { CharacterPullSync } from './services/character-pull-sync.js'
+import { Overlay3D } from './services/overlay-3d.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -64,6 +65,9 @@ let _worldActorSnapshot = null
 
 /** @type {CharacterPullSync|null} */
 let _characterPullSync = null
+
+/** @type {Overlay3D|null} 3D view-skin over the canvas (DRAFT). */
+let _overlay3D = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -359,6 +363,18 @@ Hooks.once('ready', async () => {
   if ((heartbeatInstallId || apiKey) && game.user.isGM) {
     _characterPullSync = new CharacterPullSync(_api, new CharacterSyncManager(_api), () => _linkedCampaignIds)
     _characterPullSync.start()
+  }
+
+  // 3D overlay (DRAFT — cfs 3D-VTT slice 1) — a three.js view-skin over the
+  // canvas. Available to every user; three.js loads lazily on first toggle.
+  // The toggle lives in the Token scene controls. Reads Foundry's own scene +
+  // token + elevation data; no new server, sync rides Foundry's broadcasts.
+  // See docs/notes/3d-vtt-scope.md (cfg-core-dev-tools).
+  try {
+    _overlay3D = new Overlay3D()
+    _overlay3D.start()
+  } catch (err) {
+    console.warn('CFG Core | Overlay3D init failed (non-fatal):', err)
   }
 
   // CFG sidebar — DISABLED 2026-06-22. The collapsible "CFG" rail loaded an
