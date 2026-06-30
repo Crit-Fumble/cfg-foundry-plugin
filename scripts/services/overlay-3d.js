@@ -135,8 +135,10 @@ export class Overlay3D {
       this._on('createAmbientLight', () => this._scheduleRebuild())
       this._on('updateAmbientLight', () => this._scheduleRebuild())
       this._on('deleteAmbientLight', () => this._scheduleRebuild())
-      // Focus drives the floor-slice: selecting a token cuts away floors above it.
-      this._on('controlToken', () => this._scheduleRebuild())
+      // Focus-follow (opt-in): selecting a token cuts away floors above its floor.
+      this._on('controlToken', () => {
+        if (this._focusFollowEnabled()) this._scheduleRebuild()
+      })
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
@@ -538,6 +540,7 @@ export class Overlay3D {
       this.rebuild() // floor/bg/grid differ per mode (tracked = Foundry's canvas)
     }
     this._updateControlBar()
+    this._syncControlState() // reflect the mode toggle in the 3D control group
   }
 
   /**
@@ -549,6 +552,7 @@ export class Overlay3D {
     this._sliceFloors = !!on
     if (this._mounted && this._visible) this.rebuild()
     this._updateControlBar()
+    this._syncControlState() // reflect the slice toggle in the 3D control group
   }
 
   /**
@@ -807,8 +811,12 @@ export class Overlay3D {
     const scene = canvas?.scene
     const lvls = scene?.levels
     if (!lvls || !lvls.size) return null
-    const tid = canvas?.tokens?.controlled?.[0]?.document?.level
-    if (tid && lvls.get?.(tid)) return lvls.get(tid)
+    // Focus-follow (opt-in): a selected token's floor takes priority.
+    if (this._focusFollowEnabled()) {
+      const tid = canvas?.tokens?.controlled?.[0]?.document?.level
+      if (tid && lvls.get?.(tid)) return lvls.get(tid)
+    }
+    // Otherwise follow Foundry's navigated/viewed level (its own UI behavior).
     if (canvas?.level) return canvas.level
     if (scene._view && lvls.get?.(scene._view)) return lvls.get(scene._view)
     let top = null
@@ -1542,43 +1550,70 @@ export class Overlay3D {
   /*  Scene-control toggle (Foundry v13/v14 Record API)                  */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * Register a top-level "3D View" scene-control group (its own left-toolbar
+   * button with nested tools), rather than a single tool tucked under Tokens.
+   * No `layer`/`activeTool`/group `onChange` — each tool owns its behavior, so
+   * entering/leaving the group never toggles the overlay (it persists).
+   */
   _registerControl() {
-    const onChange = (event, active) => {
-      // `active` reflects the toggle's new state in v13/v14.
-      this.setVisible(active === undefined ? !this._visible : !!active)
-    }
     this._on('getSceneControlButtons', (controls) => {
       try {
-        const tool = {
-          name: 'cfg-3d-overlay',
-          title: 'Toggle 3D View',
-          icon: 'fas fa-cube',
-          order: 999,
-          toggle: true,
-          active: this._visible,
-          onChange,
-          // v12 compat (array shape) also reads onClick:
-          onClick: (active) => this.setVisible(active === undefined ? !this._visible : !!active),
+        const tools = {
+          toggle: {
+            name: 'toggle',
+            order: 0,
+            title: 'Enable 3D View',
+            icon: 'fa-solid fa-cube',
+            toggle: true,
+            active: this._visible,
+            onChange: (event, active) => this.setVisible(active === undefined ? !this._visible : !!active),
+          },
+          mode: {
+            name: 'mode',
+            order: 1,
+            title: 'Free-look 3D camera (off = top-down, aligned to Foundry)',
+            icon: 'fa-solid fa-video',
+            toggle: true,
+            active: this._mode === 'orbit',
+            onChange: (event, active) => this.setMode(active ? 'orbit' : 'tracked'),
+          },
+          slice: {
+            name: 'slice',
+            order: 2,
+            title: 'Floor slice — show the current floor + below, hide floors above',
+            icon: 'fa-solid fa-layer-group',
+            toggle: true,
+            active: this._sliceFloors !== false,
+            onChange: (event, active) => this.setSlice(active),
+          },
+          viewTop: { name: 'viewTop', order: 3, title: 'Camera angle: top', icon: 'fa-solid fa-down-long', button: true, onChange: () => this._presetView('top') },
+          viewAngle: { name: 'viewAngle', order: 4, title: 'Camera angle: 3/4 view', icon: 'fa-solid fa-cube', button: true, onChange: () => this._presetView('angle') },
+          viewLow: { name: 'viewLow', order: 5, title: 'Camera angle: low', icon: 'fa-solid fa-mountain-sun', button: true, onChange: () => this._presetView('low') },
+          viewReset: { name: 'viewReset', order: 6, title: 'Camera angle: reset', icon: 'fa-solid fa-arrow-rotate-left', button: true, onChange: () => this._presetView('default') },
         }
+        const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-cubes', visible: true, tools }
         if (Array.isArray(controls)) {
-          // v12 fallback: controls is an array, tools is an array
-          const group = controls.find((c) => c?.name === 'token' || c?.name === 'tokens')
-          if (group?.tools?.push) group.tools.push(tool)
+          // Legacy (v12) array shape — tools as an array.
+          controls.push({ ...group, tools: Object.values(tools) })
           return
         }
-        // v13/v14: controls is a Record, tools is a Record
-        const group =
-          controls.tokens ||
-          controls.token ||
-          Object.values(controls).find((c) => /token/i.test(c?.name || ''))
-        if (group) {
-          group.tools = group.tools || {}
-          group.tools['cfg-3d-overlay'] = tool
-        }
+        controls['cfg-3d'] = group
       } catch (err) {
         console.warn('CFG Core | Overlay3D control registration failed:', err)
       }
     })
+  }
+
+  /** Ensure the overlay is on, switch to orbit, and apply a camera preset. */
+  async _presetView(preset) {
+    try {
+      if (!this._visible) await this.setVisible(true)
+      this.setMode('orbit')
+      this.setView(preset)
+    } catch {
+      /* non-fatal */
+    }
   }
 
   /**
@@ -1621,6 +1656,19 @@ export class Overlay3D {
     return true
   }
 
+  /**
+   * Whether selecting a token should slice the 3D view to that token's floor.
+   * Off by default: the slice then follows Foundry's navigated/viewed level
+   * (canvas.level) — matching Foundry's own UI behavior. A per-player setting.
+   */
+  _focusFollowEnabled() {
+    try {
+      return game?.settings?.get?.('crit-fumble-core', 'overlay3dFocusFollow') === true
+    } catch {
+      return false
+    }
+  }
+
   /** Register the client settings for the 3D view (GPU preference + shadows). */
   _registerSettings() {
     const notify = () => {
@@ -1655,6 +1703,21 @@ export class Overlay3D {
       type: Boolean,
       default: true,
       onChange: notify,
+    })
+    reg('overlay3dFocusFollow', {
+      name: '3D View — Follow selected token’s floor',
+      hint: 'When on, selecting a token slices the 3D view to that token’s floor (hiding the floors above it). When off (default), the 3D view follows the floor you navigate to with Foundry’s level controls.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: false,
+      onChange: () => {
+        try {
+          if (this._visible) this.rebuild()
+        } catch {
+          /* non-fatal */
+        }
+      },
     })
   }
 

@@ -157,19 +157,22 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     ready: window.CFGCore.overlay3D.isReady(),
     tokens: window.CFGCore.overlay3D.tokenCount(),
     hasCanvas: !!document.querySelector('#cfg-3d-overlay canvas'),
-    toggle: (() => {
+    // A dedicated top-level "3D View" control group (not a tool under Tokens),
+    // with its nested tools (enable toggle, mode, slice, camera presets).
+    group: (() => {
       const c = ui.controls?.controls
       const groups = c ? (Array.isArray(c) ? c : Object.values(c)) : []
-      return groups.some((g) => {
-        const tools = g?.tools ? (Array.isArray(g.tools) ? g.tools : Object.values(g.tools)) : []
-        return tools.some((t) => t?.name === 'cfg-3d-overlay')
-      })
+      const g = groups.find((x) => x?.name === 'cfg-3d')
+      if (!g) return null
+      const tools = g.tools ? (Array.isArray(g.tools) ? g.tools : Object.values(g.tools)) : []
+      return { title: g.title, tools: tools.map((t) => t.name) }
     })(),
   }))
   expect(info.ready).toBe(true)
   expect(info.tokens).toBe(5)
   expect(info.hasCanvas).toBe(true)
-  expect(info.toggle).toBe(true)
+  expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
+  expect(info.group.tools).toEqual(expect.arrayContaining(['toggle', 'mode', 'slice', 'viewTop', 'viewReset']))
 
   // --- Tracked (top-down) mode — the camera mirrors Foundry, so canvas-anchored
   //     UI lines up over the 3D. Pan Foundry to frame the room + select a token
@@ -228,7 +231,9 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // --- Floor slice (cutaway) — focus a ground-floor token; the Upper floor (its
   //     map + the upstairs flier) is hidden so it can't block the view, leaving
   //     just the Ground floor and anything below it (TaleSpire-style). ---
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    // Opt into focus-follow (off by default) so selecting a token slices to its floor.
+    await game.settings.set('crit-fumble-core', 'overlay3dFocusFollow', true)
     window.CFGCore.overlay3D.setSlice(true)
     const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
     t?.control({ releaseOthers: true })

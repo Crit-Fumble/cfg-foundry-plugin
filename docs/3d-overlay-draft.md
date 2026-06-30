@@ -27,6 +27,11 @@ it on overlays a three.js canvas over the board that renders:
   walls aren't drawn yet — a doc-based follow-up if full lower-floor geometry is wanted;
 - an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
   toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
+- a **top-level "3D View" scene-control group** (its own left-toolbar button, not a tool buried
+  under Tokens) with nested tools — Enable, camera mode, Slice, and Top/Angle/Low/Reset presets.
+  It has no canvas `layer`, so entering/leaving it never toggles the overlay (it persists);
+- a **per-player "follow selected token's floor" setting** (off by default → the slice follows
+  Foundry's navigated level, matching Foundry's own UI; on → selecting a token slices to its floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
   as a floor plane at its elevation, so a token on an upper floor stands on it. The floor band comes
   from the Levels module (`flags.levels.rangeBottom`) when present, else the tile's own `elevation`;
