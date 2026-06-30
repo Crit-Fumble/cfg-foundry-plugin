@@ -147,6 +147,9 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // Toggle the 3D overlay on.
   await page.evaluate(() => window.CFGCore.overlay3D.setVisible(true))
   await expect.poll(() => page.evaluate(() => window.CFGCore.overlay3D.isReady()), { timeout: 30_000 }).toBe(true)
+  // Start unsliced so the build assertions see every floor's tokens; the slice
+  // cutaway (on by default) is exercised explicitly later.
+  await page.evaluate(() => window.CFGCore.overlay3D.setSlice(false))
   await page.waitForTimeout(3000) // textures + GLB model load
 
   // Assertions on what got built.
@@ -197,15 +200,17 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
   await page.screenshot({ path: join(SHOTS, '02-tracked.png') })
 
-  // --- Orbit (free-look) mode — review angles. ---
+  // --- Orbit (free-look) mode. ---
   await page.evaluate(() => window.CFGCore.overlay3D.setMode('orbit'))
-  await page.waitForTimeout(500)
+  await page.waitForTimeout(400)
 
-  // Native v14 Level backgrounds render only in orbit (tracked uses Foundry's own
-  // floor). Both floor maps should be present as planes at their elevations.
+  // Slice OFF → the full multi-floor "dollhouse" (both level maps render) for the
+  // review angles.
+  await page.evaluate(() => window.CFGCore.overlay3D.setSlice(false))
+  await page.waitForTimeout(400)
   const levelBgCount = await page.evaluate(() => window.CFGCore.overlay3D._instance._levelBackgrounds.length)
-  console.log('[overlay-3d] native Level background planes (orbit):', levelBgCount)
-  expect(levelBgCount, 'Ground + Upper level maps should render as planes').toBeGreaterThanOrEqual(2)
+  console.log('[overlay-3d] native Level background planes (slice off):', levelBgCount)
+  expect(levelBgCount, 'Ground + Upper level maps both render with slice off').toBeGreaterThanOrEqual(2)
 
   const views = [
     ['03-orbit-default', 'default'],
@@ -219,6 +224,28 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     await page.waitForTimeout(700)
     await page.screenshot({ path: join(SHOTS, `${name}.png`) })
   }
+
+  // --- Floor slice (cutaway) — focus a ground-floor token; the Upper floor (its
+  //     map + the upstairs flier) is hidden so it can't block the view, leaving
+  //     just the Ground floor and anything below it (TaleSpire-style). ---
+  await page.evaluate(() => {
+    window.CFGCore.overlay3D.setSlice(true)
+    const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
+    t?.control({ releaseOthers: true })
+  })
+  await page.waitForTimeout(700) // controlToken → debounced rebuild
+  const sliced = await page.evaluate(() => ({
+    bg: window.CFGCore.overlay3D._instance._levelBackgrounds.length,
+    tokens: window.CFGCore.overlay3D.tokenCount(),
+    active: window.CFGCore.overlay3D.getActiveLevel(),
+  }))
+  console.log('[overlay-3d] floor-slice (focus ground floor):', JSON.stringify(sliced))
+  expect(sliced.bg, 'slice hides the Upper floor map').toBe(1)
+  expect(sliced.tokens, 'slice hides the upstairs flier on the upper floor').toBe(4)
+  await page.evaluate((p) => window.CFGCore.overlay3D.setView(p), 'angle')
+  await hideChrome(page)
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: join(SHOTS, '07-slice-ground.png') })
 
   if (errors.length) console.warn('[overlay-3d] non-fatal page errors:\n  ' + errors.join('\n  '))
 })

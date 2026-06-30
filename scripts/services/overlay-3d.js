@@ -78,6 +78,8 @@ export class Overlay3D {
     this._tiles = []
     /** @type {any[]} native v14 Level background/foreground map planes (one per floor, at its elevation) */
     this._levelBackgrounds = []
+    /** @type {boolean} floor-slice: hide floors above the active level (cutaway, like TaleSpire) */
+    this._sliceFloors = true
     /** @type {any} shared wall material */
     this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -133,6 +135,8 @@ export class Overlay3D {
       this._on('createAmbientLight', () => this._scheduleRebuild())
       this._on('updateAmbientLight', () => this._scheduleRebuild())
       this._on('deleteAmbientLight', () => this._scheduleRebuild())
+      // Focus drives the floor-slice: selecting a token cuts away floors above it.
+      this._on('controlToken', () => this._scheduleRebuild())
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
@@ -173,6 +177,8 @@ export class Overlay3D {
       setView: (preset) => this.setView(preset),
       setMode: (m) => this.setMode(m),
       getMode: () => this._mode,
+      setSlice: (on) => this.setSlice(on),
+      getActiveLevel: () => this._activeLevel()?.id ?? null,
       destroy: () => this.destroy(),
       tokenCount: () => this._tokens.size,
       _instance: this,
@@ -535,6 +541,17 @@ export class Overlay3D {
   }
 
   /**
+   * Toggle the floor-slice cutaway: when on, only the active floor (a selected
+   * token's level, else Foundry's viewed level) and the floors below it render —
+   * floors above are hidden so their walls/ceilings don't block the view.
+   */
+  setSlice(on) {
+    this._sliceFloors = !!on
+    if (this._mounted && this._visible) this.rebuild()
+    this._updateControlBar()
+  }
+
+  /**
    * On-screen control bar (camera mode + view presets + a controls hint) so the
    * camera isn't console-only. Lives inside the overlay container with its own
    * pointer-events, so it stays clickable even in tracked mode (where the
@@ -597,10 +614,13 @@ export class Overlay3D {
         this.setView(v)
       }),
     )
+    const sep2 = document.createElement('span')
+    Object.assign(sep2.style, { width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.15)', margin: '0 2px' })
+    this._btnSlice = mkBtn('Slice', 'Floor cutaway — show only the current/selected floor and the ones below it, hiding upper floors so their walls and ceilings don’t block the view', () => this.setSlice(!this._sliceFloors))
     this._hint = document.createElement('span')
     this._hint.textContent = 'drag rotate · scroll zoom · right-drag pan'
     Object.assign(this._hint.style, { opacity: '0.65', marginLeft: '4px' })
-    bar.append(this._btnTracked, this._btnOrbit, sep, ...this._viewBtns, this._hint)
+    bar.append(this._btnTracked, this._btnOrbit, sep, ...this._viewBtns, sep2, this._btnSlice, this._hint)
     this._container.appendChild(bar)
     this._controlBar = bar
     this._updateControlBar()
@@ -617,6 +637,7 @@ export class Overlay3D {
     }
     hi(this._btnTracked, !orbit)
     hi(this._btnOrbit, orbit)
+    hi(this._btnSlice, this._sliceFloors !== false)
     for (const b of this._viewBtns || []) b.style.opacity = orbit ? '1' : '0.4'
     if (this._hint) this._hint.style.display = orbit ? '' : 'none'
   }
@@ -669,11 +690,16 @@ export class Overlay3D {
     if (!levels.length) return 0
     // Sort by `sort` so equal-elevation floors keep a stable stacking order.
     const sorted = [...levels].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0))
+    const cut = this._sliceCut()
+    const activeBase = this._levelBase(this._activeLevel() || sorted[sorted.length - 1])
     let backgrounds = 0
     for (const level of sorted) {
+      const lb = this._levelBase(level)
+      if (lb > cut + 0.01) continue // floor above the slice → hidden (cutaway)
       if (this._addLevelQuad(level, level.background, 'bottom', rect, cx, cz)) backgrounds += 1
-      // Foreground (roof/overhead) at the band top — optional, still meaningful in 3D.
-      this._addLevelQuad(level, level.foreground, 'top', rect, cx, cz)
+      // Roof/foreground only for floors strictly BELOW the active one, so a
+      // ceiling never blocks the view down into the current floor.
+      if (lb < activeBase - 0.01) this._addLevelQuad(level, level.foreground, 'top', rect, cx, cz)
     }
     return backgrounds
   }
@@ -750,6 +776,74 @@ export class Overlay3D {
     }
   }
 
+  /* ------------------------------------------------------------------ */
+  /*  Floor slice — render the active Level + the floors below it, hide  */
+  /*  the floors above so upper walls/floors don't block the view (the   */
+  /*  TaleSpire "current floor" cutaway). The active floor follows a      */
+  /*  selected token (focus), else Foundry's viewed level (canvas.level). */
+  /* ------------------------------------------------------------------ */
+
+  /** A Level's finite base elevation in grid units (0 if unknown/open). */
+  _levelBase(level) {
+    const b = level?.elevation?.base
+    if (Number.isFinite(Number(b))) return Number(b)
+    const bottom = level?.elevation?.bottom
+    return Number.isFinite(Number(bottom)) ? Number(bottom) : 0
+  }
+
+  /** Base elevation of a level by id (0 if unknown). */
+  _levelBaseOf(levelId) {
+    if (!levelId) return 0
+    const lvl = canvas?.scene?.levels?.get?.(levelId)
+    return lvl ? this._levelBase(lvl) : 0
+  }
+
+  /**
+   * The active "viewed" floor for the slice: a selected token's level (focus)
+   * takes priority, then Foundry's currently-viewed level (canvas.level), then
+   * the topmost level. Null when the scene has no levels.
+   */
+  _activeLevel() {
+    const scene = canvas?.scene
+    const lvls = scene?.levels
+    if (!lvls || !lvls.size) return null
+    const tid = canvas?.tokens?.controlled?.[0]?.document?.level
+    if (tid && lvls.get?.(tid)) return lvls.get(tid)
+    if (canvas?.level) return canvas.level
+    if (scene._view && lvls.get?.(scene._view)) return lvls.get(scene._view)
+    let top = null
+    for (const l of lvls.contents || []) if (!top || this._levelBase(l) > this._levelBase(top)) top = l
+    return top
+  }
+
+  /**
+   * The slice cutoff elevation: floors whose base is above this are hidden.
+   * +Infinity when the slice is off or the scene has no levels (→ render all).
+   */
+  _sliceCut() {
+    if (this._sliceFloors === false) return Infinity
+    const a = this._activeLevel()
+    return a ? this._levelBase(a) : Infinity
+  }
+
+  /**
+   * Whether a placeable document is within the current floor-slice (its floor is
+   * the active level or below). A token carries a single `level`; walls / tiles /
+   * lights / notes carry a `levels` Set (empty = all floors → always shown).
+   */
+  _docInSlice(doc) {
+    const cut = this._sliceCut()
+    if (!Number.isFinite(cut)) return true
+    const set = doc?.levels
+    if (set !== undefined) {
+      const ids = set && typeof set[Symbol.iterator] === 'function' ? [...set] : []
+      if (!ids.length) return true // empty levels-set = present on every floor
+      return ids.some((id) => this._levelBaseOf(id) <= cut + 0.01)
+    }
+    if (doc?.level !== undefined) return this._levelBaseOf(doc.level) <= cut + 0.01
+    return true
+  }
+
   _buildGrid(rect, cx, cz) {
     if (this._foundryFloor()) return // Foundry's own grid shows through
     const THREE = this._THREE
@@ -792,6 +886,7 @@ export class Overlay3D {
     for (const w of placeables) {
       try {
         const doc = w.document
+        if (!this._docInSlice(doc)) continue // wall only on floors above the slice → hidden
         const c = doc?.c
         if (!Array.isArray(c) || c.length < 4) continue
         const [x1, y1, x2, y2] = c
@@ -897,7 +992,7 @@ export class Overlay3D {
     for (const light of canvas?.lighting?.placeables || []) {
       try {
         const d = light.document
-        if (d?.hidden) continue
+        if (d?.hidden || !this._docInSlice(d)) continue
         addPointLight(d.config, Number(d.x) || 0, Number(d.y) || 0, (Number(d.elevation) || 0) * pxPerUnit)
       } catch {
         /* skip */
@@ -908,6 +1003,7 @@ export class Overlay3D {
     for (const tok of canvas?.tokens?.placeables || []) {
       try {
         const d = tok.document
+        if (!this._docInSlice(d)) continue
         const { w, h } = this._tokenSizePx(d)
         addPointLight(d?.light, (Number(d.x) || 0) + w / 2, (Number(d.y) || 0) + h / 2, (Number(d.elevation) || 0) * pxPerUnit)
       } catch {
@@ -932,7 +1028,7 @@ export class Overlay3D {
     for (const tile of tiles) {
       try {
         const d = tile.document
-        if (d?.hidden) continue
+        if (d?.hidden || !this._docInSlice(d)) continue
         const w = Number(d.width) || 0
         const h = Number(d.height) || 0
         if (w < 1 || h < 1) continue
@@ -1092,6 +1188,7 @@ export class Overlay3D {
     try {
       const THREE = this._THREE
       if (!doc) return
+      if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
       const { w, h } = this._tokenSizePx(doc)
       // Derive position from the document (not the placeable) so this is correct
       // both at full rebuild and mid-`updateToken`, when the placeable's

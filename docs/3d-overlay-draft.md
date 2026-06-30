@@ -19,6 +19,14 @@ it on overlays a three.js canvas over the board that renders:
   always the ground), which resolves the Level↔elevation split. No post when a token rests on its
   floor (the common case). All floors' tokens render at once (a 3D "dollhouse"), since the overlay
   iterates token *documents* rather than canvas placeables (which only include the viewed floor);
+- **floor slice (cutaway)** — on by default: the view shows only the active floor (a *selected*
+  token's Level — focus — else Foundry's viewed level) and the floors below it; floors above are
+  hidden so their walls/ceilings can't block the view (TaleSpire-style). Toggle it off (the "Slice"
+  button) for the full multi-floor dollhouse. Native Level maps + tokens slice precisely (they're
+  document-based); walls/tiles/lights follow Foundry's placeables (the current floor), so below-floor
+  walls aren't drawn yet — a doc-based follow-up if full lower-floor geometry is wanted;
+- an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
+  toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
   as a floor plane at its elevation, so a token on an upper floor stands on it. The floor band comes
   from the Levels module (`flags.levels.rangeBottom`) when present, else the tile's own `elevation`;
