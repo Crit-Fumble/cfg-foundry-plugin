@@ -44,11 +44,14 @@ it on overlays a three.js canvas over the board that renders:
   under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down** (mirrors
   Foundry), **Free Camera** (orbit), **First Person** — plus Slice + camera presets. It has no canvas
   `layer`, so entering/leaving it never toggles the overlay (it persists);
-- **First Person** — the camera sits at the selected token's eyes, facing its `rotation` (your own
-  token hidden). **WASD**: A/D turn, W/S move. Two per-player settings: **turn** (Continuous / 15° /
-  45°) and **fine movement** (hold-to-walk vs one-grid-per-press). **Walls block movement** (tested
-  via `polygonBackends.move.testCollision`). Continuous turn/move run per frame against a local
-  camera pose for smoothness; the token document is committed on a throttle, so it stays in sync;
+- **First Person** — the camera sits at the selected token's eyes (your own token hidden). **FPS
+  controls**: **mouse-look** turns the view (Pointer Lock — click the view to look, Esc to release;
+  yaw drives the token's facing, pitch is camera-only), **W/S** forward/back, **A/D strafe**.
+  Per-player settings: **mouse sensitivity** and **fine movement** (hold-to-walk vs one-grid-per-
+  press). **Walls block movement** (`polygonBackends.move.testCollision`). Movement runs per frame
+  against a local camera pose for smoothness; the token is committed on a throttle, so it stays in
+  sync. (Foundry has no rotation-degrees *setting* — its wheel uses a fixed 15°/Shift-45° convention —
+  so first-person turning is mouse-look rather than a keyboard increment.)
 - a **per-player "follow selected token's floor" setting** (off by default → the slice follows
   Foundry's navigated level, matching Foundry's own UI; on → selecting a token slices to its floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders

@@ -75,10 +75,14 @@ export class Overlay3D {
     this._keyUpHandler = null
     // First-person local camera state — driven smoothly, committed to the token on a throttle.
     this._fpHeading = 0
+    this._fpPitch = 0
     this._fpCenter = null
     this._fpLastTick = 0
     this._fpCommitAt = 0
     this._fpDirty = false
+    /** @type {((e: MouseEvent) => void)|null} first-person mouse-look + pointer-lock handlers */
+    this._mouseMoveHandler = null
+    this._lockClickHandler = null
 
     this._ground = null
     this._grid = null
@@ -226,7 +230,7 @@ export class Overlay3D {
         this._startLoop()
       } else {
         this._stopLoop()
-        this._setKeyboard(false)
+        this._setFpInput(false)
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
       }
@@ -557,32 +561,48 @@ export class Overlay3D {
     const dt = this._fpLastTick ? Math.min(0.1, (now - this._fpLastTick) / 1000) : 0
     this._fpLastTick = now
     const k = this._keys
-    let driving = false
-    if (dt > 0) {
-      if (this._turnMode() === 'continuous' && (k.a || k.d)) {
-        const TURN = 140 // deg/sec
-        this._fpHeading = (((this._fpHeading + TURN * dt * ((k.d ? 1 : 0) - (k.a ? 1 : 0))) % 360) + 360) % 360
-        driving = true
+    if (dt > 0 && this._fineMovement() && (k.w || k.a || k.s || k.d)) {
+      let mx = 0
+      let mz = 0
+      for (const key of ['w', 'a', 's', 'd']) {
+        if (!k[key]) continue
+        const d = this._fpMoveDir(key)
+        mx += d.x
+        mz += d.z
       }
-      if (this._fineMovement() && (k.w || k.s)) {
+      const len = Math.hypot(mx, mz)
+      if (len > 0) {
         const size = canvas?.dimensions?.size || 100
-        const sign = (k.w ? 1 : 0) - (k.s ? 1 : 0)
-        const theta = (this._fpHeading + 90) * (Math.PI / 180)
-        const dest = { x: this._fpCenter.x + Math.cos(theta) * size * 3.5 * dt * sign, y: this._fpCenter.y + Math.sin(theta) * size * 3.5 * dt * sign }
-        if (!this._moveBlocked(this._fpCenter, dest)) this._fpCenter = dest
-        driving = true
+        const speed = size * 3.5 // px/sec (~3.5 grids/sec)
+        const dest = { x: this._fpCenter.x + (mx / len) * speed * dt, y: this._fpCenter.y + (mz / len) * speed * dt }
+        if (!this._moveBlocked(this._fpCenter, dest)) {
+          this._fpCenter = dest
+          this._fpDirty = true
+        }
       }
     }
-    if (driving) {
-      this._fpDirty = true
-      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle doc/network writes
+    if (this._fpDirty) {
+      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes (movement + mouse-look)
     } else if (!k.w && !k.a && !k.s && !k.d) {
       this._fpSyncLocalFromToken(tok) // idle → follow the token (external moves, discrete commits)
     }
     this._fpPositionCamera(tok)
   }
 
-  /** Position the first-person camera from the local heading + ground point. */
+  /** A unit move direction (world XZ) for a WASD key from the current heading:
+   * W forward, S back, D strafe-right, A strafe-left. */
+  _fpMoveDir(key) {
+    const theta = (this._fpHeading + 90) * (Math.PI / 180)
+    const f = { x: Math.cos(theta), z: Math.sin(theta) } // forward
+    const r = { x: -Math.sin(theta), z: Math.cos(theta) } // strafe-right
+    if (key === 'w') return f
+    if (key === 's') return { x: -f.x, z: -f.z }
+    if (key === 'd') return r
+    if (key === 'a') return { x: -r.x, z: -r.z }
+    return { x: 0, z: 0 }
+  }
+
+  /** Position the first-person camera from the local heading + pitch + ground point. */
   _fpPositionCamera(tok) {
     const cam = this._orbitCamera
     if (!cam || !this._fpCenter) return
@@ -590,9 +610,11 @@ export class Overlay3D {
     const size = canvas?.dimensions?.size || 100
     const eyeY = (Number(tok.document.elevation) || 0) * ppu + size * 0.9 // ~eye height above the floor
     const theta = (this._fpHeading + 90) * (Math.PI / 180)
+    const pitch = ((this._fpPitch || 0) * Math.PI) / 180
+    const cp = Math.cos(pitch)
     cam.up.set(0, 1, 0)
     cam.position.set(this._fpCenter.x, eyeY, this._fpCenter.y)
-    cam.lookAt(this._fpCenter.x + Math.cos(theta) * size, eyeY, this._fpCenter.y + Math.sin(theta) * size)
+    cam.lookAt(this._fpCenter.x + Math.cos(theta) * cp * size, eyeY + Math.sin(pitch) * size, this._fpCenter.y + Math.sin(theta) * cp * size)
     cam.updateProjectionMatrix()
   }
 
@@ -620,11 +642,10 @@ export class Overlay3D {
     this._fpDirty = false
   }
 
-  /** One grid-step forward/back along the facing, blocked by walls. */
-  _fpGridStep(tok, sign) {
+  /** One grid-step in a unit direction (world XZ), blocked by walls. */
+  _fpGridStep(tok, dir) {
     const size = canvas?.dimensions?.size || 100
-    const theta = (this._fpHeading + 90) * (Math.PI / 180)
-    const dest = { x: this._fpCenter.x + Math.cos(theta) * size * sign, y: this._fpCenter.y + Math.sin(theta) * size * sign }
+    const dest = { x: this._fpCenter.x + dir.x * size, y: this._fpCenter.y + dir.z * size }
     if (this._moveBlocked(this._fpCenter, dest)) return // a wall blocks the step
     this._fpCenter = dest
     this._fpCommitNow(tok)
@@ -643,33 +664,73 @@ export class Overlay3D {
   }
 
   /**
-   * Enable/disable the first-person keyboard. Listens in the capture phase so it
-   * preempts Foundry's own movement keys while first-person is active.
+   * Enable/disable first-person input: WASD (capture phase, preempting Foundry's
+   * keys) + mouse-look via Pointer Lock (click the view to look; Esc releases).
    */
-  _setKeyboard(on) {
+  _setFpInput(on) {
     if (on && !this._keyHandler) {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
+      this._mouseMoveHandler = (e) => this._onMouseMove(e)
+      this._lockClickHandler = () => this._requestLook()
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
+      document.addEventListener('mousemove', this._mouseMoveHandler, true)
+      this._container?.addEventListener('click', this._lockClickHandler)
       this._keys = { w: false, a: false, s: false, d: false }
       this._fpCenter = null
       this._fpLastTick = 0
+      this._fpPitch = 0
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
       window.removeEventListener('keyup', this._keyUpHandler, true)
+      document.removeEventListener('mousemove', this._mouseMoveHandler, true)
+      this._container?.removeEventListener('click', this._lockClickHandler)
+      try {
+        if (document.pointerLockElement === this._container) document.exitPointerLock()
+      } catch {
+        /* ignore */
+      }
       this._keyHandler = null
       this._keyUpHandler = null
+      this._mouseMoveHandler = null
+      this._lockClickHandler = null
       this._keys = { w: false, a: false, s: false, d: false }
     }
   }
 
+  /** Engage pointer-lock mouse-look on the overlay (from a user click in first-person). */
+  _requestLook() {
+    try {
+      if (this._mode === 'firstperson' && this._container && document.pointerLockElement !== this._container) {
+        this._container.requestPointerLock?.()
+      }
+    } catch {
+      /* pointer lock unavailable */
+    }
+  }
+
+  /** Pointer-locked mouse movement → look: movementX yaws the facing, movementY pitches the camera. */
+  _onMouseMove(event) {
+    if (this._mode !== 'firstperson' || !this._visible) return
+    if (document.pointerLockElement !== this._container) return
+    this._applyLook(event.movementX || 0, event.movementY || 0)
+  }
+
+  /** Apply a look delta (px): yaw the heading (committed to the token), pitch the camera (local, clamped). */
+  _applyLook(dx, dy) {
+    const sens = this._mouseSensitivity() * 0.15 // degrees per pixel
+    this._fpHeading = (((this._fpHeading + dx * sens) % 360) + 360) % 360
+    this._fpPitch = Math.max(-80, Math.min(80, (this._fpPitch || 0) - dy * sens))
+    this._fpDirty = true
+  }
+
   /**
-   * First-person WASD keydown: track held keys (continuous turn/move run per
-   * frame), and apply discrete steps on the initial press — A/D turn ±15°/45°
-   * (per the turn setting), W/S step one grid along the facing (per the movement
-   * setting). Walls block movement. Intercepted so Foundry's own keys don't also
-   * fire; ignored while typing in a field.
+   * First-person WASD keydown: track held keys (fine movement runs per frame),
+   * and step one grid on the initial press in grid mode — W/S forward/back, A/D
+   * strafe left/right along the facing (turning is mouse-look). Walls block
+   * movement. Intercepted so Foundry's own keys don't also fire; ignored while
+   * typing in a field.
    */
   _onKeyDown(event) {
     if (this._mode !== 'firstperson' || !this._visible) return
@@ -684,15 +745,8 @@ export class Overlay3D {
     event.stopImmediatePropagation()
     this._keys[key] = true
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
-    if (event.repeat) return // discrete steps fire once per press; continuous is per-frame
-    if ((key === 'a' || key === 'd') && this._turnMode() !== 'continuous') {
-      const step = this._turnMode() === '15' ? 15 : 45
-      this._fpHeading = (((this._fpHeading + (key === 'd' ? step : -step)) % 360) + 360) % 360
-      this._fpCommitNow(tok)
-    }
-    if ((key === 'w' || key === 's') && !this._fineMovement()) {
-      this._fpGridStep(tok, key === 'w' ? 1 : -1)
-    }
+    if (event.repeat) return // grid steps fire once per press; fine movement is per-frame
+    if (!this._fineMovement()) this._fpGridStep(tok, this._fpMoveDir(key)) // W/S forward/back, A/D strafe
   }
 
   /** First-person WASD keyup: release the key; commit the final pose when idle. */
@@ -734,7 +788,7 @@ export class Overlay3D {
       this._orbitCamera.fov = m === 'firstperson' ? 78 : 50
       this._orbitCamera.updateProjectionMatrix()
     }
-    this._setKeyboard(m === 'firstperson') // WASD only in first-person
+    this._setFpInput(m === 'firstperson') // WASD + mouse-look only in first-person
     if (m === 'orbit') this.setView('default')
     else if (m === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     else this._syncTrackedCamera()
@@ -836,7 +890,7 @@ export class Overlay3D {
     const m = this._mode
     this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'WASD — A / D turn · W / S move · view follows your token' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson' ? 'click to look · WASD move (A/D strafe) · Esc to release' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1803,7 +1857,7 @@ export class Overlay3D {
 
   destroy() {
     this._stopLoop()
-    this._setKeyboard(false)
+    this._setFpInput(false)
     document.body.classList.remove('cfg-3d-active')
     this._clearScene()
     for (const [hook, fn] of this._hooks) Hooks.off(hook, fn)
@@ -1958,15 +2012,15 @@ export class Overlay3D {
     }
   }
 
-  /** First-person turn mode: 'continuous' (default) | '15' | '45' (degrees per A/D press). */
-  _turnMode() {
+  /** First-person mouse-look sensitivity (a multiplier; default 1). */
+  _mouseSensitivity() {
     try {
-      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dTurnMode')
-      if (v === '15' || v === '45') return v
+      const v = Number(game?.settings?.get?.('crit-fumble-core', 'overlay3dMouseSensitivity'))
+      if (Number.isFinite(v) && v > 0) return v
     } catch {
       /* not registered yet */
     }
-    return 'continuous'
+    return 1
   }
 
   /** First-person fine movement: true → W/S move smoothly; false (default) → one grid step per press. */
@@ -2028,14 +2082,14 @@ export class Overlay3D {
         }
       },
     })
-    reg('overlay3dTurnMode', {
-      name: '3D View — First-person turn',
-      hint: 'How A/D rotate your view in first-person: smoothly (hold to turn), or in fixed steps per press.',
+    reg('overlay3dMouseSensitivity', {
+      name: '3D View — First-person mouse sensitivity',
+      hint: 'How fast first-person mouse-look turns the view. 1 = default.',
       scope: 'client',
       config: true,
-      type: String,
-      choices: { continuous: 'Continuous (hold to turn)', 15: 'Step 15°', 45: 'Step 45°' },
-      default: 'continuous',
+      type: Number,
+      range: { min: 0.2, max: 3, step: 0.1 },
+      default: 1,
     })
     reg('overlay3dFineMovement', {
       name: '3D View — First-person fine movement',
