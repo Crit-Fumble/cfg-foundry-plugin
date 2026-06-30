@@ -67,13 +67,38 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     if (tIds.length) await canvas.scene.deleteEmbeddedDocuments('Token', tIds)
     const wIds = canvas.scene.walls.map((w) => w.id)
     if (wIds.length) await canvas.scene.deleteEmbeddedDocuments('Wall', wIds)
+
+    // Native v14 Levels FIRST so tokens can be assigned to a floor by id. In v14
+    // the scene's base map IS the first Level: make it the Ground floor (opaque
+    // map, elev 0-20), then add an Upper floor (elev 20-40) whose map is
+    // transparent in the centre — so in 3D the ground shows through the hole.
+    // Idempotent: update-or-create so re-runs reset elevations.
+    const groundLvl = canvas.scene.levels.contents[0]
+    if (groundLvl) {
+      await groundLvl.update({ name: 'Ground', 'elevation.bottom': 0, 'elevation.top': 20, 'background.src': LEVEL_GROUND_SRC, sort: 0 })
+    } else {
+      await canvas.scene.createEmbeddedDocuments('Level', [{ name: 'Ground', elevation: { bottom: 0, top: 20 }, background: { src: LEVEL_GROUND_SRC }, sort: 0 }])
+    }
+    const upperLvl = canvas.scene.levels.contents.find((l) => l.name === 'Upper')
+    if (upperLvl) {
+      await upperLvl.update({ 'elevation.bottom': 20, 'elevation.top': 40, 'background.src': LEVEL_UPPER_SRC, sort: 10 })
+    } else {
+      await canvas.scene.createEmbeddedDocuments('Level', [{ name: 'Upper', elevation: { bottom: 20, top: 40 }, background: { src: LEVEL_UPPER_SRC }, sort: 10 }])
+    }
+    const groundId = canvas.scene.levels.contents[0].id
+    const upperId = (canvas.scene.levels.contents.find((l) => l.name === 'Upper') || {}).id || groundId
+
     const actor = game.actors.find((a) => a.name === 'CFG Dummy') ?? (await Actor.create({ name: 'CFG Dummy', type: 'character' }))
     const src = 'icons/svg/mystery-man.svg'
     await canvas.scene.createEmbeddedDocuments('Token', [
-      { name: 'Center (friendly)', x: 1450, y: 1450, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id, light: { dim: 26, bright: 13, color: '#ffce8a', luminosity: 0.4, alpha: 0.5 } },
-      { name: 'Upstairs (Upper level, +20ft)', x: 1500, y: 1300, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
-      { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
-      { name: 'Tree (GLB model)', x: 1150, y: 1650, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
+      // Resting on the Ground floor (base == elevation → no post): friendly w/ light, a giant, a GLB tree.
+      { name: 'Center (friendly)', x: 1450, y: 1450, level: groundId, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id, light: { dim: 26, bright: 13, color: '#ffce8a', luminosity: 0.4, alpha: 0.5 } },
+      { name: 'Giant (neutral, 2x2)', x: 1650, y: 1600, level: groundId, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
+      { name: 'Tree (GLB model)', x: 1150, y: 1650, level: groundId, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc: MODEL_URL } } },
+      // FLYING over the Ground floor (elev 15 over base 0) → flight-stand post + "+15 ft" label.
+      { name: 'Flier (Ground +15ft)', x: 1300, y: 1550, level: groundId, elevation: 15, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      // FLYING over the UPPER floor (elev 30 over base 20) → its post is anchored to the upper floor, not the ground.
+      { name: 'Upstairs flier (+30ft)', x: 1500, y: 1300, level: upperId, elevation: 30, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
     ])
     // A centered room with corners on the scene grid, fully inside the scene
     // rect (no padding overhang) — makes wall/token alignment obvious.
@@ -85,33 +110,13 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     ])
     // Tiles as floor surfaces at their elevation: a ground rug (elev 0, in a
     // corner so it doesn't cover the hole) + a platform on the upper floor
-    // (elev 10) the "Upstairs" token stands on.
+    // (elev 20) under the upstairs flier.
     const oldTiles = canvas.scene.tiles.map((t) => t.id)
     if (oldTiles.length) await canvas.scene.deleteEmbeddedDocuments('Tile', oldTiles)
     await canvas.scene.createEmbeddedDocuments('Tile', [
       { x: 1100, y: 1600, width: 320, height: 320, elevation: 0 },
       { x: 1380, y: 1180, width: 360, height: 360, elevation: 20 },
     ])
-    // Native v14 Levels: in v14 the scene's base map IS the first Level. Make it
-    // the Ground floor (opaque map, elev 0-20), then add an Upper floor (elev
-    // 20-40) whose map is transparent in the centre — so in 3D the ground shows
-    // through the hole. Idempotent: update-or-create so re-runs reset elevations.
-    const ground = canvas.scene.levels.contents[0]
-    if (ground) {
-      await ground.update({ name: 'Ground', 'elevation.bottom': 0, 'elevation.top': 20, 'background.src': LEVEL_GROUND_SRC, sort: 0 })
-    } else {
-      await canvas.scene.createEmbeddedDocuments('Level', [
-        { name: 'Ground', elevation: { bottom: 0, top: 20 }, background: { src: LEVEL_GROUND_SRC }, sort: 0 },
-      ])
-    }
-    const upper = canvas.scene.levels.contents.find((l) => l.name === 'Upper')
-    if (upper) {
-      await upper.update({ 'elevation.bottom': 20, 'elevation.top': 40, 'background.src': LEVEL_UPPER_SRC, sort: 10 })
-    } else {
-      await canvas.scene.createEmbeddedDocuments('Level', [
-        { name: 'Upper', elevation: { bottom: 20, top: 40 }, background: { src: LEVEL_UPPER_SRC }, sort: 10 },
-      ])
-    }
     // A map note pin — UI on the map, rendered as a flat marker (not 3D geometry).
     await canvas.scene.createEmbeddedDocuments('Note', [
       { x: 1750, y: 1300, text: 'Quest', texture: { src: 'icons/svg/book.svg' }, iconSize: 60, fontSize: 28, global: true },
@@ -126,7 +131,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   }, { MODEL_URL, LEVEL_GROUND_SRC, LEVEL_UPPER_SRC })
   await page.waitForFunction(
     () =>
-      canvas.tokens.placeables.length >= 4 &&
+      canvas.scene.tokens.size >= 5 &&
       canvas.walls.placeables.length >= 3 &&
       canvas.tiles.placeables.length >= 2 &&
       canvas.scene.levels.contents.filter((l) => l.background?.src).length >= 2 &&
@@ -159,7 +164,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     })(),
   }))
   expect(info.ready).toBe(true)
-  expect(info.tokens).toBe(4)
+  expect(info.tokens).toBe(5)
   expect(info.hasCanvas).toBe(true)
   expect(info.toggle).toBe(true)
 

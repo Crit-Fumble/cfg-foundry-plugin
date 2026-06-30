@@ -440,7 +440,9 @@ export class Overlay3D {
     this._buildTiles()
     this._buildNotes()
 
-    for (const tok of canvas.tokens?.placeables || []) this._addToken(tok)
+    // Iterate token DOCUMENTS (every floor) — not canvas placeables, which only
+    // include the currently-viewed Level. A multi-floor 3D view shows them all.
+    for (const doc of canvas.scene?.tokens || []) this._addToken(doc)
 
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
@@ -931,35 +933,109 @@ export class Overlay3D {
     return { w: (doc?.width || 1) * size, h: (doc?.height || 1) * size }
   }
 
-  _addToken(tok) {
+  /**
+   * The token's floor in px — its flight-stand "foot". In native v14 a token has
+   * both a `level` (which floor) and an `elevation` (its absolute height); the
+   * floor is the token's Level `elevation.base`. Falls back to the legacy Levels
+   * module band, else absolute ground (0). Honors the null→±Infinity contract via
+   * `elevation.base` so an open band never yields ±Infinity.
+   */
+  _tokenFloorBasePx(doc) {
+    try {
+      const id = doc?.level
+      const lvls = canvas?.scene?.levels
+      if (id && lvls) {
+        const lvl = typeof lvls.get === 'function' ? lvls.get(id) : (lvls.contents || lvls)?.find?.((l) => l.id === id)
+        const base = lvl?.elevation?.base
+        if (Number.isFinite(Number(base))) return Number(base) * this._pxPerUnit()
+        const bottom = lvl?.elevation?.bottom
+        if (Number.isFinite(Number(bottom))) return Number(bottom) * this._pxPerUnit()
+      }
+      const rb = doc?.flags?.levels?.rangeBottom // legacy Levels module floor band
+      if (Number.isFinite(Number(rb))) return Number(rb) * this._pxPerUnit()
+    } catch {
+      /* fall through to ground */
+    }
+    return 0
+  }
+
+  /**
+   * A camera-facing elevation label (e.g. "+30 ft") drawn to a canvas texture.
+   * A Sprite billboards for free, so the number stays readable in the straight-
+   * down tracked camera — where the vertical post foreshortens to nothing.
+   */
+  _elevationLabelSprite(text) {
     try {
       const THREE = this._THREE
-      const doc = tok.document
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      const font = 'bold 40px sans-serif'
+      ctx.font = font
+      canvas.width = Math.ceil(ctx.measureText(text).width) + 24
+      canvas.height = 56
+      ctx.font = font
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = 'rgba(15,18,24,0.72)'
+      if (ctx.roundRect) {
+        ctx.beginPath()
+        ctx.roundRect(0, 0, canvas.width, canvas.height, 12)
+        ctx.fill()
+      } else {
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+      }
+      ctx.fillStyle = '#ffd34d'
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2)
+      const tex = new THREE.CanvasTexture(canvas)
+      tex.colorSpace = THREE.SRGBColorSpace
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }))
+      sprite.renderOrder = 20
+      const hPx = 46
+      sprite.scale.set(hPx * (canvas.width / canvas.height), hPx, 1)
+      return sprite
+    } catch {
+      return null
+    }
+  }
+
+  _addToken(doc) {
+    try {
+      const THREE = this._THREE
       if (!doc) return
       const { w, h } = this._tokenSizePx(doc)
       // Derive position from the document (not the placeable) so this is correct
       // both at full rebuild and mid-`updateToken`, when the placeable's
       // `.center` still holds the pre-move value.
       const center = { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
-      const elevPx = this._levelsElevation(doc) * this._pxPerUnit()
+      // Flight-stand model: the BASE sits on the token's floor (its native v14
+      // Level's base elevation) and the mini floats at the token's own absolute
+      // `elevation`, with a post between. Keeps it a tabletop "mini on a stand" —
+      // always traceable down to a floor — rather than a free-floating sprite,
+      // and resolves the level/elevation disjoint (floor = Level.base, height =
+      // token.elevation; both absolute, so the post spans base → elevation).
+      const baseElevPx = this._tokenFloorBasePx(doc)
+      const tokenElevPx = Number(doc.elevation || 0) * this._pxPerUnit()
       const footprint = Math.max(w, h)
 
       const group = new THREE.Group()
-      group.position.set(center.x, elevPx, center.y)
+      group.position.set(center.x, tokenElevPx, center.y)
 
-      // Footprint disc on the token's own elevation plane (helps read height).
-      const disc = new THREE.Mesh(
-        new THREE.CircleGeometry(footprint / 2, 32),
+      // Base ring on the token's floor — the anchor "foot" of the stand. A ring
+      // (not a disc) so the floor/grid shows through; tinted by disposition.
+      const baseRing = new THREE.Mesh(
+        new THREE.RingGeometry(footprint * 0.34, footprint / 2, 32),
         new THREE.MeshBasicMaterial({
           color: dispositionColor(doc.disposition),
           transparent: true,
-          opacity: 0.45,
+          opacity: 0.55,
           depthWrite: false,
+          side: THREE.DoubleSide,
         }),
       )
-      disc.rotation.x = -Math.PI / 2
-      disc.position.y = 0.5
-      group.add(disc)
+      baseRing.rotation.x = -Math.PI / 2
+      baseRing.position.set(center.x, baseElevPx + 0.5, center.y)
+      this._scene.add(baseRing)
+      group.userData.baseRing = baseRing
 
       // Body: a glTF/GLB 3D model if the token has one
       // (flags["crit-fumble-core"].modelSrc), otherwise the token's 2D art on a
@@ -1004,19 +1080,33 @@ export class Overlay3D {
         loadBillboardArt()
       }
 
-      // A thin "stalk" from the ground up to elevated tokens, so height reads.
-      if (Math.abs(elevPx) > 1) {
+      // The flight-stand POST from the floor up (or down) to the mini, so its
+      // length reads as the height. Hidden when the token rests on its own floor
+      // (base == elevation) — no clutter for the common, on-the-ground case.
+      const lift = tokenElevPx - baseElevPx
+      if (Math.abs(lift) > 1) {
         const stalk = new THREE.Mesh(
-          new THREE.CylinderGeometry(2, 2, Math.abs(elevPx), 6),
+          new THREE.CylinderGeometry(2, 2, Math.abs(lift), 6),
           new THREE.MeshBasicMaterial({ color: 0xffc107, transparent: true, opacity: 0.5 }),
         )
-        stalk.position.set(center.x, elevPx / 2, center.y)
+        stalk.position.set(center.x, (baseElevPx + tokenElevPx) / 2, center.y)
         this._scene.add(stalk)
         group.userData.stalk = stalk
+
+        // Signed altitude label at the mini — the cue that survives the straight-
+        // down tracked camera, and the explicit number tabletop always pairs with
+        // physical height. Shows the absolute elevation (matches Foundry's HUD).
+        const elev = Number(doc.elevation || 0)
+        const units = canvas?.scene?.grid?.units
+        const label = this._elevationLabelSprite(`${elev > 0 ? '+' : ''}${elev}${units ? ' ' + units : ''}`)
+        if (label) {
+          label.position.set(0, Math.max(h, footprint) + footprint * 0.35, 0)
+          group.add(label)
+        }
       }
 
       this._scene.add(group)
-      this._tokens.set(tok.id, group)
+      this._tokens.set(doc.id, group)
     } catch (err) {
       console.warn('CFG Core | Overlay3D._addToken failed:', err)
     }
@@ -1086,13 +1176,14 @@ export class Overlay3D {
     if (!this._visible || !this._mounted) return
     try {
       const id = doc?.id
-      const tok = canvas?.tokens?.get?.(id)
-      if (!tok) {
+      if (!id) {
         this._scheduleRebuild()
         return
       }
       this._removeToken(id)
-      this._addToken(tok)
+      // Re-read the live document (all floors) so x/y/elevation/level are current.
+      const fresh = canvas?.scene?.tokens?.get?.(id) || doc
+      this._addToken(fresh)
       this._render()
     } catch {
       this._scheduleRebuild()
@@ -1103,10 +1194,13 @@ export class Overlay3D {
   _removeToken(id) {
     const group = this._tokens.get(id)
     if (!group) return
-    const stalk = group.userData?.stalk
-    if (stalk) {
-      this._scene.remove(stalk)
-      this._disposeObject(stalk)
+    // The post and base ring live at scene level (not in the group) — dispose both.
+    for (const key of ['stalk', 'baseRing']) {
+      const obj = group.userData?.[key]
+      if (obj) {
+        this._scene.remove(obj)
+        this._disposeObject(obj)
+      }
     }
     this._scene.remove(group)
     this._disposeObject(group)

@@ -13,8 +13,12 @@ it on overlays a three.js canvas over the board that renders:
 - the active scene as a **ground plane** (its background image if set, else a tinted plane) + grid;
 - every **token as a camera-facing billboard** using its existing 2D art, positioned at its board
   coordinates;
-- **token elevation as real height** — elevated tokens float above the plane with a yellow stalk
-  down to their ground position (negative elevation goes below);
+- **tokens as flight stands** — a token's base ring sits on its floor (its native v14 Level's
+  `elevation.base`) and the mini rises to its own absolute `elevation` on a translucent post, with a
+  billboarded "+30 ft" altitude label. A tabletop flight stand, anchored to the *right floor* (not
+  always the ground), which resolves the Level↔elevation split. No post when a token rests on its
+  floor (the common case). All floors' tokens render at once (a 3D "dollhouse"), since the overlay
+  iterates token *documents* rather than canvas placeables (which only include the viewed floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
   as a floor plane at its elevation, so a token on an upper floor stands on it. The floor band comes
   from the Levels module (`flags.levels.rangeBottom`) when present, else the tile's own `elevation`;
