@@ -172,7 +172,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.tokens).toBe(5)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
-  expect(info.group.tools).toEqual(expect.arrayContaining(['toggle', 'mode', 'slice', 'viewTop', 'viewReset']))
+  expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice', 'viewReset']))
 
   // --- Tracked (top-down) mode — the camera mirrors Foundry, so canvas-anchored
   //     UI lines up over the 3D. Pan Foundry to frame the room + select a token
@@ -253,4 +253,78 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   await page.screenshot({ path: join(SHOTS, '07-slice-ground.png') })
 
   if (errors.length) console.warn('[overlay-3d] non-fatal page errors:\n  ' + errors.join('\n  '))
+})
+
+test('3D controls — iterate the menu view modes + first-person WASD', async ({ page }) => {
+  test.setTimeout(90_000)
+  await ensureInGame(page)
+  await expect.poll(() => page.evaluate(() => !!window.CFGCore?.overlay3D), { timeout: 30_000 }).toBe(true)
+  await page.evaluate(async () => {
+    const scene = game.scenes.find((s) => s.name === 'CFG 3D Test')
+    if (scene && !scene.active) await scene.activate()
+    if (game.paused) game.togglePause(false)
+  })
+  await page.waitForFunction(() => globalThis.canvas?.ready === true, { timeout: 60_000 })
+
+  // Iterate the three 3D modes via the scene-control MENU (the real UI path:
+  // clicking a mode toggle = activate({toggles})). "2D" = no mode toggle active.
+  const modes = ['topdown', 'free', 'firstperson']
+  const results = {}
+  for (const mode of modes) {
+    await page.evaluate(async (m) => {
+      await ui.controls.activate({ control: 'cfg-3d', toggles: { [m]: true } })
+    }, mode)
+    await page.waitForTimeout(900)
+    results[mode] = await page.evaluate(() => ({
+      viewMode: window.CFGCore.overlay3D.getViewMode(),
+      visible: window.CFGCore.overlay3D.isVisible(),
+    }))
+  }
+  console.log('[overlay-3d] menu view modes:', JSON.stringify(results))
+  expect(results.topdown.viewMode).toBe('topdown')
+  expect(results.free.viewMode).toBe('free')
+  expect(results.firstperson.viewMode).toBe('firstperson')
+  for (const m of modes) expect(results[m].visible, `${m} should make the overlay visible`).toBe(true)
+
+  // 2D: deactivate the active mode toggle → overlay off.
+  await page.evaluate(async () => {
+    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: false } })
+  })
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => window.CFGCore.overlay3D.getViewMode())).toBe('2d')
+  expect(await page.evaluate(() => window.CFGCore.overlay3D.isVisible())).toBe(false)
+
+  // First-person: control a token (rotation 0 = facing south) to set the subject,
+  // then switch to first-person. Switching control groups releases the canvas
+  // selection, so the overlay follows the *last-controlled* token.
+  const tokenId = await page.evaluate(async () => {
+    canvas.tokens.activate() // token layer active so control() fires controlToken
+    const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
+    await t.document.update({ rotation: 0 })
+    t.control({ releaseOthers: true })
+    await new Promise((r) => setTimeout(r, 150))
+    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: true } })
+    return t.id
+  })
+  await page.waitForTimeout(1500)
+  await hideChrome(page)
+  await page.screenshot({ path: join(SHOTS, '08-first-person.png') })
+
+  // WASD: D turns the token +45°, then W moves it one grid step along its facing.
+  const read = (id) =>
+    page.evaluate((tid) => {
+      const d = canvas.scene.tokens.get(tid)
+      return { x: d.x, y: d.y, rotation: d.rotation }
+    }, id)
+  const before = await read(tokenId)
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true, cancelable: true })))
+  await page.waitForTimeout(500)
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true, cancelable: true })))
+  await page.waitForTimeout(800)
+  const after = await read(tokenId)
+  console.log('[overlay-3d] first-person WASD before/after:', JSON.stringify({ before, after }))
+  expect(after.rotation, 'D turns the token +45°').toBe((((before.rotation + 45) % 360) + 360) % 360)
+  expect(after.x !== before.x || after.y !== before.y, 'W moves the token along its facing').toBe(true)
+  await hideChrome(page)
+  await page.screenshot({ path: join(SHOTS, '09-first-person-after-move.png') })
 })

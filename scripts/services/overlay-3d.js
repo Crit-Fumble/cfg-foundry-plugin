@@ -65,6 +65,10 @@ export class Overlay3D {
      * @type {'tracked'|'orbit'}
      */
     this._mode = 'tracked'
+    /** @type {((e: KeyboardEvent) => void)|null} first-person WASD key handler */
+    this._keyHandler = null
+    /** @type {string|null} last token the user controlled (the first-person subject) */
+    this._lastTokenId = null
 
     this._ground = null
     this._grid = null
@@ -135,9 +139,11 @@ export class Overlay3D {
       this._on('createAmbientLight', () => this._scheduleRebuild())
       this._on('updateAmbientLight', () => this._scheduleRebuild())
       this._on('deleteAmbientLight', () => this._scheduleRebuild())
-      // Focus-follow (opt-in): selecting a token cuts away floors above its floor.
-      this._on('controlToken', () => {
-        if (this._focusFollowEnabled()) this._scheduleRebuild()
+      // Remember the controlled token (the first-person subject) + focus-follow slice.
+      this._on('controlToken', (token, controlled) => {
+        if (controlled && token?.id) this._lastTokenId = token.id
+        // Rebuild on focus-follow (slice) or in first-person (to hide the new subject).
+        if (this._focusFollowEnabled() || this._mode === 'firstperson') this._scheduleRebuild()
       })
       this._on('updateToken', (doc) => this._onUpdateToken(doc))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
@@ -179,6 +185,8 @@ export class Overlay3D {
       setView: (preset) => this.setView(preset),
       setMode: (m) => this.setMode(m),
       getMode: () => this._mode,
+      setViewMode: (m) => this.setViewMode(m),
+      getViewMode: () => this._currentViewMode(),
       setSlice: (on) => this.setSlice(on),
       getActiveLevel: () => this._activeLevel()?.id ?? null,
       destroy: () => this.destroy(),
@@ -207,6 +215,7 @@ export class Overlay3D {
         this._startLoop()
       } else {
         this._stopLoop()
+        this._setKeyboard(false)
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
       }
@@ -501,6 +510,92 @@ export class Overlay3D {
   }
 
   /**
+   * Position the first-person camera at the controlled token's eyes, looking the
+   * way the token faces. Foundry stores facing as `rotation`, where the movement
+   * angle = rotation + 90° and rotation 0 = south (down) — so the look vector in
+   * world XZ is (cos(rot+90°), sin(rot+90°)). Falls back to the first token.
+   */
+  /**
+   * The token first-person follows: the currently-controlled token, else the
+   * last one controlled (switching to the 3D control group releases the canvas
+   * selection), else an owned token, else any.
+   */
+  _firstPersonToken() {
+    const controlled = canvas?.tokens?.controlled?.[0]
+    if (controlled?.document) return controlled
+    if (this._lastTokenId) {
+      const t = canvas?.tokens?.get?.(this._lastTokenId)
+      if (t?.document) return t
+    }
+    const placeables = canvas?.tokens?.placeables || []
+    return placeables.find((t) => t.document?.isOwner) || placeables[0] || null
+  }
+
+  _syncFirstPersonCamera() {
+    const cam = this._orbitCamera
+    if (!cam) return
+    const tok = this._firstPersonToken()
+    if (!tok?.document) return
+    const doc = tok.document
+    const { w, h } = this._tokenSizePx(doc)
+    const c = tok.center || { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
+    const ppu = this._pxPerUnit()
+    const size = canvas?.dimensions?.size || 100
+    const eyeY = (Number(doc.elevation) || 0) * ppu + size * 0.9 // ~eye height above the floor
+    const theta = ((Number(doc.rotation) || 0) + 90) * (Math.PI / 180)
+    cam.up.set(0, 1, 0)
+    cam.position.set(c.x, eyeY, c.y)
+    cam.lookAt(c.x + Math.cos(theta) * size, eyeY, c.y + Math.sin(theta) * size)
+    cam.updateProjectionMatrix()
+  }
+
+  /**
+   * Enable/disable the first-person WASD key handler. Listens in the capture
+   * phase so it preempts Foundry's own movement keys while first-person is active.
+   */
+  _setKeyboard(on) {
+    if (on && !this._keyHandler) {
+      this._keyHandler = (e) => this._onKeyDown(e)
+      window.addEventListener('keydown', this._keyHandler, true)
+    } else if (!on && this._keyHandler) {
+      window.removeEventListener('keydown', this._keyHandler, true)
+      this._keyHandler = null
+    }
+  }
+
+  /**
+   * First-person WASD: A/D turn the controlled token left/right (±45°), W/S move
+   * it forward/backward one grid step along its facing. Intercepts the keys so
+   * Foundry's own movement doesn't also fire. Ignored while typing in a field.
+   */
+  _onKeyDown(event) {
+    if (this._mode !== 'firstperson' || !this._visible) return
+    const t = event.target
+    const tag = (t?.tagName || '').toLowerCase()
+    if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
+    const key = (event.key || '').toLowerCase()
+    if (key !== 'w' && key !== 'a' && key !== 's' && key !== 'd') return
+    const tok = this._firstPersonToken()
+    if (!tok?.document) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    const doc = tok.document
+    const size = canvas?.dimensions?.size || 100
+    const rot = Number(doc.rotation) || 0
+    if (key === 'a' || key === 'd') {
+      const next = (((rot + (key === 'd' ? 45 : -45)) % 360) + 360) % 360
+      doc.update({ rotation: next })
+    } else {
+      const theta = (rot + 90) * (Math.PI / 180)
+      const sign = key === 'w' ? 1 : -1
+      doc.update(
+        { x: Math.round((doc.x || 0) + Math.cos(theta) * size * sign), y: Math.round((doc.y || 0) + Math.sin(theta) * size * sign), rotation: rot },
+        { teleport: true },
+      )
+    }
+  }
+
+  /**
    * Tracked mode shows Foundry's own canvas as the floor — its computed
    * dynamic lighting, token vision, and fog of war all come through, reused as
    * the ground, with our 3D walls/tokens popping up on top. Orbit mode renders
@@ -512,17 +607,25 @@ export class Overlay3D {
 
   /** Apply the current camera mode: active camera, input routing, UI-hide. */
   _applyMode() {
-    const orbit = this._mode === 'orbit'
-    this._camera = orbit ? this._orbitCamera : this._trackedCamera
-    if (this._controls) this._controls.enabled = orbit
+    const m = this._mode
+    const immersive = m === 'orbit' || m === 'firstperson' // full 3D (not transparent-over-Foundry)
+    this._camera = m === 'tracked' ? this._trackedCamera : this._orbitCamera
+    if (this._controls) this._controls.enabled = m === 'orbit' // first-person is driven by the token
     if (this._container) {
       // Tracked: let the mouse fall through to Foundry (pan/zoom/select) — the
-      // camera follows. Orbit: capture events for OrbitControls.
-      this._container.style.pointerEvents = orbit ? 'auto' : 'none'
+      // camera follows. Immersive 3D (orbit/first-person): capture events.
+      this._container.style.pointerEvents = immersive ? 'auto' : 'none'
     }
-    // Orbit hides the misaligned 2D UI (option A); tracked lets it show (aligned).
-    document.body.classList.toggle('cfg-3d-active', this._visible && orbit)
-    if (orbit) this.setView('default')
+    // Immersive modes hide the misaligned 2D UI; tracked lets it show (aligned).
+    document.body.classList.toggle('cfg-3d-active', this._visible && immersive)
+    // First-person uses a wider FOV; restore the default for orbit.
+    if (this._orbitCamera) {
+      this._orbitCamera.fov = m === 'firstperson' ? 78 : 50
+      this._orbitCamera.updateProjectionMatrix()
+    }
+    this._setKeyboard(m === 'firstperson') // WASD only in first-person
+    if (m === 'orbit') this.setView('default')
+    else if (m === 'firstperson') this._syncFirstPersonCamera()
     else this._syncTrackedCamera()
     this._render()
   }
@@ -532,7 +635,7 @@ export class Overlay3D {
    * the 3D) or 'orbit' (free-look perspective — UI hidden).
    */
   setMode(mode) {
-    mode = mode === 'orbit' ? 'orbit' : 'tracked'
+    mode = ['tracked', 'orbit', 'firstperson'].includes(mode) ? mode : 'tracked'
     if (mode === this._mode) return
     this._mode = mode
     if (this._mounted && this._visible) {
@@ -541,6 +644,37 @@ export class Overlay3D {
     }
     this._updateControlBar()
     this._syncControlState() // reflect the mode toggle in the 3D control group
+  }
+
+  /**
+   * The user-facing view mode: '2d' (overlay off, normal Foundry), 'topdown'
+   * (mirrors Foundry), 'free' (orbit camera), or 'firstperson' (camera at the
+   * controlled token, facing its rotation; WASD turns/moves it).
+   */
+  async setViewMode(mode) {
+    if (mode === '2d') {
+      await this.setVisible(false)
+      this._updateControlBar()
+      this._syncControlState()
+      return
+    }
+    const cam = mode === 'topdown' ? 'tracked' : mode === 'firstperson' ? 'firstperson' : 'orbit'
+    if (!this._visible) {
+      this._mode = cam
+      await this.setVisible(true)
+    } else {
+      this.setMode(cam)
+    }
+    this._updateControlBar()
+    this._syncControlState()
+  }
+
+  /** The current user-facing view mode (for the menu + hint). */
+  _currentViewMode() {
+    if (!this._visible) return '2d'
+    if (this._mode === 'tracked') return 'topdown'
+    if (this._mode === 'firstperson') return 'firstperson'
+    return 'free'
   }
 
   /**
@@ -585,10 +719,13 @@ export class Overlay3D {
     this._updateControlBar()
   }
 
-  /** Show the camera-controls hint only in orbit mode (where drag/scroll apply). */
+  /** Show a per-mode controls hint (orbit: mouse; first-person: WASD). */
   _updateControlBar() {
     if (!this._controlBar) return
-    this._controlBar.style.display = this._mode === 'orbit' ? '' : 'none'
+    const m = this._mode
+    this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
+    this._controlBar.textContent =
+      m === 'firstperson' ? 'WASD — A / D turn · W / S move · view follows your token' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1217,6 +1354,7 @@ export class Overlay3D {
     try {
       const THREE = this._THREE
       if (!doc) return
+      if (this._mode === 'firstperson' && doc.id === this._firstPersonToken()?.id) return // you don't see yourself in first-person
       if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
       if (!this._isGM()) {
         // Players: only render tokens Foundry shows them — its placeable visibility
@@ -1474,6 +1612,7 @@ export class Overlay3D {
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
     if (this._mode === 'tracked') this._syncTrackedCamera()
+    else if (this._mode === 'firstperson') this._syncFirstPersonCamera()
     else this._controls?.update()
     try {
       this._renderer.render(this._scene, this._camera)
@@ -1553,6 +1692,7 @@ export class Overlay3D {
 
   destroy() {
     this._stopLoop()
+    this._setKeyboard(false)
     document.body.classList.remove('cfg-3d-active')
     this._clearScene()
     for (const [hook, fn] of this._hooks) Hooks.off(hook, fn)
@@ -1586,38 +1726,49 @@ export class Overlay3D {
   _registerControl() {
     this._on('getSceneControlButtons', (controls) => {
       try {
+        // Three 3D view modes as radio-like toggles; "2D" = none active (overlay off).
+        const vm = this._currentViewMode()
         const tools = {
-          toggle: {
-            name: 'toggle',
+          topdown: {
+            name: 'topdown',
             order: 0,
-            title: 'Enable 3D View',
-            icon: 'fa-solid fa-cube',
+            title: 'Top-Down view (mirrors Foundry, aligned UI)',
+            icon: 'fa-solid fa-table-cells',
             toggle: true,
-            active: this._visible,
-            onChange: (event, active) => this.setVisible(active === undefined ? !this._visible : !!active),
+            active: vm === 'topdown',
+            onChange: (event, active) => this.setViewMode(active ? 'topdown' : '2d'),
           },
-          mode: {
-            name: 'mode',
+          free: {
+            name: 'free',
             order: 1,
-            title: 'Free-look 3D camera (off = top-down, aligned to Foundry)',
+            title: 'Free Camera (orbit — drag to rotate/tilt, scroll to zoom)',
             icon: 'fa-solid fa-video',
             toggle: true,
-            active: this._mode === 'orbit',
-            onChange: (event, active) => this.setMode(active ? 'orbit' : 'tracked'),
+            active: vm === 'free',
+            onChange: (event, active) => this.setViewMode(active ? 'free' : '2d'),
+          },
+          firstperson: {
+            name: 'firstperson',
+            order: 2,
+            title: 'First Person (camera at the selected token; WASD to move, A/D to turn)',
+            icon: 'fa-solid fa-person',
+            toggle: true,
+            active: vm === 'firstperson',
+            onChange: (event, active) => this.setViewMode(active ? 'firstperson' : '2d'),
           },
           slice: {
             name: 'slice',
-            order: 2,
+            order: 3,
             title: 'Floor slice — show the current floor + below, hide floors above',
             icon: 'fa-solid fa-layer-group',
             toggle: true,
             active: this._sliceFloors !== false,
             onChange: (event, active) => this.setSlice(active),
           },
-          viewTop: { name: 'viewTop', order: 3, title: 'Camera angle: top', icon: 'fa-solid fa-down-long', button: true, onChange: () => this._presetView('top') },
-          viewAngle: { name: 'viewAngle', order: 4, title: 'Camera angle: 3/4 view', icon: 'fa-solid fa-cube', button: true, onChange: () => this._presetView('angle') },
-          viewLow: { name: 'viewLow', order: 5, title: 'Camera angle: low', icon: 'fa-solid fa-mountain-sun', button: true, onChange: () => this._presetView('low') },
-          viewReset: { name: 'viewReset', order: 6, title: 'Camera angle: reset', icon: 'fa-solid fa-arrow-rotate-left', button: true, onChange: () => this._presetView('default') },
+          viewTop: { name: 'viewTop', order: 4, title: 'Camera angle: top (Free Camera)', icon: 'fa-solid fa-down-long', button: true, onChange: () => this._presetView('top') },
+          viewAngle: { name: 'viewAngle', order: 5, title: 'Camera angle: 3/4 view (Free Camera)', icon: 'fa-solid fa-cube', button: true, onChange: () => this._presetView('angle') },
+          viewLow: { name: 'viewLow', order: 6, title: 'Camera angle: low (Free Camera)', icon: 'fa-solid fa-mountain-sun', button: true, onChange: () => this._presetView('low') },
+          viewReset: { name: 'viewReset', order: 7, title: 'Camera angle: reset (Free Camera)', icon: 'fa-solid fa-arrow-rotate-left', button: true, onChange: () => this._presetView('default') },
         }
         const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-cubes', visible: true, tools }
         if (Array.isArray(controls)) {
