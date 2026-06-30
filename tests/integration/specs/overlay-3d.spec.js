@@ -172,7 +172,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.tokens).toBe(5)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
-  expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice', 'viewReset']))
+  expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
+  expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
 
   // --- Tracked (top-down) mode — the camera mirrors Foundry, so canvas-anchored
   //     UI lines up over the 3D. Pan Foundry to frame the room + select a token

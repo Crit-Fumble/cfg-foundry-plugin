@@ -1932,10 +1932,6 @@ export class Overlay3D {
             active: this._sliceFloors !== false,
             onChange: (event, active) => this.setSlice(active),
           },
-          viewTop: { name: 'viewTop', order: 4, title: 'Camera angle: top (Free Camera)', icon: 'fa-solid fa-down-long', button: true, onChange: () => this._presetView('top') },
-          viewAngle: { name: 'viewAngle', order: 5, title: 'Camera angle: 3/4 view (Free Camera)', icon: 'fa-solid fa-cube', button: true, onChange: () => this._presetView('angle') },
-          viewLow: { name: 'viewLow', order: 6, title: 'Camera angle: low (Free Camera)', icon: 'fa-solid fa-mountain-sun', button: true, onChange: () => this._presetView('low') },
-          viewReset: { name: 'viewReset', order: 7, title: 'Camera angle: reset (Free Camera)', icon: 'fa-solid fa-arrow-rotate-left', button: true, onChange: () => this._presetView('default') },
         }
         const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-cubes', visible: true, tools }
         if (Array.isArray(controls)) {
@@ -1948,17 +1944,6 @@ export class Overlay3D {
         console.warn('CFG Core | Overlay3D control registration failed:', err)
       }
     })
-  }
-
-  /** Ensure the overlay is on, switch to orbit, and apply a camera preset. */
-  async _presetView(preset) {
-    try {
-      if (!this._visible) await this.setVisible(true)
-      this.setMode('orbit')
-      this.setView(preset)
-    } catch {
-      /* non-fatal */
-    }
   }
 
   /**
