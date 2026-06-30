@@ -46,6 +46,8 @@ export class Overlay3D {
     this._THREE = null
     /** @type {any} OrbitControls ctor (lazy) */
     this._OrbitControls = null
+    /** @type {any} GLTFLoader ctor (lazy) */
+    this._GLTFLoader = null
 
     this._container = null
     this._renderer = null
@@ -76,6 +78,18 @@ export class Overlay3D {
   /** Register the toolbar toggle, document-sync hooks, and the public API. */
   start() {
     try {
+      // Let users upload glTF/GLB models via Foundry's FilePicker — neither
+      // extension is in Foundry's default upload allowlist. A token references
+      // its model by path in flags["crit-fumble-core"].modelSrc.
+      try {
+        const C = globalThis.CONST
+        if (C?.UPLOADABLE_FILE_EXTENSIONS) {
+          C.UPLOADABLE_FILE_EXTENSIONS['.glb'] = 'model/gltf-binary'
+          C.UPLOADABLE_FILE_EXTENSIONS['.gltf'] = 'model/gltf+json'
+        }
+      } catch {
+        /* allowlist may be frozen on some builds — non-fatal */
+      }
       this._registerControl()
       // Live sync (free via Foundry's broadcast). Structural changes → rebuild;
       // a token update → move just that token.
@@ -159,6 +173,7 @@ export class Overlay3D {
     const bundle = await import('../lib/three.bundle.js')
     this._THREE = bundle.THREE
     this._OrbitControls = bundle.OrbitControls
+    this._GLTFLoader = bundle.GLTFLoader
   }
 
   async _mount() {
@@ -423,7 +438,10 @@ export class Overlay3D {
       disc.position.y = 0.5
       group.add(disc)
 
-      // Upright billboard with the token art (sprite always faces the camera).
+      // Body: a glTF/GLB 3D model if the token has one
+      // (flags["crit-fumble-core"].modelSrc), otherwise the token's 2D art on a
+      // camera-facing billboard. The billboard is also the fallback when a model
+      // fails to load.
       const addBillboard = (tex) => {
         const mat = new THREE.SpriteMaterial({
           map: tex || null,
@@ -439,9 +457,9 @@ export class Overlay3D {
         group.add(sprite)
         this._render()
       }
-
-      const src = doc.texture?.src
-      if (src) {
+      const loadBillboardArt = () => {
+        const src = doc.texture?.src
+        if (!src) return addBillboard(null)
         const loader = new THREE.TextureLoader()
         loader.setCrossOrigin('anonymous')
         loader.load(
@@ -453,8 +471,14 @@ export class Overlay3D {
           undefined,
           () => addBillboard(null),
         )
+      }
+
+      const cfgFlags = doc.flags?.['crit-fumble-core'] || {}
+      const modelSrc = cfgFlags.modelSrc || cfgFlags.model3d
+      if (modelSrc) {
+        this._loadModel(modelSrc, group, { w, h, footprint, flags: cfgFlags }, loadBillboardArt)
       } else {
-        addBillboard(null)
+        loadBillboardArt()
       }
 
       // A thin "stalk" from the ground up to elevated tokens, so height reads.
@@ -472,6 +496,54 @@ export class Overlay3D {
       this._tokens.set(tok.id, group)
     } catch (err) {
       console.warn('CFG Core | Overlay3D._addToken failed:', err)
+    }
+  }
+
+  /**
+   * Load a glTF/GLB model for a token, scaled to its footprint and standing on
+   * the elevation plane. Falls back to the 2D billboard if the model fails to
+   * load. Optional token flags: `modelScale` (multiplier), `modelRotation`
+   * (degrees, yaw about the up axis).
+   */
+  _loadModel(src, group, dims, onFail) {
+    try {
+      const THREE = this._THREE
+      if (!this._GLTFLoader) return onFail?.()
+      const loader = new this._GLTFLoader()
+      loader.load(
+        src,
+        (gltf) => {
+          try {
+            const model = gltf.scene || gltf.scenes?.[0]
+            if (!model) return onFail?.()
+            // Scale so the model's larger horizontal dimension ≈ the token footprint.
+            const userScale = Number.isFinite(dims.flags?.modelScale) ? dims.flags.modelScale : 1
+            let box = new THREE.Box3().setFromObject(model)
+            const size = new THREE.Vector3()
+            box.getSize(size)
+            const maxHoriz = Math.max(size.x, size.z) || 1
+            model.scale.setScalar((dims.footprint / maxHoriz) * userScale)
+            const rotDeg = Number.isFinite(dims.flags?.modelRotation) ? dims.flags.modelRotation : 0
+            if (rotDeg) model.rotation.y = (rotDeg * Math.PI) / 180
+            // Sit the model's base on the elevation plane (group origin y = 0).
+            box = new THREE.Box3().setFromObject(model)
+            model.position.y -= box.min.y
+            group.add(model)
+            this._render()
+          } catch (e) {
+            console.warn('CFG Core | Overlay3D model post-process failed:', e)
+            onFail?.()
+          }
+        },
+        undefined,
+        (err) => {
+          console.warn('CFG Core | Overlay3D GLB load failed, using billboard:', src, err?.message || err)
+          onFail?.()
+        },
+      )
+    } catch (e) {
+      console.warn('CFG Core | Overlay3D GLTFLoader unavailable:', e)
+      onFail?.()
     }
   }
 

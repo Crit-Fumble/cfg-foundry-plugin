@@ -74,13 +74,15 @@ try {
     let actor = game.actors.find((a) => a.name === 'CFG Dummy')
     if (!actor) actor = await Actor.create({ name: 'CFG Dummy', type: 'character' })
     const src = 'icons/svg/mystery-man.svg'
+    const modelSrc = 'http://localhost:30000/modules/crit-fumble-core/tests/fixtures/sample-tree.glb'
     await canvas.scene.createEmbeddedDocuments('Token', [
       { name: 'Ground (friendly)', x: 500, y: 800, elevation: 0, width: 1, height: 1, texture: { src }, disposition: 1, actorId: actor.id },
       { name: 'Flyer (hostile, +20ft)', x: 950, y: 800, elevation: 20, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
       { name: 'Giant (neutral, 2x2)', x: 1350, y: 1000, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id },
+      { name: 'Tree (GLB model)', x: 650, y: 1150, elevation: 0, width: 2, height: 2, texture: { src }, disposition: 0, actorId: actor.id, flags: { 'crit-fumble-core': { modelSrc } } },
     ])
   })
-  await page.waitForFunction(() => canvas.tokens.placeables.length >= 3, { timeout: 15_000 })
+  await page.waitForFunction(() => canvas.tokens.placeables.length >= 4, { timeout: 15_000 })
 
   // Walls — two default-height, one taller via the Wall Height convention.
   log('placing walls')
@@ -106,7 +108,7 @@ try {
     await window.CFGCore.overlay3D.setVisible(true)
   })
   await page.waitForFunction(() => window.CFGCore?.overlay3D?.isReady?.() === true, { timeout: 30_000 })
-  await page.waitForTimeout(2000) // textures + orbit settle
+  await page.waitForTimeout(3000) // textures + GLB model + orbit settle
 
   const info = await page.evaluate(() => {
     const c = document.querySelector('#cfg-3d-overlay canvas')
