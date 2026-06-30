@@ -2,7 +2,7 @@
   "id": "crit-fumble-core",
   "title": "Crit-Fumble Core",
   "description": "Core platform integration for CFG-hosted FoundryVTT campaigns. Provides quest sync, party roster, session tracking, AI narration, and system-aware feature gating.",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "authors": [
     {
       "name": "Crit-Fumble Gaming",
@@ -12,7 +12,7 @@
   ],
   "compatibility": {
     "minimum": "13",
-    "verified": "14.359",
+    "verified": "14.361",
     "maximum": "14"
   },
   "esmodules": ["scripts/module.js"],
