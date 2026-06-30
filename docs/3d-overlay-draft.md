@@ -41,8 +41,14 @@ it on overlays a three.js canvas over the board that renders:
 - an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
   toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
 - a **top-level "3D View" scene-control group** (its own left-toolbar button, not a tool buried
-  under Tokens) with nested tools — Enable, camera mode, Slice, and Top/Angle/Low/Reset presets.
-  It has no canvas `layer`, so entering/leaving it never toggles the overlay (it persists);
+  under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down** (mirrors
+  Foundry), **Free Camera** (orbit), **First Person** — plus Slice + camera presets. It has no canvas
+  `layer`, so entering/leaving it never toggles the overlay (it persists);
+- **First Person** — the camera sits at the selected token's eyes, facing its `rotation` (your own
+  token hidden). **WASD**: A/D turn, W/S move. Two per-player settings: **turn** (Continuous / 15° /
+  45°) and **fine movement** (hold-to-walk vs one-grid-per-press). **Walls block movement** (tested
+  via `polygonBackends.move.testCollision`). Continuous turn/move run per frame against a local
+  camera pose for smoothness; the token document is committed on a throttle, so it stays in sync;
 - a **per-player "follow selected token's floor" setting** (off by default → the slice follows
   Foundry's navigated level, matching Foundry's own UI; on → selecting a token slices to its floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
