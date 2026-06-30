@@ -237,6 +237,7 @@ export class Overlay3D {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.setClearColor(0x000000, 0) // transparent when scene.background is null (tracked mode)
     renderer.shadowMap.enabled = this._shadowsEnabled() // walls block light → shadows
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
     container.appendChild(renderer.domElement)
@@ -356,6 +357,12 @@ export class Overlay3D {
   _applyBackground() {
     if (!this._scene || !this._THREE) return
     try {
+      if (this._foundryFloor()) {
+        // Transparent so Foundry's canvas (lighting/vision/fog) shows through.
+        this._scene.background = null
+        if (this._container) this._container.style.background = 'transparent'
+        return
+      }
       const color = new this._THREE.Color(this._sceneBackgroundColor())
       this._scene.background = color
       if (this._container) this._container.style.background = `#${color.getHexString()}`
@@ -465,6 +472,16 @@ export class Overlay3D {
     cam.updateProjectionMatrix()
   }
 
+  /**
+   * Tracked mode shows Foundry's own canvas as the floor — its computed
+   * dynamic lighting, token vision, and fog of war all come through, reused as
+   * the ground, with our 3D walls/tokens popping up on top. Orbit mode renders
+   * a full 3D scene (our ground + 3D lighting/shadows) instead.
+   */
+  _foundryFloor() {
+    return this._mode === 'tracked'
+  }
+
   /** Apply the current camera mode: active camera, input routing, UI-hide. */
   _applyMode() {
     const orbit = this._mode === 'orbit'
@@ -488,11 +505,16 @@ export class Overlay3D {
    */
   setMode(mode) {
     mode = mode === 'orbit' ? 'orbit' : 'tracked'
+    if (mode === this._mode) return
     this._mode = mode
-    if (this._mounted && this._visible) this._applyMode()
+    if (this._mounted && this._visible) {
+      this._applyMode()
+      this.rebuild() // floor/bg/grid differ per mode (tracked = Foundry's canvas)
+    }
   }
 
   _buildGround(rect, cx, cz) {
+    if (this._foundryFloor()) return // Foundry's own canvas is the floor
     const THREE = this._THREE
     const geo = new THREE.PlaneGeometry(rect.width, rect.height)
     let mat
@@ -515,6 +537,7 @@ export class Overlay3D {
   }
 
   _buildGrid(rect, cx, cz) {
+    if (this._foundryFloor()) return // Foundry's own grid shows through
     const THREE = this._THREE
     const g = canvas?.scene?.grid
     if (g && g.type === 0) return // gridless scene → no grid
@@ -687,6 +710,7 @@ export class Overlay3D {
    * the same way.)
    */
   _buildNotes() {
+    if (this._foundryFloor()) return // Foundry's own pins show through
     const THREE = this._THREE
     const notes = canvas?.notes?.placeables || []
     if (!notes.length) return
@@ -1092,7 +1116,7 @@ export class Overlay3D {
    */
   _createRenderer(THREE) {
     const powerPreference = this._gpuPreference()
-    const opts = { antialias: true, powerPreference }
+    const opts = { antialias: true, alpha: true, powerPreference }
     if (powerPreference !== 'low-power') {
       try {
         const r = new THREE.WebGLRenderer({ ...opts, failIfMajorPerformanceCaveat: true })

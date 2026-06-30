@@ -36,6 +36,9 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
 
   await ensureInGame(page)
   await expect.poll(() => page.evaluate(() => !!window.CFGCore?.overlay3D), { timeout: 30_000 }).toBe(true)
+  await page.evaluate(() => {
+    if (game.paused) game.togglePause(false)
+  })
 
   // Activate a clean test scene.
   await page.evaluate(async () => {
