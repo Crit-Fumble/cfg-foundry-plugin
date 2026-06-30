@@ -32,6 +32,12 @@ it on overlays a three.js canvas over the board that renders:
 - **elevation is worldspace + level-relative** (verified): a token's base ring sits at its Level's
   `elevation.base × pxPerUnit` and the mini at its absolute `elevation × pxPerUnit`; level maps at the
   Level's base. So a flier on the upper floor is anchored to the upper floor, not the ground;
+- **GM sees all; players are bound to their tokens** — the floor is the visibility blocker, deferring
+  to Foundry's own per-user computation: a GM sees every floor, a player only sees floors they can
+  access (`scene.availableLevels` — where they OBSERVER a token, so no cave below when they're above
+  ground) and only the tokens Foundry shows them (vision / fog of war / hidden). Tracked mode
+  additionally reuses Foundry's full per-user dynamic lighting + vision + fog as the floor. Full 3D
+  fog-of-war shadowing in *orbit* is a later enhancement — orbit is the GM "dollhouse";
 - an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
   toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
 - a **top-level "3D View" scene-control group** (its own left-toolbar button, not a tool buried

@@ -645,6 +645,7 @@ export class Overlay3D {
     for (const level of sorted) {
       const lb = this._levelBase(level)
       if (lb > cut + 0.01) continue // floor above the slice → hidden (cutaway)
+      if (!this._userCanSeeLevel(level)) continue // players: only floors they can access
       if (this._addLevelQuad(level, level.background, 'bottom', rect, cx, cz)) backgrounds += 1
       // Roof/foreground only for floors strictly BELOW the active one, so a
       // ceiling never blocks the view down into the current floor.
@@ -841,6 +842,29 @@ export class Overlay3D {
     }
     if (doc?.level !== undefined) return this._levelBaseOf(doc.level) <= cut + 0.01
     return true
+  }
+
+  /** Is the current user a GM (sees everything)? */
+  _isGM() {
+    return !!game?.user?.isGM
+  }
+
+  /**
+   * Whether the current user may see a given Level. GMs (and no-token-vision
+   * scenes) see all floors; players are bound to Foundry's `availableLevels` —
+   * the floors where they observe a token — so a player above ground won't see a
+   * cave below. The floor is the blocker; we defer to Foundry's own computation.
+   */
+  _userCanSeeLevel(level) {
+    if (this._isGM()) return true
+    try {
+      const avail = canvas?.scene?.availableLevels
+      if (!avail || typeof avail[Symbol.iterator] !== 'function') return true
+      for (const l of avail) if (l === level || l?.id === level?.id) return true
+      return false
+    } catch {
+      return true
+    }
   }
 
   _buildGrid(rect, cx, cz) {
@@ -1194,6 +1218,12 @@ export class Overlay3D {
       const THREE = this._THREE
       if (!doc) return
       if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
+      if (!this._isGM()) {
+        // Players: only render tokens Foundry shows them — its placeable visibility
+        // already respects vision, fog of war, the hidden flag, and floor access.
+        const p = canvas?.tokens?.get?.(doc.id)
+        if (!p?.visible) return
+      }
       const { w, h } = this._tokenSizePx(doc)
       // Derive position from the document (not the placeable) so this is correct
       // both at full rebuild and mid-`updateToken`, when the placeable's
