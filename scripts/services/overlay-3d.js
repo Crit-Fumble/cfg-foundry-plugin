@@ -159,9 +159,16 @@ export class Overlay3D {
         await this._mount()
         await this.rebuild()
         if (this._container) this._container.style.display = 'block'
+        // Option A: hide 2D-anchored interactive UI (Token HUD, tooltips) that
+        // Foundry positions for the top-down camera — it would float at the
+        // wrong spot over the orbit 3D view. Selection/HUD/measuring happen in
+        // 2D (toggle 3D off). The proper fix is to couple the camera/render so
+        // this UI aligns (tracked separately).
+        document.body.classList.add('cfg-3d-active')
         this._startLoop()
       } else {
         this._stopLoop()
+        document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
       }
       this._syncControlState()
@@ -186,6 +193,7 @@ export class Overlay3D {
 
   async _mount() {
     if (this._mounted) return
+    this._injectUiStyle()
     await this._ensureThree()
     const THREE = this._THREE
 
@@ -745,6 +753,7 @@ export class Overlay3D {
 
   destroy() {
     this._stopLoop()
+    document.body.classList.remove('cfg-3d-active')
     this._clearScene()
     for (const [hook, fn] of this._hooks) Hooks.off(hook, fn)
     this._hooks = []
@@ -804,6 +813,19 @@ export class Overlay3D {
         console.warn('CFG Core | Overlay3D control registration failed:', err)
       }
     })
+  }
+
+  /**
+   * Inject the stylesheet that hides 2D-anchored interactive UI (Token HUD,
+   * tooltips) while the 3D view is active — Foundry positions those for the
+   * top-down camera, so they'd float mispositioned over the orbit view.
+   */
+  _injectUiStyle() {
+    if (document.getElementById('cfg-3d-ui-style')) return
+    const style = document.createElement('style')
+    style.id = 'cfg-3d-ui-style'
+    style.textContent = 'body.cfg-3d-active #hud, body.cfg-3d-active #tooltip { display: none !important; }'
+    document.head.appendChild(style)
   }
 
   /** Re-render the scene controls so the toggle's active state reflects reality. */
