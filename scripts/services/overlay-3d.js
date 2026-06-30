@@ -80,9 +80,12 @@ export class Overlay3D {
     this._fpLastTick = 0
     this._fpCommitAt = 0
     this._fpDirty = false
-    /** @type {((e: MouseEvent) => void)|null} first-person mouse-look + pointer-lock handlers */
+    /** @type {boolean} first-person drag-look active */
+    this._looking = false
+    /** @type {((e: MouseEvent) => void)|null} first-person drag-look mouse handlers */
+    this._mouseDownHandler = null
     this._mouseMoveHandler = null
-    this._lockClickHandler = null
+    this._mouseUpHandler = null
 
     this._ground = null
     this._grid = null
@@ -665,56 +668,63 @@ export class Overlay3D {
 
   /**
    * Enable/disable first-person input: WASD (capture phase, preempting Foundry's
-   * keys) + mouse-look via Pointer Lock (click the view to look; Esc releases).
+   * keys) + click-and-drag mouse-look (MMO-style — hold + drag to turn; the
+   * cursor stays visible, matching Foundry's own interaction model).
    */
   _setFpInput(on) {
     if (on && !this._keyHandler) {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
+      this._mouseDownHandler = (e) => this._onMouseDown(e)
       this._mouseMoveHandler = (e) => this._onMouseMove(e)
-      this._lockClickHandler = () => this._requestLook()
+      this._mouseUpHandler = () => this._onMouseUp()
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
+      this._container?.addEventListener('mousedown', this._mouseDownHandler)
       document.addEventListener('mousemove', this._mouseMoveHandler, true)
-      this._container?.addEventListener('click', this._lockClickHandler)
+      document.addEventListener('mouseup', this._mouseUpHandler, true)
       this._keys = { w: false, a: false, s: false, d: false }
+      this._looking = false
       this._fpCenter = null
       this._fpLastTick = 0
       this._fpPitch = 0
+      if (this._container) this._container.style.cursor = 'grab'
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
       window.removeEventListener('keyup', this._keyUpHandler, true)
+      this._container?.removeEventListener('mousedown', this._mouseDownHandler)
       document.removeEventListener('mousemove', this._mouseMoveHandler, true)
-      this._container?.removeEventListener('click', this._lockClickHandler)
-      try {
-        if (document.pointerLockElement === this._container) document.exitPointerLock()
-      } catch {
-        /* ignore */
-      }
+      document.removeEventListener('mouseup', this._mouseUpHandler, true)
       this._keyHandler = null
       this._keyUpHandler = null
+      this._mouseDownHandler = null
       this._mouseMoveHandler = null
-      this._lockClickHandler = null
+      this._mouseUpHandler = null
+      this._looking = false
       this._keys = { w: false, a: false, s: false, d: false }
+      if (this._container) this._container.style.cursor = ''
     }
   }
 
-  /** Engage pointer-lock mouse-look on the overlay (from a user click in first-person). */
-  _requestLook() {
-    try {
-      if (this._mode === 'firstperson' && this._container && document.pointerLockElement !== this._container) {
-        this._container.requestPointerLock?.()
-      }
-    } catch {
-      /* pointer lock unavailable */
-    }
-  }
-
-  /** Pointer-locked mouse movement → look: movementX yaws the facing, movementY pitches the camera. */
-  _onMouseMove(event) {
+  /** Start a click-and-drag look (left button); the cursor stays visible. */
+  _onMouseDown(event) {
     if (this._mode !== 'firstperson' || !this._visible) return
-    if (document.pointerLockElement !== this._container) return
+    if (event.button !== 0) return // left-drag to look
+    this._looking = true
+    if (this._container) this._container.style.cursor = 'grabbing'
+  }
+
+  /** While dragging: movementX yaws the facing, movementY pitches the camera. */
+  _onMouseMove(event) {
+    if (!this._looking || this._mode !== 'firstperson' || !this._visible) return
     this._applyLook(event.movementX || 0, event.movementY || 0)
+  }
+
+  /** End the drag-look. */
+  _onMouseUp() {
+    if (!this._looking) return
+    this._looking = false
+    if (this._container) this._container.style.cursor = 'grab'
   }
 
   /** Apply a look delta (px): yaw the heading (committed to the token), pitch the camera (local, clamped). */
@@ -890,7 +900,7 @@ export class Overlay3D {
     const m = this._mode
     this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'click to look · WASD move (A/D strafe) · Esc to release' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson' ? 'drag to look · WASD move (A/D strafe)' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {

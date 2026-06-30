@@ -44,9 +44,10 @@ it on overlays a three.js canvas over the board that renders:
   under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down** (mirrors
   Foundry), **Free Camera** (orbit), **First Person** — plus Slice + camera presets. It has no canvas
   `layer`, so entering/leaving it never toggles the overlay (it persists);
-- **First Person** — the camera sits at the selected token's eyes (your own token hidden). **FPS
-  controls**: **mouse-look** turns the view (Pointer Lock — click the view to look, Esc to release;
-  yaw drives the token's facing, pitch is camera-only), **W/S** forward/back, **A/D strafe**.
+- **First Person** — the camera sits at the selected token's eyes (your own token hidden). Controls:
+  **click-and-drag to look** (MMO-style — the cursor stays visible, matching Foundry's own model;
+  drag-x yaws the token's facing, drag-y pitches the camera up/down), **W/S** forward/back, **A/D
+  strafe**.
   Per-player settings: **mouse sensitivity** and **fine movement** (hold-to-walk vs one-grid-per-
   press). **Walls block movement** (`polygonBackends.move.testCollision`). Movement runs per frame
   against a local camera pose for smoothness; the token is committed on a throttle, so it stays in

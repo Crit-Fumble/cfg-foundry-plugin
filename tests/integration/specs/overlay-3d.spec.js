@@ -358,6 +358,16 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   console.log('[overlay-3d] mouse-look turn:', lookB, '→', lookA)
   expect(lookA !== lookB, 'a horizontal mouse-look delta turns the facing').toBe(true)
 
+  // Drag-look plumbing (MMO-style): left mousedown on the view starts looking, mouseup ends it.
+  const looking = await page.evaluate(() => {
+    document.getElementById('cfg-3d-overlay').dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }))
+    const during = window.CFGCore.overlay3D._instance._looking
+    document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }))
+    return { during, after: window.CFGCore.overlay3D._instance._looking }
+  })
+  expect(looking.during, 'left-drag starts drag-look').toBe(true)
+  expect(looking.after, 'mouseup ends drag-look').toBe(false)
+
   // (c) Fine movement: hold W, position changes smoothly.
   await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', true))
   await reset(tokenId)
