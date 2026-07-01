@@ -1651,6 +1651,11 @@ export class Overlay3D {
     try {
       const THREE = this._THREE
       if (!doc) return
+      // Top-down is transparent over Foundry's own canvas, so Foundry's native 2D tokens
+      // show through. Don't draw our own token mini there — it would duplicate them and
+      // visibly separate during Foundry's move animation. (Perspective modes are opaque,
+      // so they DO render their own tokens.) Foundry's tokens stay the source of truth.
+      if (this._foundryFloor()) return
       if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
       if (!this._isGM()) {
         // Players: only render tokens Foundry shows them — its placeable visibility

@@ -169,7 +169,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     })(),
   }))
   expect(info.ready).toBe(true)
-  expect(info.tokens).toBe(5)
+  expect(info.tokens, 'top-down draws no overlay token minis — Foundry\'s own 2D tokens show through').toBe(0)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
   expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
@@ -206,6 +206,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // --- Orbit (free-look) mode. ---
   await page.evaluate(() => window.CFGCore.overlay3D.setMode('orbit'))
   await page.waitForTimeout(400)
+  // The perspective modes ARE opaque, so they render their own token minis (all 5).
+  expect(await page.evaluate(() => window.CFGCore.overlay3D.tokenCount()), 'perspective modes render their own token minis').toBe(5)
 
   // Slice OFF → the full multi-floor "dollhouse" (both level maps render) for the
   // review angles.
