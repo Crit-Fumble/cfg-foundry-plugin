@@ -16,6 +16,7 @@
     "test:foundry:self": "npx playwright test --config tests/integration/playwright.config.js --project=self-hosted",
     "test:foundry:ui": "npx playwright test --config tests/integration/playwright.config.js --ui",
     "test:foundry:3d": "npx playwright test --config tests/integration/playwright.config.js --project=3d-screenshots",
+    "test:viewer": "node tests/integration/vtt-viewer-core.test.mjs",
     "test:foundry:down": "docker compose --env-file tests/.env.test -f tests/docker-compose.yml down && rm -rf tests/fixtures/.worlds-runtime",
     "test:foundry:all": "npm run test:foundry:up && npm run test:foundry; npm run test:foundry:down",
     "prepare": "husky"
