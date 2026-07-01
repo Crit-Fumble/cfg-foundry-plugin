@@ -175,25 +175,30 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
   expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
 
-  // --- Top Down (Tactical) — opaque 3D, camera locked straight-down on and following
-  //     the selected/controlled token (RTS/tabletop feel; no longer mirrors Foundry). ---
+  // --- Top Down — the 3D mirrors Foundry's pan/zoom and stays click-through, so native
+  //     arrow-pan + mouse select/hover/target line up over the aligned 2D. ---
   expect(await page.evaluate(() => window.CFGCore.overlay3D.getMode())).toBe('tracked')
-  const tokCenter = await page.evaluate(() => {
-    const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
-    t?.control({ releaseOthers: true })
-    return { x: t.center.x, y: t.center.y }
+  await page.evaluate(async () => {
+    await canvas.pan({ x: 1300, y: 1700, scale: 0.5 })
   })
-  await page.waitForTimeout(900)
-  const tactical = await page.evaluate(() => {
+  await page.waitForTimeout(700)
+  const track = await page.evaluate(() => {
     const inst = window.CFGCore.overlay3D._instance
     const cam = inst._trackedCamera
-    return { camX: Math.round(cam.position.x), camZ: Math.round(cam.position.z), camY: Math.round(cam.position.y), opaque: inst._foundryFloor() === false }
+    return {
+      camX: Math.round(cam.position.x),
+      camZ: Math.round(cam.position.z),
+      pivotX: Math.round(canvas.stage.pivot.x),
+      pivotZ: Math.round(canvas.stage.pivot.y),
+      transparent: inst._foundryFloor() === true,
+      clickThrough: getComputedStyle(document.getElementById('cfg-3d-overlay')).pointerEvents,
+    }
   })
-  console.log('[overlay-3d] tactical camera:', JSON.stringify({ tokCenter, tactical }))
-  expect(Math.abs(tactical.camX - tokCenter.x), 'tactical camera centers on the token (x)').toBeLessThan(5)
-  expect(Math.abs(tactical.camZ - tokCenter.y), 'tactical camera centers on the token (z ← canvas y)').toBeLessThan(5)
-  expect(tactical.camY, 'camera high above, looking straight down').toBeGreaterThan(1000)
-  expect(tactical.opaque, 'tactical renders its own floor (opaque, not transparent over Foundry)').toBe(true)
+  console.log('[overlay-3d] top-down mirrors Foundry:', JSON.stringify(track))
+  expect(Math.abs(track.camX - track.pivotX), 'camera mirrors Foundry pan (x)').toBeLessThan(5)
+  expect(Math.abs(track.camZ - track.pivotZ), 'camera mirrors Foundry pan (z)').toBeLessThan(5)
+  expect(track.transparent, 'top-down is transparent over Foundry (native floor + visuals show)').toBe(true)
+  expect(track.clickThrough, 'top-down is click-through so native mouse select/target works').toBe('none')
 
   await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
   await page.screenshot({ path: join(SHOTS, '02-tracked.png') })

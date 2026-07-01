@@ -43,11 +43,11 @@ it on overlays a three.js canvas over the board that renders:
   under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down**, **Free
   Camera** (orbit), **Character** — plus Slice. It has no canvas `layer`, so entering/leaving it
   never toggles the overlay (it persists);
-- **Top Down (Tactical)** (RTS/tabletop feel) — an **opaque** straight-down 3D view **locked onto and
-  following the selected/controlled token** (`_syncTrackedCamera` centers the ortho camera on the
-  token, ~14 grids wide). No longer mirrors Foundry's pan (so it's no longer transparent-over-Foundry);
-  `_foundryFloor()` is now always `false` — every mode renders its own opaque floor. Token-focus follows
-  the controlled token; 3D-click-to-select + wheel-zoom are follow-ups.
+- **Top Down** — a straight-down 3D that **mirrors Foundry's pan/zoom** and stays **transparent +
+  click-through** over Foundry's own canvas: native **arrow-pan** moves the view, and native **mouse
+  select/hover/target** line up over the aligned 2D (Foundry's floor/lighting/fog show through, with
+  the 3D walls/tokens on top). `_syncTrackedCamera` tracks `canvas.stage.pivot`; `_foundryFloor()` is
+  `true` for this mode; the overlay is `pointer-events:none` so all native canvas input passes through.
 - **Character View** (Action-RPG / MMORPG feel) — **3rd person by default; scroll all the way in →
   1st person** (the wheel is `_charDist`, zoom, not turn). The token **aims at the mouse cursor**
   (raycast the cursor onto the token's floor plane, then face it); **WASD moves relative to the
