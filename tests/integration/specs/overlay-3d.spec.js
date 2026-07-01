@@ -121,6 +121,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
       { x: 1380, y: 1180, width: 360, height: 360, elevation: 20 },
     ])
     // A map note pin — UI on the map, rendered as a flat marker (not 3D geometry).
+    const oldNotes = canvas.scene.notes.map((n) => n.id)
+    if (oldNotes.length) await canvas.scene.deleteEmbeddedDocuments('Note', oldNotes)
     await canvas.scene.createEmbeddedDocuments('Note', [
       { x: 1750, y: 1300, text: 'Quest', texture: { src: 'icons/svg/book.svg' }, iconSize: 60, fontSize: 28, global: true },
     ])
