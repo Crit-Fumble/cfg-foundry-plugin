@@ -64,7 +64,7 @@ export class Overlay3D {
     this._raf = null
     this._tickerFn = null
     /**
-     * 'tracked' = angled bird's-eye perspective camera (Top Down), 'orbit' = free-look
+     * 'tracked' = true top-down perspective camera (Top Down), 'orbit' = free-look
      * (Free Camera), 'firstperson' = Character view (3rd/1st person). All three render a
      * full opaque 3D scene via the shared viewer core.
      * @type {'tracked'|'orbit'|'firstperson'}
@@ -92,7 +92,7 @@ export class Overlay3D {
     this._charAzimuth = 0 // direction (radians) from token → camera, in world XZ (Left/Right arrows)
     this._charAzimuthInit = false // azimuth is seeded once (behind the entry facing)
     this._charPitch = 42 // 3rd-person camera tilt in degrees (Up/Down arrows adjust)
-    // Top-Down (tactical) — an angled bird's-eye: a perspective camera high above a pan
+    // Top-Down (tactical) — true top-down: a perspective camera directly above a pan
     // focus, tilted so wall sides show. Arrow keys pan the focus; the wheel zooms.
     /** @type {{x:number,z:number}|null} top-down pan focus (world XZ); null = re-seed */
     this._trackFocus = null
@@ -517,26 +517,21 @@ export class Overlay3D {
   }
 
   /**
-   * Mirror Foundry's 2D camera with the tracked orthographic camera so world
-   * points project to the same screen pixels Foundry uses — its canvas-anchored
-   * UI (HUD, tooltips, pins) then lines up over the 3D. Foundry maps
-   * screen = (world - stage.pivot) * stage.scale + screenCenter.
+   * TRUE top-down: the perspective camera directly overhead the pan focus, looking
+   * straight down — matching Foundry's own map orientation, just in 3D. Arrow keys pan
+   * the focus; the wheel changes _trackDist (height). `up` must be a horizontal axis
+   * here (the view direction is vertical — world-up would leave the camera's
+   * screen-space rotation undefined); -Z keeps Foundry-north up on screen.
    */
   _syncTrackedCamera() {
     const cam = this._orbitCamera
     if (!cam) return
-    // Angled bird's-eye: a perspective camera high above the pan focus, tilted so the
-    // near (south-facing) sides of walls + the 3D minis read with depth. Arrow keys pan
-    // the focus; the wheel changes _trackDist (height).
     if (!this._trackFocus) this._trackFocus = this._defaultTrackFocus()
     const size = canvas?.dimensions?.size || 100
     if (!this._trackDist) this._trackDist = size * 12
     const f = this._trackFocus
-    const pitch = 60 * (Math.PI / 180) // from horizontal — steep but angled, not straight down
-    const horiz = this._trackDist * Math.cos(pitch)
-    const vert = this._trackDist * Math.sin(pitch)
-    cam.up.set(0, 1, 0)
-    cam.position.set(f.x, vert, f.z + horiz) // south of + above the focus, looking north-down
+    cam.up.set(0, 0, -1)
+    cam.position.set(f.x, this._trackDist, f.z)
     cam.lookAt(f.x, 0, f.z)
     cam.fov = 50
     cam.updateProjectionMatrix()
@@ -998,8 +993,8 @@ export class Overlay3D {
 
   /**
    * Every 3D mode now renders a full opaque scene (our own ground/floor/walls/tokens +
-   * 3D lighting). Nothing is transparent-over-Foundry anymore — top-down is an angled
-   * bird's-eye, not a flat mirror — so Foundry's 2D never shows through to duplicate.
+   * 3D lighting). Nothing is transparent-over-Foundry anymore — top-down is our own 3D
+   * render, not a flat mirror — so Foundry's 2D never shows through to duplicate.
    */
   _foundryFloor() {
     return false
@@ -1018,11 +1013,15 @@ export class Overlay3D {
     if (this._orbitCamera) {
       this._orbitCamera.fov = m === 'firstperson' ? 78 : 50
       this._orbitCamera.updateProjectionMatrix()
+      // Top-down repoints camera.up to a horizontal axis for its straight-down shot;
+      // restore world-up before OrbitControls (orbit) or the FP look-math take over,
+      // or their orbits/tilts rotate around the wrong axis.
+      if (m !== 'tracked') this._orbitCamera.up.set(0, 1, 0)
     }
     this._setFpInput(this._visible) // keyboard + wheel + 3D-pick mouse for every 3D mode
     if (m === 'orbit') this.setView('default')
     else if (m === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
-    else this._syncTrackedCamera() // top-down angled bird's-eye
+    else this._syncTrackedCamera() // TRUE top-down (directly overhead)
     this._render()
   }
 
@@ -1809,7 +1808,7 @@ export class Overlay3D {
           topdown: {
             name: 'topdown',
             order: 0,
-            title: 'Top Down (angled 3D — arrows pan · scroll zoom · click select/target)',
+            title: 'Top Down (3D overhead — arrows pan · scroll zoom · click select/target)',
             icon: 'fa-solid fa-table-cells',
             toggle: true,
             active: vm === 'topdown',

@@ -193,8 +193,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(burrower.lowerY, 'no stalk found on the underground token').not.toBeNull()
   expect(Math.abs(burrower.lowerY - burrower.footprint), `post's lower edge ${burrower.lowerY} should be at the mini's top (footprint ${burrower.footprint}), not its feet (0)`).toBeLessThan(1)
 
-  // --- Top Down — an angled bird's-eye 3D: opaque, camera elevated + TILTED (so wall
-  //     sides show), arrow-pan + wheel-zoom + 3D-pick select/target. ---
+  // --- Top Down — a TRUE top-down 3D: opaque, camera directly overhead looking
+  //     straight down (not angled), arrow-pan + wheel-zoom + 3D-pick select/target. ---
   expect(await page.evaluate(() => window.CFGCore.overlay3D.getMode())).toBe('tracked')
   await page.waitForTimeout(400)
   const td = await page.evaluate(() => {
@@ -206,16 +206,22 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     return {
       opaque: inst._foundryFloor() === false,
       pe: getComputedStyle(document.getElementById('cfg-3d-overlay')).pointerEvents,
+      // Offsets vs the CURRENT focus — the ArrowRight handler above re-syncs the
+      // camera to the panned focus synchronously, so the pre-pan snapshot is stale.
       camY: Math.round(cam.position.y),
-      camZoff: Math.round(cam.position.z - inst._trackFocus.z), // angled → non-zero horizontal offset
+      camXoff: Math.round(cam.position.x - inst._trackFocus.x), // true top-down → directly overhead
+      camZoff: Math.round(cam.position.z - inst._trackFocus.z),
+      upIsHorizontal: Math.abs(cam.up.y) < 0.01, // straight-down view needs a horizontal up axis
       pannedX: inst._trackFocus.x - focusBefore.x,
     }
   })
-  console.log('[overlay-3d] top-down angled:', JSON.stringify(td))
+  console.log('[overlay-3d] top-down:', JSON.stringify(td))
   expect(td.opaque, 'top-down is opaque (own 3D scene — no Foundry-2D show-through to duplicate)').toBe(true)
   expect(td.pe, 'top-down captures the mouse for 3D picking').toBe('auto')
   expect(td.camY, 'camera is elevated above the board').toBeGreaterThan(100)
-  expect(Math.abs(td.camZoff), 'camera is ANGLED (horizontal offset from focus), not straight down').toBeGreaterThan(50)
+  expect(Math.abs(td.camXoff), 'camera is directly overhead (no X offset) — TRUE top-down, not angled').toBeLessThan(1)
+  expect(Math.abs(td.camZoff), 'camera is directly overhead (no Z offset) — TRUE top-down, not angled').toBeLessThan(1)
+  expect(td.upIsHorizontal, 'camera.up is a horizontal axis (screen-space rotation defined when looking straight down)').toBe(true)
   expect(td.pannedX, 'ArrowRight pans the camera focus').toBeGreaterThan(0)
 
   await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
