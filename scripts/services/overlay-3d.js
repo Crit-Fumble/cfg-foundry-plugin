@@ -620,7 +620,25 @@ export class Overlay3D {
       this._fpSyncLocalFromToken(tok) // idle → follow the token (external moves, discrete commits)
     }
     this._charUpdateSubjectVisibility(tok)
+    this._fpSyncSubjectVisual(tok)
     this._fpPositionCamera(tok)
+  }
+
+  /**
+   * Move the subject's own 3D mini to `_fpCenter` directly, every frame — the same
+   * local state the camera already tracks smoothly. The throttled document commit
+   * (~11/s, see `_fpCommitNow`) is for persistence/multiplayer sync; without this,
+   * the mini would only move once per commit (a visible ~90ms step), even though
+   * the camera moves at 60fps — this is what actually reads as "choppy" in 3rd
+   * person. Ring/stalk offsets (computed at add-time from elevation/floorElevation)
+   * go stale only if elevation changes mid-move; the next hook-driven rebuild
+   * corrects that — a non-issue for ordinary flat-ground walking.
+   */
+  _fpSyncSubjectVisual(tok) {
+    const g = this._viewer?.tokens?.get?.(tok.id)
+    if (!g || !this._fpCenter) return
+    const elevPx = Number(tok.document.elevation || 0) * this._pxPerUnit()
+    g.position.set(this._fpCenter.x, elevPx, this._fpCenter.y)
   }
 
   /** A unit move direction (world XZ) for a WASD key, relative to the CAMERA
@@ -763,14 +781,26 @@ export class Overlay3D {
     this._fpHeading = Number(doc.rotation) || 0
   }
 
-  /** Commit the local camera state (position + facing) to the token document. */
+  /**
+   * Commit the local camera state (position + facing) to the token document. No
+   * `teleport` — Foundry's default "walk" movement action animates the sprite and
+   * shows its native measuring ruler during the move (matching the 2D view), and
+   * natively clips movement at a wall if our own `_moveBlocked` pre-check ever
+   * disagrees with its real collision resolution. The CAMERA and the subject's own
+   * 3D mini are never driven by this commit's animation — they're already updated
+   * every frame from `_fpCenter` (see `_fpStep`/`_fpSyncSubjectVisual`) — this call
+   * is purely for persistence + multiplayer sync, decoupled from local smoothness.
+   */
   _fpCommitNow(tok) {
     try {
       const doc = tok.document
       const { w, h } = this._tokenSizePx(doc)
+      // showRuler: our update has no `method` (defaults to "api"), which — unlike
+      // Foundry's own "dragging" — defaults showRuler to false. Ask for it explicitly
+      // so the native measuring ruler appears during the move, same as the 2D view.
       doc.update(
         { x: Math.round(this._fpCenter.x - w / 2), y: Math.round(this._fpCenter.y - h / 2), rotation: Math.round(this._fpHeading) },
-        { teleport: true },
+        { showRuler: true },
       )
     } catch {
       /* permission / movement rejected — ignore */
@@ -1625,10 +1655,19 @@ export class Overlay3D {
   }
 
   /**
-   * Re-sync a single token on its `updateToken` broadcast (fires on every
-   * client — this is the "free multiplayer"). Remove + re-add (via the viewer's
-   * `applyDelta`) so position, elevation, the height stalk, and size all stay
-   * correct — a plain in-place move wouldn't refresh the ring/stalk offsets.
+   * Re-sync a single token on its `updateToken`/`moveToken` broadcast (fires on
+   * every client — this is the "free multiplayer"). Remove + re-add (via the
+   * viewer's `applyDelta`) so position, elevation, the height stalk, and size all
+   * stay correct — a plain in-place move wouldn't refresh the ring/stalk offsets.
+   *
+   * Skipped for the actively-tracked first-person subject: with `teleport` gone,
+   * Foundry's own movement pipeline animates the document's x/y progressively and
+   * fires this hook one or more times mid-animation with a still-in-flight
+   * position — rebuilding the group from that reads a stale/partial value and
+   * races with `_fpSyncSubjectVisual` (which repositions the SAME group every
+   * frame from local `_fpCenter`, already fully accurate — including external
+   * moves, via the idle-sync branch in `_fpStep`). Skipping here is what actually
+   * fixes the jitter; every other token still rebuilds normally.
    */
   _onUpdateToken(doc) {
     if (!this._visible || !this._mounted) return
@@ -1638,6 +1677,7 @@ export class Overlay3D {
         this._scheduleRebuild()
         return
       }
+      if (this._mode === 'firstperson' && id === this._firstPersonToken()?.id) return
       this._removeToken(id)
       // Re-read the live document (all floors) so x/y/elevation/level are current.
       const fresh = canvas?.scene?.tokens?.get?.(id) || doc

@@ -343,20 +343,60 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   const reset = (tid) => page.evaluate(async (id) => canvas.scene.tokens.get(id).update({ x: 1450, y: 1450, rotation: 0 }, { teleport: true }), tid)
 
   // (a) WASD moves the token (camera-relative), one grid per press in grid mode;
-  //     movement never changes facing (only the cursor turns).
+  //     movement never changes facing (only the cursor turns). No more {teleport:true}
+  //     — Foundry's native "walk" movement action animates the sprite and shows its
+  //     own measuring ruler during the move (same as the default 2D view), instead of
+  //     an instant snap. Also: the 3D mini is driven directly from local camera state
+  //     every frame (see _fpSyncSubjectVisual), not the ~90ms throttled document-
+  //     commit hook — in grid-step mode _fpCenter itself jumps immediately on
+  //     keydown, so this shrinks the mini's visible lag from ~90ms to ~1 frame
+  //     rather than animating a gradual glide (that's fine-movement's job instead).
   await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false))
-  await reset(tokenId)
+  await reset(tokenId) // uses its own {teleport:true} for instant test setup — not the plugin's commit path
   await page.waitForTimeout(300)
   let b = await read(tokenId)
-  await tap('w')
-  await page.waitForTimeout(400)
+  // Only listen from here — reset()'s own teleport-based update would otherwise
+  // also log the deprecation warning and produce a false failure below.
+  const deprecationWarnings = []
+  page.on('console', (m) => {
+    if (m.type() === 'warning' && /teleport.*deprecated/i.test(m.text())) deprecationWarnings.push(m.text())
+  })
+  const startCenter = { x: b.x + gridSize / 2, y: b.y + gridSize / 2 } // token is 1×1 grid
+  await key('w', 'keydown')
+  await page.waitForTimeout(60) // early — well before Foundry's animation settles (~500ms for one grid step)
+  const early = await page.evaluate(
+    ({ id, sc }) => {
+      const inst = window.CFGCore.overlay3D._instance
+      const g = inst._viewer.tokens.get(id)
+      // World (x, z) maps to Foundry (x, y) — WASD is camera-relative (Action-RPG),
+      // so "W" isn't necessarily +x; measure total displacement from the start instead.
+      const dist = g ? Math.hypot(g.position.x - sc.x, g.position.z - sc.y) : null
+      return { miniDist: dist }
+    },
+    { id: tokenId, sc: startCenter },
+  )
+  // Foundry's own animation takes its own sweet time (~200-500ms for one grid step,
+  // confirmed live) — `Token#showRuler` (a real getter, not the `_rulerPaths` PIXI
+  // container, which Foundry redraws in place rather than adding/removing children)
+  // only flips true partway in. Sample mid-window, well after our own instant local
+  // state has already settled.
+  await page.waitForTimeout(240)
+  const midFlight = await page.evaluate((id) => {
+    const t = canvas.tokens.get(id)
+    return { showRuler: t?.showRuler ?? null }
+  }, tokenId)
+  await key('w', 'keyup')
+  await page.waitForTimeout(500)
   let a = await read(tokenId)
-  console.log('[overlay-3d] character move W:', JSON.stringify({ b, a }))
+  console.log('[overlay-3d] character move W:', JSON.stringify({ b, a, early, midFlight, deprecationWarnings: deprecationWarnings.length }))
   const mdx = a.x - b.x
   const mdy = a.y - b.y
   const moveHeading = (((Math.atan2(mdy, mdx) * 180) / Math.PI - 90) % 360 + 360) % 360
   expect(Math.round(Math.hypot(mdx, mdy)), 'W moves one grid square').toBe(gridSize)
   expect(Math.abs(((a.rotation - moveHeading + 540) % 360) - 180), 'the token faces its movement direction').toBeLessThan(2)
+  expect(deprecationWarnings, 'no more {teleport:true} deprecation warning — using native "walk" movement').toHaveLength(0)
+  expect(midFlight.showRuler, "Foundry's native ruler (Token#showRuler) is visible while the token is moving").toBe(true)
+  expect(early.miniDist, 'the 3D mini is already advancing well before Foundry\'s own animation settles').toBeGreaterThan(5)
   await hideChrome(page)
   await page.screenshot({ path: join(SHOTS, '09-character-after-move.png') })
 
