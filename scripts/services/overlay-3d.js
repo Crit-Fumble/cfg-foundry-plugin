@@ -80,8 +80,18 @@ export class Overlay3D {
     this._fpLastTick = 0
     this._fpCommitAt = 0
     this._fpDirty = false
-    /** @type {((e: WheelEvent) => void)|null} first-person wheel-turn handler */
+    // Character view: 3rd-person by default (camera pulled back + up along an azimuth,
+    // looking at the token), zooming to 1st person as _charDist → 0. The token aims at
+    // the cursor; WASD moves relative to the camera.
+    this._charDist = 0 // camera pull-back distance (world px); 0 = first person
+    this._charAzimuth = 0 // direction (radians) from token → camera, in world XZ
+    this._charAzimuthInit = false // azimuth is seeded once (behind the entry facing)
+    /** @type {{x:number,y:number}|null} last cursor pos (client px) for cursor-aim */
+    this._cursor = null
+    /** @type {((e: WheelEvent) => void)|null} character wheel-zoom handler */
     this._wheelHandler = null
+    /** @type {((e: MouseEvent) => void)|null} character cursor-tracking handler */
+    this._charMoveHandler = null
 
     this._ground = null
     this._grid = null
@@ -557,6 +567,12 @@ export class Overlay3D {
     const tok = this._firstPersonToken()
     if (!tok?.document) return
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    if (!this._charAzimuthInit) {
+      // Seed the camera behind the token's entry facing; it then stays put while the
+      // token turns to the cursor independently (left-drag orbit can adjust it later).
+      this._charAzimuth = (((this._fpHeading + 270) % 360) * Math.PI) / 180
+      this._charAzimuthInit = true
+    }
     const dt = this._fpLastTick ? Math.min(0.1, (now - this._fpLastTick) / 1000) : 0
     this._fpLastTick = now
     const k = this._keys
@@ -580,20 +596,24 @@ export class Overlay3D {
         }
       }
     }
+    this._charFacingFromCursor(tok) // aim the token at the cursor
     if (this._fpDirty) {
-      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes (movement + mouse-look)
+      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes
     } else if (!k.w && !k.a && !k.s && !k.d) {
       this._fpSyncLocalFromToken(tok) // idle → follow the token (external moves, discrete commits)
     }
+    this._charUpdateSubjectVisibility(tok)
     this._fpPositionCamera(tok)
   }
 
-  /** A unit move direction (world XZ) for a WASD key from the current heading:
-   * W forward, S back, D strafe-right, A strafe-left. */
+  /** A unit move direction (world XZ) for a WASD key, relative to the CAMERA
+   * (Action-RPG): W = into the screen (away from the camera), S back, A/D screen
+   * left/right. The token aims independently at the cursor. */
   _fpMoveDir(key) {
-    const theta = (this._fpHeading + 90) * (Math.PI / 180)
-    const f = { x: Math.cos(theta), z: Math.sin(theta) } // forward
-    const r = { x: -Math.sin(theta), z: Math.cos(theta) } // strafe-right
+    // _charAzimuth points from the token TO the camera; "forward" (into the screen)
+    // is the opposite — the direction the camera looks.
+    const f = { x: -Math.cos(this._charAzimuth), z: -Math.sin(this._charAzimuth) }
+    const r = { x: -f.z, z: f.x } // screen-right = forward rotated 90° in world XZ
     if (key === 'w') return f
     if (key === 's') return { x: -f.x, z: -f.z }
     if (key === 'd') return r
@@ -601,20 +621,81 @@ export class Overlay3D {
     return { x: 0, z: 0 }
   }
 
-  /** Position the first-person camera from the local heading + pitch + ground point. */
+  /**
+   * Position the character camera: 3rd-person (pulled back + up along the azimuth,
+   * looking at the token) by default, converging to 1st-person (at the eyes, looking
+   * where the token faces) as _charDist → 0.
+   */
   _fpPositionCamera(tok) {
     const cam = this._orbitCamera
     if (!cam || !this._fpCenter) return
-    const ppu = this._pxPerUnit()
     const size = canvas?.dimensions?.size || 100
-    const eyeY = (Number(tok.document.elevation) || 0) * ppu + size * 0.9 // ~eye height above the floor
-    const theta = (this._fpHeading + 90) * (Math.PI / 180)
-    const pitch = ((this._fpPitch || 0) * Math.PI) / 180
-    const cp = Math.cos(pitch)
+    const eyeY = (Number(tok.document.elevation) || 0) * this._pxPerUnit() + size * 0.9 // ~eye height
+    const cx = this._fpCenter.x
+    const cz = this._fpCenter.y
     cam.up.set(0, 1, 0)
-    cam.position.set(this._fpCenter.x, eyeY, this._fpCenter.y)
-    cam.lookAt(this._fpCenter.x + Math.cos(theta) * cp * size, eyeY + Math.sin(pitch) * size, this._fpCenter.y + Math.sin(theta) * cp * size)
+    if (this._charDist < size * 0.5) {
+      // First person: at the eyes, looking where the token faces (the cursor).
+      const theta = (this._fpHeading + 90) * (Math.PI / 180)
+      cam.position.set(cx, eyeY, cz)
+      cam.lookAt(cx + Math.cos(theta) * size, eyeY, cz + Math.sin(theta) * size)
+    } else {
+      // Third person: camera behind + above along the azimuth, looking at the token.
+      const pitch = 42 * (Math.PI / 180)
+      const horiz = this._charDist * Math.cos(pitch)
+      const vert = this._charDist * Math.sin(pitch)
+      cam.position.set(cx + Math.cos(this._charAzimuth) * horiz, eyeY + vert, cz + Math.sin(this._charAzimuth) * horiz)
+      cam.lookAt(cx, eyeY, cz)
+    }
     cam.updateProjectionMatrix()
+  }
+
+  /**
+   * Aim the token's facing at the cursor's position on its floor plane: raycast from
+   * the camera through the cursor to the ground at the token's elevation, then face
+   * that point. Sets _fpHeading + marks dirty so the new facing commits.
+   */
+  _charFacingFromCursor(tok) {
+    if (!this._cursor || !this._fpCenter) return
+    const THREE = this._THREE
+    const cam = this._orbitCamera
+    if (!THREE || !cam) return
+    cam.updateMatrixWorld() // unproject reads matrixWorld — keep it current
+    const w = window.innerWidth || 1
+    const h = window.innerHeight || 1
+    // Unproject the cursor NDC to a world point along the view ray, then intersect the
+    // token's floor plane (y = elevation) by hand — leaner than allocating a
+    // Raycaster + Plane every frame (this runs per-frame while aiming).
+    const ndcX = (this._cursor.x / w) * 2 - 1
+    const ndcY = -((this._cursor.y / h) * 2 - 1)
+    const p = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam)
+    const ox = cam.position.x
+    const oy = cam.position.y
+    const oz = cam.position.z
+    const rx = p.x - ox
+    const ry = p.y - oy
+    const rz = p.z - oz
+    if (Math.abs(ry) < 1e-6) return // ray parallel to the floor
+    const elevY = (Number(tok.document.elevation) || 0) * this._pxPerUnit()
+    const t = (elevY - oy) / ry
+    if (t < 0) return // floor is behind the camera
+    const dx = ox + rx * t - this._fpCenter.x
+    const dz = oz + rz * t - this._fpCenter.y
+    if (Math.hypot(dx, dz) < 5) return // cursor over the token → keep the current facing
+    // forward for heading H is (cos((H+90)°), sin((H+90)°)) in world XZ → H = atan2(dz,dx)−90°.
+    const heading = (((Math.atan2(dz, dx) * 180) / Math.PI - 90) % 360 + 360) % 360
+    if (Math.abs(((heading - this._fpHeading + 540) % 360) - 180) > 0.5) {
+      this._fpHeading = heading
+      this._fpDirty = true
+    }
+  }
+
+  /** Show the subject token's model in 3rd person; hide it in 1st (the camera is
+   * inside it). Restored to visible when leaving character view. */
+  _charUpdateSubjectVisibility(tok) {
+    const size = canvas?.dimensions?.size || 100
+    const g = this._tokens?.get?.(tok.id)
+    if (g) g.visible = this._charDist >= size * 0.5
   }
 
   /** Initialize the local camera state from a token (centre + facing). */
@@ -673,23 +754,41 @@ export class Overlay3D {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
       this._wheelHandler = (e) => this._onWheel(e)
+      this._charMoveHandler = (e) => {
+        this._cursor = { x: e.clientX, y: e.clientY }
+      }
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
       this._container?.addEventListener('wheel', this._wheelHandler, { passive: false, capture: true })
+      window.addEventListener('mousemove', this._charMoveHandler)
       this._keys = { w: false, a: false, s: false, d: false }
       this._fpCenter = null
       this._fpLastTick = 0
       this._fpPitch = 0
+      this._charDist = (canvas?.dimensions?.size || 100) * 4 // 3rd-person by default
+      this._charAzimuthInit = false
+      this._cursor = null
       if (this._container) this._container.style.cursor = ''
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
       window.removeEventListener('keyup', this._keyUpHandler, true)
       this._container?.removeEventListener('wheel', this._wheelHandler, { capture: true })
+      window.removeEventListener('mousemove', this._charMoveHandler)
       this._keyHandler = null
       this._keyUpHandler = null
       this._wheelHandler = null
+      this._charMoveHandler = null
+      this._cursor = null
       this._keys = { w: false, a: false, s: false, d: false }
       if (this._container) this._container.style.cursor = ''
+      // The subject model is hidden in 1st person — restore it for the other modes.
+      try {
+        const sub = this._firstPersonToken?.()
+        const g = sub && this._tokens?.get?.(sub.id)
+        if (g) g.visible = true
+      } catch {
+        /* ignore */
+      }
       // First-person drives the token via rapid movement commits, which leave a
       // movement-ruler "ghost" path in canvas.tokens._rulerPaths that Foundry does
       // NOT clear on its own — a trailing duplicate token on the 2D canvas. Clear
@@ -703,11 +802,8 @@ export class Overlay3D {
   }
 
   /**
-   * First-person: the mouse WHEEL turns the facing, using Foundry's own rotation
-   * snap — 15° per notch, 45° with Shift. Turning is deliberate and separate from
-   * A/D strafe. The camera turns immediately; the new facing is committed to the
-   * token. (Foundry's native wheel-rotate does not reach the overlay in first
-   * person, so the overlay turns the token directly with the same snap feel.)
+   * Character view: the mouse WHEEL zooms — pulling the camera back into 3rd person or
+   * in toward 1st person (_charDist → 0). Turning is by the cursor, not the wheel.
    */
   _onWheel(event) {
     if (this._mode !== 'firstperson' || !this._visible) return
@@ -716,16 +812,16 @@ export class Overlay3D {
     event.preventDefault?.()
     event.stopImmediatePropagation?.()
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
-    const step = event.shiftKey ? 45 : 15
-    this._fpHeading = (((this._fpHeading + (event.deltaY > 0 ? step : -step)) % 360) + 360) % 360
-    this._fpPositionCamera(tok) // turn the camera now
-    this._fpCommitNow(tok) // commit the new facing to the token (a discrete intent)
+    const size = canvas?.dimensions?.size || 100
+    const stepPx = size * 0.75
+    this._charDist = Math.max(0, Math.min(size * 10, this._charDist + (event.deltaY > 0 ? stepPx : -stepPx)))
+    this._fpPositionCamera(tok)
   }
 
   /**
    * First-person WASD keydown: track held keys (fine movement runs per frame),
    * and step one grid on the initial press in grid mode — W/S forward/back, A/D
-   * strafe left/right along the facing (turning is the mouse wheel). Walls block
+   * move relative to the camera (the cursor aims the token). Walls block
    * movement. Intercepted so Foundry's own keys don't also fire; ignored while
    * typing in a field.
    */
@@ -811,7 +907,7 @@ export class Overlay3D {
   /**
    * The user-facing view mode: '2d' (overlay off, normal Foundry), 'topdown'
    * (mirrors Foundry), 'free' (orbit camera), or 'firstperson' (camera at the
-   * controlled token; WASD to move — A/D strafe — and the mouse wheel to turn).
+   * controlled token — Character view: 3rd/1st person, WASD move, mouse aims, wheel zooms).
    */
   async setViewMode(mode) {
     if (mode === '2d') {
@@ -887,7 +983,7 @@ export class Overlay3D {
     const m = this._mode
     this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'WASD move · A/D strafe · scroll to turn (Shift = 45°)' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson' ? 'WASD move · mouse aims · scroll to zoom (3rd↔1st person)' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1521,7 +1617,6 @@ export class Overlay3D {
     try {
       const THREE = this._THREE
       if (!doc) return
-      if (this._mode === 'firstperson' && doc.id === this._firstPersonToken()?.id) return // you don't see yourself in first-person
       if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
       if (!this._isGM()) {
         // Players: only render tokens Foundry shows them — its placeable visibility
@@ -1917,7 +2012,7 @@ export class Overlay3D {
           firstperson: {
             name: 'firstperson',
             order: 2,
-            title: 'First Person (camera at the selected token; WASD to move — A/D strafe — scroll to turn)',
+            title: 'Character View (3rd/1st person — WASD move · mouse aims · scroll to zoom)',
             icon: 'fa-solid fa-person',
             toggle: true,
             active: vm === 'firstperson',

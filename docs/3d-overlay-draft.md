@@ -38,21 +38,20 @@ it on overlays a three.js canvas over the board that renders:
   ground) and only the tokens Foundry shows them (vision / fog of war / hidden). Tracked mode
   additionally reuses Foundry's full per-user dynamic lighting + vision + fog as the floor. Full 3D
   fog-of-war shadowing in *orbit* is a later enhancement — orbit is the GM "dollhouse";
-- an **on-screen control bar** (Top-down/3D camera mode, Top/Angle/Low/Reset angles, the Slice
-  toggle, and a "drag rotate · scroll zoom · right-drag pan" hint) so the camera isn't console-only;
+- an **on-screen control bar** (a per-mode hint) so the camera isn't console-only;
 - a **top-level "3D View" scene-control group** (its own left-toolbar button, not a tool buried
-  under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down** (mirrors
-  Foundry), **Free Camera** (orbit), **First Person** — plus Slice + camera presets. It has no canvas
-  `layer`, so entering/leaving it never toggles the overlay (it persists);
-- **First Person** — the camera sits at the selected token's eyes (your own token hidden). Controls:
-  **W/S** forward/back, **A/D strafe** (movement never changes facing), and the **mouse wheel to
-  turn** — Foundry's own rotation snap (15° per notch, 45° with Shift). Turning is a deliberate,
-  separate action so a strafe can't accidentally rotate you.
-  Per-player setting: **fine movement** (hold-to-walk vs one-grid-per-press). **Walls block movement**
-  (`polygonBackends.move.testCollision`). Movement runs per frame against a local camera pose for
-  smoothness; the token is committed on a throttle, so it stays in sync. (Foundry's native wheel-rotate
-  doesn't reach the overlay in first person, so the overlay turns the token directly with the same
-  15°/Shift-45° feel.)
+  under Tokens) with **four view modes** as radio toggles — **2D** (off), **Top-Down**, **Free
+  Camera** (orbit), **Character** — plus Slice. It has no canvas `layer`, so entering/leaving it
+  never toggles the overlay (it persists);
+- **Character View** (Action-RPG / MMORPG feel) — **3rd person by default; scroll all the way in →
+  1st person** (the wheel is `_charDist`, zoom, not turn). The token **aims at the mouse cursor**
+  (raycast the cursor onto the token's floor plane, then face it); **WASD moves relative to the
+  camera** (not the facing); the subject model shows in 3rd person and hides in 1st. The camera sits
+  behind + above along `_charAzimuth`, seeded behind the entry facing (left-drag orbit to adjust it
+  is a follow-up). Per-player setting: **fine movement** (hold-to-walk vs one-grid-per-press).
+  **Walls block movement** (`polygonBackends.move.testCollision`). Movement + aim run per frame
+  against a local pose; the token is committed on a throttle, so it stays in sync. (Internally still
+  the `firstperson` mode key.)
 - a **per-player "follow selected token's floor" setting** (off by default → the slice follows
   Foundry's navigated level, matching Foundry's own UI; on → selecting a token slices to its floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders
