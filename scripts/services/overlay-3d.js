@@ -1647,45 +1647,6 @@ export class Overlay3D {
     return 0
   }
 
-  /**
-   * A camera-facing elevation label (e.g. "+30 ft") drawn to a canvas texture.
-   * A Sprite billboards for free, so the number stays readable in the straight-
-   * down tracked camera — where the vertical post foreshortens to nothing.
-   */
-  _elevationLabelSprite(text) {
-    try {
-      const THREE = this._THREE
-      const canvas = document.createElement('canvas')
-      const ctx = canvas.getContext('2d')
-      const font = 'bold 40px sans-serif'
-      ctx.font = font
-      canvas.width = Math.ceil(ctx.measureText(text).width) + 24
-      canvas.height = 56
-      ctx.font = font
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillStyle = 'rgba(15,18,24,0.72)'
-      if (ctx.roundRect) {
-        ctx.beginPath()
-        ctx.roundRect(0, 0, canvas.width, canvas.height, 12)
-        ctx.fill()
-      } else {
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-      }
-      ctx.fillStyle = '#ffd34d'
-      ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2)
-      const tex = new THREE.CanvasTexture(canvas)
-      tex.colorSpace = THREE.SRGBColorSpace
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }))
-      sprite.renderOrder = 20
-      const hPx = 46
-      sprite.scale.set(hPx * (canvas.width / canvas.height), hPx, 1)
-      return sprite
-    } catch {
-      return null
-    }
-  }
-
   _addToken(doc) {
     try {
       const THREE = this._THREE
@@ -1788,17 +1749,9 @@ export class Overlay3D {
         stalk.position.set(center.x, (baseElevPx + tokenElevPx) / 2, center.y)
         this._scene.add(stalk)
         group.userData.stalk = stalk
-
-        // Signed altitude label at the mini — the cue that survives the straight-
-        // down tracked camera, and the explicit number tabletop always pairs with
-        // physical height. Shows the absolute elevation (matches Foundry's HUD).
-        const elev = Number(doc.elevation || 0)
-        const units = canvas?.scene?.grid?.units
-        const label = this._elevationLabelSprite(`${elev > 0 ? '+' : ''}${elev}${units ? ' ' + units : ''}`)
-        if (label) {
-          label.position.set(0, Math.max(h, footprint) + footprint * 0.35, 0)
-          group.add(label)
-        }
+        // No elevation number here — Foundry's own token elevation badge already shows
+        // it (visible through the transparent top-down mode); the 3D post + floating mini
+        // convey height spatially in the perspective modes. Don't duplicate native UI.
       }
 
       this._scene.add(group)
