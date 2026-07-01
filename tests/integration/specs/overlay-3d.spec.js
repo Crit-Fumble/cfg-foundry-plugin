@@ -211,7 +211,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // review angles.
   await page.evaluate(() => window.CFGCore.overlay3D.setSlice(false))
   await page.waitForTimeout(400)
-  const levelBgCount = await page.evaluate(() => window.CFGCore.overlay3D._instance._levelBackgrounds.length)
+  const levelBgCount = await page.evaluate(() => window.CFGCore.overlay3D._instance._viewer.getSceneGraph().levelCount)
   console.log('[overlay-3d] native Level background planes (slice off):', levelBgCount)
   expect(levelBgCount, 'Ground + Upper level maps both render with slice off').toBeGreaterThanOrEqual(2)
 
@@ -223,8 +223,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const inst = window.CFGCore.overlay3D._instance
     const doc = canvas.scene.tiles.find((t) => t.x === 1100 && t.y === 1600)
     const placeable = canvas.tiles.get(doc.id)
-    const mesh = inst._tiles.find(
-      (m) => Math.abs((m.geometry?.parameters?.width ?? 0) - doc.width) < 1e-6 && Math.abs((m.geometry?.parameters?.height ?? 0) - doc.height) < 1e-6,
+    const mesh = inst._viewer.scene.children.find(
+      (m) => m.geometry?.type === 'PlaneGeometry' && Math.abs((m.geometry?.parameters?.width ?? 0) - doc.width) < 1e-6 && Math.abs((m.geometry?.parameters?.height ?? 0) - doc.height) < 1e-6,
     )
     return { foundryCenter: [placeable.center.x, placeable.center.y], topLeft: [doc.x, doc.y], mesh: mesh ? [mesh.position.x, mesh.position.z] : null }
   })
@@ -258,7 +258,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   })
   await page.waitForTimeout(700) // controlToken → debounced rebuild
   const sliced = await page.evaluate(() => ({
-    bg: window.CFGCore.overlay3D._instance._levelBackgrounds.length,
+    bg: window.CFGCore.overlay3D._instance._viewer.getSceneGraph().levelCount,
     tokens: window.CFGCore.overlay3D.tokenCount(),
     active: window.CFGCore.overlay3D.getActiveLevel(),
   }))
@@ -401,7 +401,7 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
     const other =
       canvas.tokens.placeables.find((t) => t.name?.startsWith('Giant')) ||
       canvas.tokens.placeables.find((t) => t.id !== inst._firstPersonToken().id)
-    const g = inst._tokens.get(other.id)
+    const g = inst._viewer.tokens.get(other.id)
     cam.position.set(g.position.x + 1, g.position.y + 600, g.position.z + 1) // straight above the token
     cam.lookAt(g.position.x, g.position.y, g.position.z)
     cam.updateMatrixWorld(true)
@@ -417,7 +417,7 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   // (d) Subject visibility: the token model shows in 3rd person, hides in 1st.
   const subjVisible = () => page.evaluate(() => {
     const inst = window.CFGCore.overlay3D._instance
-    const g = inst._tokens.get(inst._firstPersonToken().id)
+    const g = inst._viewer.tokens.get(inst._firstPersonToken().id)
     return g ? g.visible : null
   })
   await page.evaluate(() => { const i = window.CFGCore.overlay3D._instance; i._charDist = 400; i._fpStep(performance.now()) })

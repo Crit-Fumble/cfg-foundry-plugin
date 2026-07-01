@@ -48,21 +48,26 @@ export class Overlay3D {
     this._OrbitControls = null
     /** @type {any} GLTFLoader ctor (lazy) */
     this._GLTFLoader = null
+    /** @type {any} @crit-fumble/shared vtt-viewer createViewer() (lazy, bundled with three) */
+    this._createViewerFn = null
 
     this._container = null
-    this._renderer = null
-    this._scene = null
-    this._camera = null // active camera (tracked ortho OR orbit perspective)
-    this._orbitCamera = null
-    this._trackedCamera = null
+    /** @type {import('@crit-fumble/shared/vtt-viewer/core').Viewer|null} the shared render core —
+     * owns the THREE.Scene/Camera/WebGLRenderer/token-Group-map; this service builds the scene
+     * JSON from live Foundry canvas state and owns camera-mode/input/picking on top of it. */
+    this._viewer = null
+    this._renderer = null // alias: this._viewer.renderer (set in _mount)
+    this._scene = null // alias: this._viewer.scene
+    this._camera = null // alias: this._viewer.camera (the one perspective camera, every mode)
+    this._orbitCamera = null // alias: this._viewer.camera (name kept — camera-math methods below)
     this._controls = null
     this._raf = null
     this._tickerFn = null
     /**
-     * 'tracked' = orthographic top-down camera mirroring Foundry's 2D pan/zoom,
-     * so canvas-anchored UI (HUD, tooltips, pins) lines up over the 3D.
-     * 'orbit' = free-look perspective camera (2D UI hidden — option A).
-     * @type {'tracked'|'orbit'}
+     * 'tracked' = angled bird's-eye perspective camera (Top Down), 'orbit' = free-look
+     * (Free Camera), 'firstperson' = Character view (3rd/1st person). All three render a
+     * full opaque 3D scene via the shared viewer core.
+     * @type {'tracked'|'orbit'|'firstperson'}
      */
     this._mode = 'tracked'
     /** @type {((e: KeyboardEvent) => void)|null} first-person WASD key handler */
@@ -103,26 +108,10 @@ export class Overlay3D {
     /** @type {string|null} token id currently hovered via 3D picking */
     this._pickHoverId = null
 
-    this._ground = null
-    this._grid = null
-    /** @type {any[]} extruded wall meshes */
-    this._walls = []
-    /** @type {any[]} map-note billboard markers */
-    this._notes = []
-    /** @type {any[]} scene lights (ambient hemisphere/sun + AmbientLight placeables) */
-    this._lights = []
-    /** @type {any[]} tile floor planes (rendered at their elevation / Levels floor) */
-    this._tiles = []
-    /** @type {any[]} native v14 Level background/foreground map planes (one per floor, at its elevation) */
-    this._levelBackgrounds = []
     /** @type {boolean} floor-slice: hide floors above the active level (cutaway, like TaleSpire) */
     this._sliceFloors = true
-    /** @type {any} shared wall material */
-    this._wallMat = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
     this._frame = null
-    /** @type {Map<string, any>} tokenId → THREE.Group */
-    this._tokens = new Map()
 
     /** @type {Array<[string, Function]>} registered Foundry hooks for teardown */
     this._hooks = []
@@ -224,7 +213,7 @@ export class Overlay3D {
       setSlice: (on) => this.setSlice(on),
       getActiveLevel: () => this._activeLevel()?.id ?? null,
       destroy: () => this.destroy(),
-      tokenCount: () => this._tokens.size,
+      tokenCount: () => this._viewer?.tokens?.size ?? 0,
       _instance: this,
     }
   }
@@ -265,12 +254,16 @@ export class Overlay3D {
 
   async _ensureThree() {
     if (this._THREE) return
-    // Lazy: only fetch the bundled three.js (~730 KB, built via `npm run
-    // build:three`) when the user actually opens the 3D view.
+    // Lazy: only fetch the bundled three.js (~780 KB, built via `npm run
+    // build:three`) when the user actually opens the 3D view. Also carries the
+    // shared @crit-fumble/shared vtt-viewer render core (createViewer) — it
+    // doesn't import 'three' itself (THREE is injected below), so bundling it
+    // here adds no second copy of three.js.
     const bundle = await import('../lib/three.bundle.js')
     this._THREE = bundle.THREE
     this._OrbitControls = bundle.OrbitControls
     this._GLTFLoader = bundle.GLTFLoader
+    this._createViewerFn = bundle.createViewer
   }
 
   async _mount() {
@@ -295,42 +288,42 @@ export class Overlay3D {
     document.body.appendChild(container)
     this._container = container
 
-    const renderer = this._createRenderer(THREE)
+    // Scene/camera/renderer/token-Group-map now live in the shared viewer core;
+    // this service builds the scene JSON from live Foundry canvas state (rebuild())
+    // and owns camera-mode/input/picking on top of the core's exposed camera/scene.
+    const viewer = this._createViewerFn({
+      element: container,
+      THREE,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      GLTFLoader: this._GLTFLoader,
+      powerPreference: this._gpuPreference(),
+      shadows: this._shadowsEnabled(),
+    })
+    this._viewer = viewer
+    this._renderer = viewer.renderer
+    this._scene = viewer.scene
+    this._camera = viewer.camera
+    this._orbitCamera = viewer.camera
+
+    const renderer = viewer.renderer
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    renderer.setSize(window.innerWidth, window.innerHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
-    renderer.setClearColor(0x000000, 0) // transparent when scene.background is null (tracked mode)
-    renderer.shadowMap.enabled = this._shadowsEnabled() // walls block light → shadows
+    renderer.setClearColor(0x000000, 0) // transparent when scene.background is null
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    container.appendChild(renderer.domElement)
-    this._renderer = renderer
+    // The core sizes the drawing buffer only (device-pixel-ratio aware) — size the
+    // canvas element itself via CSS so it fills the fixed-position container.
+    Object.assign(renderer.domElement.style, { width: '100%', height: '100%', display: 'block' })
 
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x0b0e13)
-    this._scene = scene
-
-    // Orbit (free-look) perspective camera.
-    const orbit = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 5_000_000)
-    this._orbitCamera = orbit
-    const controls = new this._OrbitControls(orbit, renderer.domElement)
+    viewer.camera.far = 5_000_000
+    viewer.camera.updateProjectionMatrix()
+    const controls = new this._OrbitControls(viewer.camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
     controls.maxPolarAngle = Math.PI * 0.495 // don't drop below the ground plane
     this._controls = controls
 
-    // Tracked top-down orthographic camera — mirrors Foundry's 2D pan/zoom so
-    // world points project to the same screen pixels Foundry uses (its HUD,
-    // tooltips, and pins then line up over the 3D). Looks straight down -Y with
-    // up = -Z, so world +X → screen-right and world +Z (canvas y) → screen-down.
-    const ow = window.innerWidth
-    const oh = window.innerHeight
-    const ortho = new THREE.OrthographicCamera(-ow / 2, ow / 2, oh / 2, -oh / 2, 1, 200000)
-    ortho.up.set(0, 0, -1)
-    this._trackedCamera = ortho
-
-    this._camera = orbit
-
-    // Lighting is built from the scene's own settings in _buildLights().
+    // Lighting is built from the scene's own settings in _buildLightsJson().
     this._buildControlBar()
 
     this._onResize = () => this._resize()
@@ -339,22 +332,8 @@ export class Overlay3D {
   }
 
   _resize() {
-    if (!this._renderer) return
-    const w = window.innerWidth
-    const h = window.innerHeight
-    this._renderer.setSize(w, h)
-    if (this._orbitCamera) {
-      this._orbitCamera.aspect = w / Math.max(1, h)
-      this._orbitCamera.updateProjectionMatrix()
-    }
-    if (this._trackedCamera) {
-      const o = this._trackedCamera
-      o.left = -w / 2
-      o.right = w / 2
-      o.top = h / 2
-      o.bottom = -h / 2
-      o.updateProjectionMatrix()
-    }
+    if (!this._viewer) return
+    this._viewer.resize(window.innerWidth, window.innerHeight)
     if (this._mode === 'tracked') this._syncTrackedCamera()
     this._render()
   }
@@ -416,19 +395,17 @@ export class Overlay3D {
     return 0x0b0e13
   }
 
-  /** Use the scene's own background color as the 3D backdrop (not a hardcoded black). */
+  /**
+   * Mirror the scene's own background color onto the container's DOM style (the
+   * page background peeking around the canvas before the first frame paints).
+   * The THREE scene.background itself is set from `rebuild()`'s JSON via
+   * `viewer.loadScene()` — this is DOM chrome only.
+   */
   _applyBackground() {
-    if (!this._scene || !this._THREE) return
+    if (!this._THREE || !this._container) return
     try {
-      if (this._foundryFloor()) {
-        // Transparent so Foundry's canvas (lighting/vision/fog) shows through.
-        this._scene.background = null
-        if (this._container) this._container.style.background = 'transparent'
-        return
-      }
       const color = new this._THREE.Color(this._sceneBackgroundColor())
-      this._scene.background = color
-      if (this._container) this._container.style.background = `#${color.getHexString()}`
+      this._container.style.background = `#${color.getHexString()}`
     } catch {
       /* keep the existing background on failure */
     }
@@ -466,36 +443,50 @@ export class Overlay3D {
     }
   }
 
-  /** Rebuild the entire 3D scene from the live Foundry canvas. */
+  /**
+   * Rebuild the entire 3D scene from the live Foundry canvas: build a scene JSON
+   * from live placeables/documents (Foundry-domain resolution — asset URLs, Level
+   * bands, wall-height flags, per-player visibility) and hand it to the shared
+   * viewer core, which owns the actual THREE-object construction.
+   */
   async rebuild() {
     if (!this._mounted) await this._mount()
     if (!canvas?.ready || !canvas.scene) {
       this._ready = false
       return
     }
-    const THREE = this._THREE
-    this._clearScene()
     this._applyBackground()
 
     const rect = this._sceneRect()
     const cx = rect.x + rect.width / 2
     const cz = rect.y + rect.height / 2
-
-    // Native v14 Level backgrounds first — in v14 the scene's base map IS the
-    // first Level, so this renders the base map and every stacked floor at its
-    // own elevation. Fall back to a single ground plane only when no Level has
-    // an image (degenerate/programmatic scene → blank-slate boot).
-    const levelMaps = this._buildLevelBackgrounds(rect, cx, cz)
-    if (!levelMaps) this._buildGround(rect, cx, cz)
-    this._buildGrid(rect, cx, cz)
-    this._buildLights()
-    this._buildWalls()
-    this._buildTiles()
-    this._buildNotes()
+    const { ambient, lights } = this._buildLightsJson()
 
     // Iterate token DOCUMENTS (every floor) — not canvas placeables, which only
     // include the currently-viewed Level. A multi-floor 3D view shows them all.
-    for (const doc of canvas.scene?.tokens || []) this._addToken(doc)
+    const tokens = []
+    for (const doc of canvas.scene?.tokens || []) {
+      const t = this._tokenJson(doc)
+      if (t) tokens.push(t)
+    }
+
+    this._viewer.loadScene({
+      bounds: { width: rect.width, height: rect.height, x: rect.x, y: rect.y },
+      background: { color: this._sceneBackgroundColor() },
+      grid: this._buildGridJson(),
+      // Native v14 Level backgrounds — in v14 the scene's base map IS the first
+      // Level, so this covers the base map + every stacked floor at its own
+      // elevation. `_buildLevelsJson` falls back to the scene's plain background
+      // image when there are no Level docs at all (degenerate/programmatic scene);
+      // an empty array here lets the core's flat-color ground apply (blank-slate).
+      levels: this._buildLevelsJson(),
+      ambient,
+      lights,
+      tokens,
+      walls: this._buildWallsJson(),
+      tiles: this._buildTilesJson(),
+      notes: this._buildNotesJson(),
+    })
 
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
@@ -691,7 +682,7 @@ export class Overlay3D {
   _pick(clientX, clientY) {
     const THREE = this._THREE
     const cam = this._orbitCamera
-    if (!THREE || !cam || !this._tokens?.size) return null
+    if (!THREE || !cam || !this._viewer?.tokens?.size) return null
     cam.updateMatrixWorld()
     const w = window.innerWidth || 1
     const h = window.innerHeight || 1
@@ -699,7 +690,7 @@ export class Overlay3D {
     const ray = new THREE.Raycaster()
     ray.setFromCamera(ndc, cam)
     const groups = []
-    for (const g of this._tokens.values()) if (g?.visible) groups.push(g)
+    for (const g of this._viewer.tokens.values()) if (g?.visible) groups.push(g)
     const hits = ray.intersectObjects(groups, true)
     if (!hits.length) return null
     let o = hits[0].object
@@ -760,7 +751,7 @@ export class Overlay3D {
    * inside it). Restored to visible when leaving character view. */
   _charUpdateSubjectVisibility(tok) {
     const size = canvas?.dimensions?.size || 100
-    const g = this._tokens?.get?.(tok.id)
+    const g = this._viewer?.tokens?.get?.(tok.id)
     if (g) g.visible = this._charDist >= size * 0.5
   }
 
@@ -863,7 +854,7 @@ export class Overlay3D {
       // The subject model is hidden in 1st person — restore it for the other modes.
       try {
         const sub = this._firstPersonToken?.()
-        const g = sub && this._tokens?.get?.(sub.id)
+        const g = sub && this._viewer?.tokens?.get?.(sub.id)
         if (g) g.visible = true
       } catch {
         /* ignore */
@@ -1107,107 +1098,68 @@ export class Overlay3D {
           : 'drag rotate · scroll zoom · click select/target'
   }
 
-  _buildGround(rect, cx, cz) {
-    if (this._foundryFloor()) return // Foundry's own canvas is the floor
-    const THREE = this._THREE
-    const geo = new THREE.PlaneGeometry(rect.width, rect.height)
-    let mat
-    const bg = this._backgroundSrc()
-    if (bg) {
-      const loader = new THREE.TextureLoader()
-      loader.setCrossOrigin('anonymous')
-      const tex = loader.load(bg, () => this._render())
-      tex.colorSpace = THREE.SRGBColorSpace
-      mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, metalness: 0 })
-    } else {
-      mat = new THREE.MeshStandardMaterial({ color: 0x39414f, roughness: 1, metalness: 0 })
-    }
-    const plane = new THREE.Mesh(geo, mat)
-    plane.rotation.x = -Math.PI / 2 // lay flat on XZ, image upright toward -Z
-    plane.position.set(cx, 0, cz)
-    plane.receiveShadow = true
-    this._scene.add(plane)
-    this._ground = plane
-  }
-
   /**
-   * Render native v14 `Level` map images as floor planes at each level's elevation.
+   * Native v14 `Level` map images as floor planes at each level's elevation, as
+   * viewer-core `levels[]` entries (a textured quad per background/foreground).
    * In v14 a Scene's map is decomposed into embedded Level documents — the base
    * map is the first level, and stacked floors are further levels at higher
    * elevations. Each level's `background` (at elevation.bottom) and optional
-   * `foreground` roof (at elevation.top) render as scene-rect-sized quads.
+   * `foreground` roof (at elevation.top) becomes a scene-rect-sized quad.
    *
-   * Transparency comes from the image's OWN alpha channel via three.js `alphaTest`
-   * (a hard cutout, seeded from the level's `alphaThreshold`) — so a holed upper
-   * floor reveals the floor below it, without the depth-sort/z-fight problems that
-   * `transparent` blending brings to stacked coplanar floors. (Foundry's own
-   * `alphaThreshold` actually drives a CPU hit-test + a separate surface-occlusion
-   * shader; we approximate the visible result with the texture's alpha + alphaTest.)
+   * Transparency comes from the image's OWN alpha channel via the core's
+   * `alphaTest` (a hard cutout, seeded from the level's `alphaThreshold`) — so a
+   * holed upper floor reveals the floor below it, without the depth-sort/z-fight
+   * problems `transparent` blending brings to stacked coplanar floors. (Foundry's
+   * own `alphaThreshold` actually drives a CPU hit-test + a separate surface-
+   * occlusion shader; we approximate the visible result via the texture alpha.)
    *
-   * @returns {number} how many background quads were drawn (0 → caller draws the
-   *   fallback ground plane). Skipped entirely in tracked mode (Foundry's own
-   *   canvas already shows the correct floor).
+   * Falls back to the scene's plain background image as a single ground-level
+   * quad when there are no Level docs at all (legacy/degenerate scene) — an
+   * empty return lets the core's flat-color ground apply (blank-slate boot).
    */
-  _buildLevelBackgrounds(rect, cx, cz) {
-    if (this._foundryFloor()) return 0
+  _buildLevelsJson() {
+    const out = []
+    const addQuad = (level, texData, which) => {
+      const src = texData?.src
+      if (!src) return
+      if (/\.(webm|mp4|m4v|ogv)$/i.test(src)) return // video src: image-only for now
+      const t = level?.textures || {}
+      const at = Number(texData.alphaThreshold)
+      const tint = Number(texData.tint)
+      const rot = Number(t.rotation)
+      out.push({
+        elevation: this._levelElevPx(level, which),
+        which,
+        src: this._assetUrl(src),
+        alphaTest: Number.isFinite(at) ? at : 0.75,
+        tint: Number.isFinite(tint) && tint !== 0xffffff ? tint : undefined, // Foundry Color is a Number subclass
+        rotation: Number.isFinite(rot) && rot !== 0 ? -(rot * Math.PI) / 180 : undefined,
+        offsetX: Number(t.offsetX) || 0,
+        offsetY: Number(t.offsetY) || 0,
+      })
+    }
     const scene = canvas?.scene
     const levels = scene?.levels?.contents ?? (Array.isArray(scene?.levels) ? scene.levels : [])
-    if (!levels.length) return 0
-    // Sort by `sort` so equal-elevation floors keep a stable stacking order.
-    const sorted = [...levels].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0))
-    const cut = this._sliceCut()
-    const activeBase = this._levelBase(this._activeLevel() || sorted[sorted.length - 1])
-    let backgrounds = 0
-    for (const level of sorted) {
-      const lb = this._levelBase(level)
-      if (lb > cut + 0.01) continue // floor above the slice → hidden (cutaway)
-      if (!this._userCanSeeLevel(level)) continue // players: only floors they can access
-      if (this._addLevelQuad(level, level.background, 'bottom', rect, cx, cz)) backgrounds += 1
-      // Roof/foreground only for floors strictly BELOW the active one, so a
-      // ceiling never blocks the view down into the current floor.
-      if (lb < activeBase - 0.01) this._addLevelQuad(level, level.foreground, 'top', rect, cx, cz)
+    if (levels.length) {
+      // Sort by `sort` so equal-elevation floors keep a stable stacking order.
+      const sorted = [...levels].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0))
+      const cut = this._sliceCut()
+      const activeBase = this._levelBase(this._activeLevel() || sorted[sorted.length - 1])
+      for (const level of sorted) {
+        const lb = this._levelBase(level)
+        if (lb > cut + 0.01) continue // floor above the slice → hidden (cutaway)
+        if (!this._userCanSeeLevel(level)) continue // players: only floors they can access
+        addQuad(level, level.background, 'bottom')
+        // Roof/foreground only for floors strictly BELOW the active one, so a
+        // ceiling never blocks the view down into the current floor.
+        if (lb < activeBase - 0.01) addQuad(level, level.foreground, 'top')
+      }
     }
-    return backgrounds
-  }
-
-  /**
-   * Add one scene-rect-sized textured quad for a level's background or foreground.
-   * @returns {boolean} true if a quad was added (a usable image src was present).
-   */
-  _addLevelQuad(level, texData, which, rect, cx, cz) {
-    const src = texData?.src
-    if (!src) return false
-    if (/\.(webm|mp4|m4v|ogv)$/i.test(src)) return false // video src: image-only for now
-    const THREE = this._THREE
-    const t = level?.textures || {}
-    const geo = new THREE.PlaneGeometry(rect.width, rect.height) // fit='fill' (default) — texture stretches to the scene rect
-    const loader = new THREE.TextureLoader()
-    loader.setCrossOrigin('anonymous')
-    const tex = loader.load(this._assetUrl(src), () => this._render())
-    tex.colorSpace = THREE.SRGBColorSpace
-    const at = Number(texData.alphaThreshold)
-    const mat = new THREE.MeshStandardMaterial({
-      map: tex,
-      roughness: 0.95,
-      metalness: 0,
-      side: THREE.DoubleSide,
-      alphaTest: Number.isFinite(at) ? at : 0.75, // image alpha → see-through holes to the floor below
-    })
-    const tint = Number(texData.tint)
-    if (Number.isFinite(tint) && tint !== 0xffffff) mat.color.set(tint) // Foundry Color is a Number subclass
-    const plane = new THREE.Mesh(geo, mat)
-    plane.rotation.x = -Math.PI / 2 // lay flat on XZ
-    const rot = Number(t.rotation)
-    if (Number.isFinite(rot) && rot !== 0) plane.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), -(rot * Math.PI) / 180)
-    let y = this._levelElevPx(level, which)
-    if (which === 'top') y += 0.6 // nudge a roof above the band top (avoids z-fight on a thin level)
-    const ox = Number(t.offsetX) || 0
-    const oz = Number(t.offsetY) || 0
-    plane.position.set(cx + ox, y, cz + oz)
-    plane.receiveShadow = true // floors catch token/wall shadows; they don't cast (holes can't cast a solid shadow)
-    this._scene.add(plane)
-    this._levelBackgrounds.push(plane)
-    return true
+    if (!out.length) {
+      const src = this._backgroundSrc()
+      if (src) out.push({ elevation: 0, which: 'bottom', src: this._assetUrl(src), alphaTest: 0 })
+    }
+    return out
   }
 
   /**
@@ -1383,44 +1335,28 @@ export class Overlay3D {
     }
   }
 
-  _buildGrid(rect, cx, cz) {
-    if (this._foundryFloor()) return // Foundry's own grid shows through
-    const THREE = this._THREE
+  /** The grid-helper config for the core (span/divisions are derived from `bounds` there). */
+  _buildGridJson() {
     const g = canvas?.scene?.grid
-    if (g && g.type === 0) return // gridless scene → no grid
-    const size = canvas?.dimensions?.size || 100
-    const span = Math.max(rect.width, rect.height)
-    const divisions = Math.max(1, Math.round(span / size))
-    const color = g?.color != null ? Number(g.color) : 0x6688aa
-    const grid = new THREE.GridHelper(span, divisions, color, color)
-    grid.position.set(cx, 0.5, cz)
-    if (grid.material) {
-      grid.material.transparent = true
-      grid.material.opacity = g?.alpha != null ? Math.max(0.05, Number(g.alpha)) : 0.35
+    return {
+      size: canvas?.dimensions?.size || 100,
+      showHelper: !(g && g.type === 0), // gridless scene → no grid
+      color: g?.color != null ? Number(g.color) : 0x6688aa,
+      opacity: g?.alpha != null ? Math.max(0.05, Number(g.alpha)) : 0.35,
     }
-    this._scene.add(grid)
-    this._grid = grid
   }
 
   /**
-   * Extrude walls into 3D. Height uses the community "Wall Height" convention
-   * (`flags["wall-height"].top/bottom`, in grid distance units); walls without
-   * it get a sensible default height. (Walls still drive vision/movement on
-   * Foundry's 2D layer — here they are purely visual structure.)
+   * Extruded walls as viewer-core `walls[]` entries. Height uses the community
+   * "Wall Height" convention (`flags["wall-height"].top/bottom`, in grid distance
+   * units); walls without it get a sensible default height. (Walls still drive
+   * vision/movement on Foundry's 2D layer — here they are purely visual structure.)
    */
-  _buildWalls() {
-    const THREE = this._THREE
+  _buildWallsJson() {
     const placeables = canvas?.walls?.placeables || []
-    if (!placeables.length) return
+    if (!placeables.length) return []
     const pxPerUnit = this._pxPerUnit()
-    this._wallMat = new THREE.MeshStandardMaterial({
-      color: 0x9098a3,
-      roughness: 0.9,
-      metalness: 0,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-    })
+    const out = []
     for (const w of placeables) {
       try {
         const doc = w.document
@@ -1438,33 +1374,25 @@ export class Overlay3D {
           if (Number.isFinite(ceil)) wtop = Math.min(wtop, ceil)
         }
         if (wtop - wbottom < 0.01) continue // nothing left after the cut
-        const basePx = wbottom * pxPerUnit
-        const heightPx = Math.max(1, (wtop - wbottom) * pxPerUnit)
-        const dx = x2 - x1
-        const dz = y2 - y1
-        const len = Math.hypot(dx, dz)
+        const len = Math.hypot(x2 - x1, y2 - y1)
         if (len < 1) continue
-        const box = new THREE.Mesh(new THREE.BoxGeometry(len, heightPx, 6), this._wallMat)
-        box.position.set((x1 + x2) / 2, basePx + heightPx / 2, (y1 + y2) / 2)
-        box.rotation.y = -Math.atan2(dz, dx)
-        box.castShadow = true
-        box.receiveShadow = true
-        this._scene.add(box)
-        this._walls.push(box)
+        out.push({ id: doc.id, x1, y1, x2, y2, bottom: wbottom * pxPerUnit, top: wtop * pxPerUnit, opacity: 0.85 })
       } catch {
         /* skip a malformed wall */
       }
     }
+    return out
   }
 
   /**
-   * Build lighting from the scene's own settings: a hemisphere ambient from
-   * Foundry's computed daylight/darkness colors (modulated by the darkness
-   * level), a soft sun for form, and a point light for each AmbientLight
-   * placeable (colour + radius from its config).
+   * Lighting from the scene's own settings, as a viewer-core `{ambient, lights}`
+   * pair: a hemisphere ambient from Foundry's computed daylight/darkness colors
+   * (modulated by the darkness level), a soft directional sun for form (the core
+   * positions/frames it from `bounds`, matching this file's own prior math), and
+   * a point light for each AmbientLight placeable + token-emitted light (colour +
+   * radius from its config).
    */
-  _buildLights() {
-    const THREE = this._THREE
+  _buildLightsJson() {
     const env = canvas?.environment?.colors || {}
     const num = (c, dflt) => (c != null ? Number(c) : dflt)
     const daylight = num(env.ambientDaylight, 0xeeeeee)
@@ -1472,44 +1400,22 @@ export class Overlay3D {
     const brightest = num(env.ambientBrightest ?? env.bright, 0xffffff)
     const darkness = Number(canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0)
     const day = Math.max(0, Math.min(1, 1 - darkness))
-
-    const rect = this._sceneRect()
-    const cx = rect.x + rect.width / 2
-    const cz = rect.y + rect.height / 2
-    const span = Math.max(rect.width, rect.height)
-    const pxPerUnit = this._pxPerUnit()
-    const size = canvas?.dimensions?.size || 100
+    const shadows = this._shadowsEnabled()
 
     // Ambient dims with darkness so colored lights read and night looks like night.
-    const hemi = new THREE.HemisphereLight(daylight, darkCol, 0.1 + 0.6 * day)
-    this._scene.add(hemi)
-    this._lights.push(hemi)
+    // Sun is the main shadow caster (walls block it → dynamic shadows on the floor).
+    const size = canvas?.dimensions?.size || 100
+    const ambient = {
+      hemisphere: { sky: daylight, ground: darkCol, intensity: 0.1 + 0.6 * day },
+      sun: { color: brightest, intensity: 0.35 + 0.7 * day, castShadow: shadows, shadowNormalBias: size * 0.04 },
+    }
 
-    // Sun — the main shadow caster (walls block it → dynamic shadows on the floor).
-    // A low, side-on angle gives long, readable shadows.
-    const shadows = this._shadowsEnabled()
-    const sun = new THREE.DirectionalLight(brightest, 0.35 + 0.7 * day)
-    sun.position.set(cx - span * 0.55, span * 0.5, cz - span * 0.4)
-    sun.target.position.set(cx, 0, cz)
-    sun.castShadow = shadows
-    sun.shadow.mapSize.set(1024, 1024)
-    const sc = sun.shadow.camera
-    sc.left = -span * 0.7
-    sc.right = span * 0.7
-    sc.top = span * 0.7
-    sc.bottom = -span * 0.7
-    sc.near = span * 0.05
-    sc.far = span * 2.6
-    sun.shadow.bias = -0.0004
-    sun.shadow.normalBias = size * 0.04
-    this._scene.add(sun.target)
-    this._scene.add(sun)
-    this._lights.push(sun, sun.target)
-
-    // Helper: a Foundry LightData → a three.js point light. decay 0 because the
-    // world is in pixel units (physical 1/d^2 falloff would make it invisible);
-    // `distance` is the cutoff radius. The first few cast shadows (walls block
-    // them) — capped for performance.
+    const pxPerUnit = this._pxPerUnit()
+    const lights = []
+    // Foundry LightData → a point light. decay 0 because the world is in pixel
+    // units (physical 1/d^2 falloff would make it invisible); `distance` is the
+    // cutoff radius. The first few cast shadows (walls block them) — capped for
+    // performance.
     let shadowBudget = shadows ? 4 : 0
     const addPointLight = (cfg, x, y, elevPx) => {
       if (!cfg) return
@@ -1518,21 +1424,20 @@ export class Overlay3D {
       if (dim <= 0 && bright <= 0) return
       const color = cfg.color != null ? Number(cfg.color) : 0xffffff
       const radius = Math.max(dim, bright) * pxPerUnit || size * 4
-      const pl = new THREE.PointLight(color, 1.3 + (Number(cfg.luminosity) || 0), radius, 0)
-      pl.position.set(x, elevPx + size * 0.6, y)
-      if (shadowBudget > 0) {
-        shadowBudget--
-        pl.castShadow = true
-        pl.shadow.mapSize.set(512, 512)
-        pl.shadow.camera.near = size * 0.2
-        pl.shadow.camera.far = radius
-        pl.shadow.bias = -0.0006
-        pl.shadow.normalBias = size * 0.05
-      }
-      this._scene.add(pl)
-      this._lights.push(pl)
+      const castShadow = shadowBudget > 0
+      if (castShadow) shadowBudget--
+      lights.push({
+        x,
+        y,
+        elevation: elevPx + size * 0.6,
+        color,
+        radius,
+        intensity: 1.3 + (Number(cfg.luminosity) || 0),
+        castShadow,
+        shadowNear: size * 0.2,
+        shadowNormalBias: size * 0.05,
+      })
     }
-
     // AmbientLight placeables → point lights.
     for (const light of canvas?.lighting?.placeables || []) {
       try {
@@ -1543,7 +1448,6 @@ export class Overlay3D {
         /* skip */
       }
     }
-
     // Token-emitted light (token.light) → point lights at the token position.
     for (const tok of canvas?.tokens?.placeables || []) {
       try {
@@ -1555,6 +1459,7 @@ export class Overlay3D {
         /* skip */
       }
     }
+    return { ambient, lights }
   }
 
   /**
@@ -1564,12 +1469,19 @@ export class Overlay3D {
    * else the tile's own elevation. Skipped in tracked mode (Foundry's floor
    * already shows tiles flat).
    */
-  _buildTiles() {
-    if (this._foundryFloor()) return
-    const THREE = this._THREE
+  /**
+   * Tiles as floor planes at their elevation, as viewer-core `tiles[]` entries —
+   * this is how multi-floor "Levels" scenes stack in 3D (a tile is a floor
+   * surface). Elevation comes from the Levels module's floor band
+   * (flags.levels.rangeBottom) when present, else the tile's own elevation.
+   * A Tile's (x,y) is already its center (default texture anchor 0.5/0.5) — the
+   * core places tiles directly at (x,y), no half-size shift needed.
+   */
+  _buildTilesJson() {
     const tiles = canvas?.tiles?.placeables || []
-    if (!tiles.length) return
+    if (!tiles.length) return []
     const pxPerUnit = this._pxPerUnit()
+    const out = []
     for (const tile of tiles) {
       try {
         const d = tile.document
@@ -1578,36 +1490,24 @@ export class Overlay3D {
         const h = Number(d.height) || 0
         if (w < 1 || h < 1) continue
         const elev = this._levelsElevation(d)
-        const elevPx = elev * pxPerUnit
-        const geo = new THREE.PlaneGeometry(w, h)
-        let mat
         const src = d.texture?.src
-        if (src) {
-          const loader = new THREE.TextureLoader()
-          loader.setCrossOrigin('anonymous')
-          const tex = loader.load(src, () => this._render())
-          tex.colorSpace = THREE.SRGBColorSpace
-          mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1, side: THREE.DoubleSide, roughness: 0.95 })
-        } else {
+        out.push({
+          id: d.id,
+          x: Number(d.x) || 0,
+          y: Number(d.y) || 0,
+          width: w,
+          height: h,
+          elevation: elev * pxPerUnit,
+          texture: src ? this._assetUrl(src) : null,
+          alpha: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1,
           // No texture → tint by elevation so stacked floors read at a glance.
-          mat = new THREE.MeshStandardMaterial({ color: elev > 0 ? 0x7a6a52 : 0x515b6b, transparent: true, opacity: 0.9, side: THREE.DoubleSide, roughness: 0.95 })
-        }
-        const plane = new THREE.Mesh(geo, mat)
-        plane.rotation.x = -Math.PI / 2
-        // A Tile's (x,y) is its anchor/origin, and the default texture anchor is
-        // centered (anchorX/anchorY = 0.5) — so (x,y) is ALREADY the tile's center,
-        // unlike a Token whose (x,y) is the top-left. A PlaneGeometry is centered on
-        // its own position, so place it at (x,y) directly; adding half-size would
-        // double-shift it off the grid (verified: tile center 1100,1600 → 1260,1760).
-        plane.position.set(Number(d.x) || 0, elevPx + 0.5, Number(d.y) || 0)
-        plane.receiveShadow = true
-        plane.castShadow = true
-        this._scene.add(plane)
-        this._tiles.push(plane)
+          color: elev > 0 ? 0x7a6a52 : 0x515b6b,
+        })
       } catch {
         /* skip a malformed tile */
       }
     }
+    return out
   }
 
   /**
@@ -1627,40 +1527,27 @@ export class Overlay3D {
    * sits. (Other canvas markers — sound/light icons, templates — could be added
    * the same way.)
    */
-  _buildNotes() {
-    if (this._foundryFloor()) return // Foundry's own pins show through
-    const THREE = this._THREE
+  /**
+   * Map note pins as viewer-core `notes[]` entries — flat billboard markers
+   * floating just above the ground at their correct position. Pins are UI on
+   * the map, not 3D geometry — this is a spatial stand-in for them.
+   */
+  _buildNotesJson() {
     const notes = canvas?.notes?.placeables || []
-    if (!notes.length) return
+    if (!notes.length) return []
+    const out = []
     for (const note of notes) {
       try {
         const doc = note.document
         const x = note.center?.x ?? doc.x ?? 0
-        const z = note.center?.y ?? doc.y ?? 0
-        const sizePx = doc.iconSize || 50
-        const mat = new THREE.SpriteMaterial({ color: 0xffd54f, transparent: true, depthTest: false })
-        const sprite = new THREE.Sprite(mat)
-        sprite.renderOrder = 10 // keep pins visible above geometry
-        sprite.scale.set(sizePx, sizePx, 1)
-        sprite.position.set(x, sizePx / 2 + 12, z) // float just above the ground
+        const y = note.center?.y ?? doc.y ?? 0
         const src = doc.texture?.src
-        if (src) {
-          const loader = new THREE.TextureLoader()
-          loader.setCrossOrigin('anonymous')
-          loader.load(src, (tex) => {
-            tex.colorSpace = THREE.SRGBColorSpace
-            mat.map = tex
-            mat.color.set(0xffffff)
-            mat.needsUpdate = true
-            this._render()
-          })
-        }
-        this._scene.add(sprite)
-        this._notes.push(sprite)
+        out.push({ id: doc.id, x, y, size: doc.iconSize || 50, texture: src ? this._assetUrl(src) : null })
       } catch {
         /* skip a malformed note */
       }
     }
+    return out
   }
 
   /** Token footprint in pixels, derived from the document (valid mid-update). */
@@ -1695,179 +1582,53 @@ export class Overlay3D {
     return 0
   }
 
-  _addToken(doc) {
-    try {
-      const THREE = this._THREE
-      if (!doc) return
-      if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
-      if (!this._isGM()) {
-        // Players: only render tokens Foundry shows them — its placeable visibility
-        // already respects vision, fog of war, the hidden flag, and floor access.
-        const p = canvas?.tokens?.get?.(doc.id)
-        if (!p?.visible) return
-      }
-      const { w, h } = this._tokenSizePx(doc)
-      // Derive position from the document (not the placeable) so this is correct
-      // both at full rebuild and mid-`updateToken`, when the placeable's
-      // `.center` still holds the pre-move value.
-      const center = { x: (doc.x || 0) + w / 2, y: (doc.y || 0) + h / 2 }
-      // Flight-stand model: the BASE sits on the token's floor (its native v14
-      // Level's base elevation) and the mini floats at the token's own absolute
-      // `elevation`, with a post between. Keeps it a tabletop "mini on a stand" —
-      // always traceable down to a floor — rather than a free-floating sprite,
-      // and resolves the level/elevation disjoint (floor = Level.base, height =
-      // token.elevation; both absolute, so the post spans base → elevation).
-      const baseElevPx = this._tokenFloorBasePx(doc)
-      const tokenElevPx = Number(doc.elevation || 0) * this._pxPerUnit()
-      const footprint = Math.max(w, h)
-
-      const group = new THREE.Group()
-      group.position.set(center.x, tokenElevPx, center.y)
-      group.userData = { tokenId: doc.id } // for 3D picking (hover/select/target)
-
-      // Base ring on the token's floor — the anchor "foot" of the stand. A ring
-      // (not a disc) so the floor/grid shows through; tinted by disposition.
-      const baseRing = new THREE.Mesh(
-        new THREE.RingGeometry(footprint * 0.34, footprint / 2, 32),
-        new THREE.MeshBasicMaterial({
-          color: dispositionColor(doc.disposition),
-          transparent: true,
-          opacity: 0.55,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        }),
-      )
-      baseRing.rotation.x = -Math.PI / 2
-      baseRing.position.set(center.x, baseElevPx + 0.5, center.y)
-      this._scene.add(baseRing)
-      group.userData.baseRing = baseRing
-
-      // Body: a glTF/GLB 3D model if the token has one
-      // (flags["crit-fumble-core"].modelSrc), otherwise the token's 2D art on a
-      // camera-facing billboard. The billboard is also the fallback when a model
-      // fails to load.
-      const addBillboard = (tex) => {
-        const mat = new THREE.SpriteMaterial({
-          map: tex || null,
-          color: tex ? 0xffffff : dispositionColor(doc.disposition),
-          transparent: true,
-        })
-        const sprite = new THREE.Sprite(mat)
-        // Sprite is centred on its position; lift by half-height so the bottom
-        // sits on the token's elevation plane.
-        const billboardH = Math.max(h, footprint)
-        sprite.scale.set(w, billboardH, 1)
-        sprite.position.set(0, billboardH / 2, 0)
-        group.add(sprite)
-        this._render()
-      }
-      const loadBillboardArt = () => {
-        const src = doc.texture?.src
-        if (!src) return addBillboard(null)
-        const loader = new THREE.TextureLoader()
-        loader.setCrossOrigin('anonymous')
-        loader.load(
-          src,
-          (tex) => {
-            tex.colorSpace = THREE.SRGBColorSpace
-            addBillboard(tex)
-          },
-          undefined,
-          () => addBillboard(null),
-        )
-      }
-
-      const cfgFlags = doc.flags?.['crit-fumble-core'] || {}
-      const modelSrc = cfgFlags.modelSrc || cfgFlags.model3d
-      if (modelSrc) {
-        this._loadModel(modelSrc, group, { w, h, footprint, flags: cfgFlags }, loadBillboardArt)
-      } else {
-        loadBillboardArt()
-      }
-
-      // The flight-stand POST from the floor up (or down) to the mini, so its
-      // length reads as the height. Hidden when the token rests on its own floor
-      // (base == elevation) — no clutter for the common, on-the-ground case.
-      const lift = tokenElevPx - baseElevPx
-      if (Math.abs(lift) > 1) {
-        const stalk = new THREE.Mesh(
-          new THREE.CylinderGeometry(2, 2, Math.abs(lift), 6),
-          new THREE.MeshBasicMaterial({ color: 0xffc107, transparent: true, opacity: 0.5 }),
-        )
-        stalk.position.set(center.x, (baseElevPx + tokenElevPx) / 2, center.y)
-        this._scene.add(stalk)
-        group.userData.stalk = stalk
-        // No elevation number here — Foundry's own token elevation badge already shows
-        // it (visible through the transparent top-down mode); the 3D post + floating mini
-        // convey height spatially in the perspective modes. Don't duplicate native UI.
-      }
-
-      this._scene.add(group)
-      this._tokens.set(doc.id, group)
-    } catch (err) {
-      console.warn('CFG Core | Overlay3D._addToken failed:', err)
-    }
-  }
-
   /**
-   * Load a glTF/GLB model for a token, scaled to its footprint and standing on
-   * the elevation plane. Falls back to the 2D billboard if the model fails to
-   * load. Optional token flags: `modelScale` (multiplier), `modelRotation`
-   * (degrees, yaw about the up axis).
+   * A Foundry token document as a viewer-core token JSON entry (ring + optional
+   * flight-stand stalk are built into `createViewer()`'s `addToken` from
+   * `elevation`/`floorElevation` — see core.ts). Position is derived from the
+   * DOCUMENT (not the placeable) so this is correct both at full rebuild and
+   * mid-`updateToken`, when the placeable's `.center` still holds the pre-move
+   * value. Returns null for tokens that shouldn't render (floor-sliced, or
+   * hidden-from-this-player per Foundry's own placeable visibility).
    */
-  _loadModel(src, group, dims, onFail) {
-    try {
-      const THREE = this._THREE
-      if (!this._GLTFLoader) return onFail?.()
-      const loader = new this._GLTFLoader()
-      loader.load(
-        src,
-        (gltf) => {
-          try {
-            const model = gltf.scene || gltf.scenes?.[0]
-            if (!model) return onFail?.()
-            // Scale so the model's larger horizontal dimension ≈ the token footprint.
-            const userScale = Number.isFinite(dims.flags?.modelScale) ? dims.flags.modelScale : 1
-            let box = new THREE.Box3().setFromObject(model)
-            const size = new THREE.Vector3()
-            box.getSize(size)
-            const maxHoriz = Math.max(size.x, size.z) || 1
-            model.scale.setScalar((dims.footprint / maxHoriz) * userScale)
-            const rotDeg = Number.isFinite(dims.flags?.modelRotation) ? dims.flags.modelRotation : 0
-            if (rotDeg) model.rotation.y = (rotDeg * Math.PI) / 180
-            // Sit the model's base on the elevation plane (group origin y = 0).
-            box = new THREE.Box3().setFromObject(model)
-            model.position.y -= box.min.y
-            model.traverse((c) => {
-              if (c.isMesh) {
-                c.castShadow = true
-                c.receiveShadow = true
-              }
-            })
-            group.add(model)
-            this._render()
-          } catch (e) {
-            console.warn('CFG Core | Overlay3D model post-process failed:', e)
-            onFail?.()
-          }
-        },
-        undefined,
-        (err) => {
-          console.warn('CFG Core | Overlay3D GLB load failed, using billboard:', src, err?.message || err)
-          onFail?.()
-        },
-      )
-    } catch (e) {
-      console.warn('CFG Core | Overlay3D GLTFLoader unavailable:', e)
-      onFail?.()
+  _tokenJson(doc) {
+    if (!doc) return null
+    if (!this._docInSlice(doc)) return null // token on a floor above the slice → hidden
+    if (!this._isGM()) {
+      // Players: only render tokens Foundry shows them — its placeable visibility
+      // already respects vision, fog of war, the hidden flag, and floor access.
+      const p = canvas?.tokens?.get?.(doc.id)
+      if (!p?.visible) return null
+    }
+    const { w, h } = this._tokenSizePx(doc)
+    // Flight-stand model: the BASE sits on the token's floor (its native v14
+    // Level's base elevation) and the mini floats at the token's own absolute
+    // `elevation`, with a post between — a tabletop "mini on a stand" always
+    // traceable down to a floor, resolving the level/elevation disjoint (floor =
+    // Level.base, height = token.elevation; both absolute).
+    const cfgFlags = doc.flags?.['crit-fumble-core'] || {}
+    const modelSrc = cfgFlags.modelSrc || cfgFlags.model3d
+    return {
+      id: doc.id,
+      x: doc.x || 0,
+      y: doc.y || 0,
+      width: w,
+      height: h,
+      elevation: Number(doc.elevation || 0) * this._pxPerUnit(),
+      floorElevation: this._tokenFloorBasePx(doc),
+      color: dispositionColor(doc.disposition),
+      texture: doc.texture?.src ? this._assetUrl(doc.texture.src) : null,
+      model: modelSrc ? this._assetUrl(modelSrc) : null,
+      modelScale: Number.isFinite(cfgFlags.modelScale) ? cfgFlags.modelScale : undefined,
+      modelRotation: Number.isFinite(cfgFlags.modelRotation) ? cfgFlags.modelRotation : undefined,
     }
   }
 
   /**
    * Re-sync a single token on its `updateToken` broadcast (fires on every
-   * client — this is the "free multiplayer"). We rebuild just that token from
-   * the updated document so position, elevation, the height stalk, and size all
-   * stay correct.
+   * client — this is the "free multiplayer"). Remove + re-add (via the viewer's
+   * `applyDelta`) so position, elevation, the height stalk, and size all stay
+   * correct — a plain in-place move wouldn't refresh the ring/stalk offsets.
    */
   _onUpdateToken(doc) {
     if (!this._visible || !this._mounted) return
@@ -1880,28 +1641,18 @@ export class Overlay3D {
       this._removeToken(id)
       // Re-read the live document (all floors) so x/y/elevation/level are current.
       const fresh = canvas?.scene?.tokens?.get?.(id) || doc
-      this._addToken(fresh)
+      const t = this._tokenJson(fresh)
+      if (t) this._viewer.applyDelta({ tokens: [t] })
       this._render()
     } catch {
       this._scheduleRebuild()
     }
   }
 
-  /** Remove one token's 3D objects (group + height stalk) and dispose them. */
+  /** Remove one token's 3D objects (group + ring + stalk, all children of the
+   * group now) via the viewer's own remove-and-dispose path. */
   _removeToken(id) {
-    const group = this._tokens.get(id)
-    if (!group) return
-    // The post and base ring live at scene level (not in the group) — dispose both.
-    for (const key of ['stalk', 'baseRing']) {
-      const obj = group.userData?.[key]
-      if (obj) {
-        this._scene.remove(obj)
-        this._disposeObject(obj)
-      }
-    }
-    this._scene.remove(group)
-    this._disposeObject(group)
-    this._tokens.delete(id)
+    this._viewer?.applyDelta({ tokens: [{ id, remove: true }] })
   }
 
   _onCanvasReady() {
@@ -1969,61 +1720,9 @@ export class Overlay3D {
     }
   }
 
-  _disposeObject(obj) {
-    if (!obj) return
-    obj.traverse?.((child) => {
-      child.geometry?.dispose?.()
-      const mat = child.material
-      if (Array.isArray(mat)) mat.forEach((m) => this._disposeMaterial(m))
-      else this._disposeMaterial(mat)
-    })
-    if (obj.geometry) obj.geometry.dispose?.()
-    this._disposeMaterial(obj.material)
-  }
-
-  _disposeMaterial(mat) {
-    if (!mat) return
-    mat.map?.dispose?.()
-    mat.dispose?.()
-  }
-
+  /** Empty the 3D scene (all THREE-object disposal lives in the viewer core now). */
   _clearScene() {
-    if (!this._scene) return
-    for (const id of [...this._tokens.keys()]) this._removeToken(id)
-    if (this._ground) {
-      this._scene.remove(this._ground)
-      this._disposeObject(this._ground)
-      this._ground = null
-    }
-    if (this._grid) {
-      this._scene.remove(this._grid)
-      this._disposeObject(this._grid)
-      this._grid = null
-    }
-    for (const box of this._walls) {
-      this._scene.remove(box)
-      box.geometry?.dispose?.()
-    }
-    this._walls = []
-    this._wallMat?.dispose?.()
-    this._wallMat = null
-    for (const s of this._notes) {
-      this._scene.remove(s)
-      this._disposeObject(s)
-    }
-    this._notes = []
-    for (const l of this._lights) this._scene.remove(l)
-    this._lights = []
-    for (const t of this._tiles) {
-      this._scene.remove(t)
-      this._disposeObject(t)
-    }
-    this._tiles = []
-    for (const m of this._levelBackgrounds) {
-      this._scene.remove(m)
-      this._disposeObject(m)
-    }
-    this._levelBackgrounds = []
+    this._viewer?.loadScene({})
     this._ready = false
   }
 
@@ -2031,19 +1730,20 @@ export class Overlay3D {
     this._stopLoop()
     this._setFpInput(false)
     document.body.classList.remove('cfg-3d-active')
-    this._clearScene()
     for (const [hook, fn] of this._hooks) Hooks.off(hook, fn)
     this._hooks = []
     if (this._onResize) window.removeEventListener('resize', this._onResize)
     this._controls?.dispose?.()
-    this._renderer?.dispose?.()
-    this._renderer?.forceContextLoss?.()
+    this._viewer?.renderer?.forceContextLoss?.()
+    this._viewer?.dispose()
     if (this._container?.parentElement) this._container.parentElement.removeChild(this._container)
     this._container = null
     this._controlBar = null
+    this._viewer = null
     this._renderer = null
     this._scene = null
     this._camera = null
+    this._orbitCamera = null
     this._controls = null
     this._mounted = false
     this._visible = false
@@ -2116,26 +1816,8 @@ export class Overlay3D {
     })
   }
 
-  /**
-   * Create the WebGL renderer, preferring the high-performance (discrete) GPU
-   * and trying a hardware-backed context first — falling back to software only
-   * if no hardware GPU is available. Controlled by the "3D View — GPU" setting.
-   */
-  _createRenderer(THREE) {
-    const powerPreference = this._gpuPreference()
-    const opts = { antialias: true, alpha: true, powerPreference }
-    if (powerPreference !== 'low-power') {
-      try {
-        const r = new THREE.WebGLRenderer({ ...opts, failIfMajorPerformanceCaveat: true })
-        console.log('CFG Core | Overlay3D: hardware WebGL renderer')
-        return r
-      } catch (e) {
-        console.warn('CFG Core | Overlay3D: no hardware GPU — using software WebGL.', e?.message || e)
-      }
-    }
-    return new THREE.WebGLRenderer(opts)
-  }
-
+  /** Preferred GPU power mode, passed to `createViewer()` (it owns the hardware-then-
+   * software renderer fallback now). Controlled by the "3D View — GPU" setting. */
   _gpuPreference() {
     try {
       const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dGpu')

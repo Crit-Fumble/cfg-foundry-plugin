@@ -1,9 +1,22 @@
 # 3D Overlay — reviewable draft (Slice 1 + live sync)
 
-**Status:** DRAFT on branch `feat/3d-overlay-draft`. Built + verified locally overnight
-2026-06-30. Not pushed. This is a proof-of-concept of the "3D inside FoundryVTT" first pass
-from `docs/notes/3d-vtt-scope.md` (cfg-core-dev-tools#166) — a three.js view-skin over the
-Foundry canvas, driven by Foundry's own scene/token/elevation data.
+**Status (2026-07-01):** SHIPPED — v2.5.0 (4-mode redesign) then v2.6.0 (rendering delegated
+to the shared `@crit-fumble/shared/vtt-viewer` core, see below). This doc is left as the
+original design record; some details below (icon, altitude label, branch name) are stale —
+see `scripts/services/overlay-3d.js`'s own doc comments and method names for current behavior.
+
+**v2.6.0 architecture change:** `overlay-3d.js` no longer builds three.js objects itself. It
+resolves Foundry-domain data (asset URLs, Level bands, wall-height flags, per-player
+visibility, disposition colors) into a plain scene-JSON, then hands that to
+`createViewer()`/`viewer.loadScene()` from `@crit-fumble/shared/vtt-viewer/core` (bundled into
+`scripts/lib/three.bundle.js` alongside three.js itself — see `three-bundle.entry.mjs`). The
+shared core owns THREE.Scene/Camera/Renderer/token-Group construction, disposal, and (new)
+rich token visuals (textured/GLTF-model billboards, disposition ring, flight-stand stalk),
+per-Level stacked backgrounds, lighting, notes, and tiles — the same renderer PlayTable
+(`cfg-core-browser`) uses for its own offline scene viewer. `overlay-3d.js` still owns
+everything Foundry-specific: camera-mode switching (Top Down/Character/Free), WASD/arrow
+input, 3D picking (raycasting against `viewer.tokens`), and the floor-slice/Level/wall-height
+resolution logic. Original scope: `docs/notes/3d-vtt-scope.md` (cfg-core-dev-tools#166).
 
 ## What it does
 
