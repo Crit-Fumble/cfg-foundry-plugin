@@ -175,31 +175,25 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
   expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
 
-  // --- Tracked (top-down) mode — the camera mirrors Foundry, so canvas-anchored
-  //     UI lines up over the 3D. Pan Foundry to frame the room + select a token
-  //     so its HUD shows, then prove the projection matches Foundry's. ---
+  // --- Top Down (Tactical) — opaque 3D, camera locked straight-down on and following
+  //     the selected/controlled token (RTS/tabletop feel; no longer mirrors Foundry). ---
   expect(await page.evaluate(() => window.CFGCore.overlay3D.getMode())).toBe('tracked')
-  await page.evaluate(async () => {
-    await canvas.pan({ x: 1500, y: 1500, scale: 0.42 })
+  const tokCenter = await page.evaluate(() => {
     const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Center')) || canvas.tokens.placeables[0]
     t?.control({ releaseOthers: true })
+    return { x: t.center.x, y: t.center.y }
   })
   await page.waitForTimeout(900)
-
-  const align = await page.evaluate(() => {
+  const tactical = await page.evaluate(() => {
     const inst = window.CFGCore.overlay3D._instance
-    const t = canvas.tokens.controlled[0] || canvas.tokens.placeables[0]
-    const c = t.center
-    const f = canvas.clientCoordinatesFromCanvas({ x: c.x, y: c.y }) // Foundry screen px
-    const THREE = inst._THREE
-    const v = new THREE.Vector3(c.x, 0, c.y).project(inst._trackedCamera) // tracked-cam projection
-    const sx = ((v.x + 1) / 2) * window.innerWidth
-    const sy = ((1 - v.y) / 2) * window.innerHeight
-    return { foundry: [Math.round(f.x), Math.round(f.y)], three: [Math.round(sx), Math.round(sy)], dx: Math.round(sx - f.x), dy: Math.round(sy - f.y) }
+    const cam = inst._trackedCamera
+    return { camX: Math.round(cam.position.x), camZ: Math.round(cam.position.z), camY: Math.round(cam.position.y), opaque: inst._foundryFloor() === false }
   })
-  console.log('[overlay-3d] tracked projection vs Foundry:', JSON.stringify(align))
-  expect(Math.abs(align.dx), `x off by ${align.dx}px`).toBeLessThan(3)
-  expect(Math.abs(align.dy), `y off by ${align.dy}px`).toBeLessThan(3)
+  console.log('[overlay-3d] tactical camera:', JSON.stringify({ tokCenter, tactical }))
+  expect(Math.abs(tactical.camX - tokCenter.x), 'tactical camera centers on the token (x)').toBeLessThan(5)
+  expect(Math.abs(tactical.camZ - tokCenter.y), 'tactical camera centers on the token (z ← canvas y)').toBeLessThan(5)
+  expect(tactical.camY, 'camera high above, looking straight down').toBeGreaterThan(1000)
+  expect(tactical.opaque, 'tactical renders its own floor (opaque, not transparent over Foundry)').toBe(true)
 
   await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
   await page.screenshot({ path: join(SHOTS, '02-tracked.png') })

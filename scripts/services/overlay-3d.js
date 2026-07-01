@@ -523,13 +523,20 @@ export class Overlay3D {
    */
   _syncTrackedCamera() {
     const cam = this._trackedCamera
-    const stage = canvas?.stage
-    if (!cam || !stage) return
-    const px = stage.pivot?.x ?? 0
-    const pz = stage.pivot?.y ?? 0
-    cam.position.set(px, 100000, pz)
-    cam.lookAt(px, 0, pz)
-    cam.zoom = stage.scale?.x || 1 // 1 world unit → `scale` screen px, like Foundry
+    if (!cam) return
+    // Tactical: lock the top-down camera straight down onto — and following — the
+    // selected/controlled token (was: mirror Foundry's pan/zoom 1:1).
+    const tok = this._firstPersonToken()
+    const size = canvas?.dimensions?.size || 100
+    let cx = (canvas?.dimensions?.width || 2000) / 2
+    let cz = (canvas?.dimensions?.height || 2000) / 2
+    if (tok?.center) {
+      cx = tok.center.x
+      cz = tok.center.y
+    }
+    cam.position.set(cx, 100000, cz)
+    cam.lookAt(cx, 0, cz)
+    cam.zoom = (window.innerWidth || 1920) / (14 * size) // frame ~14 grid squares wide
     cam.updateProjectionMatrix()
   }
 
@@ -854,28 +861,25 @@ export class Overlay3D {
   }
 
   /**
-   * Tracked mode shows Foundry's own canvas as the floor — its computed
-   * dynamic lighting, token vision, and fog of war all come through, reused as
-   * the ground, with our 3D walls/tokens popping up on top. Orbit mode renders
-   * a full 3D scene (our ground + 3D lighting/shadows) instead.
+   * All view modes now render a full opaque 3D scene (our own ground + 3D
+   * lighting/shadows). The overlay used to reuse Foundry's canvas as the floor in
+   * the old transparent "tracked" mode, but Tactical top-down is now token-centered
+   * and opaque, so nothing is transparent-over-Foundry anymore.
    */
   _foundryFloor() {
-    return this._mode === 'tracked'
+    return false
   }
 
   /** Apply the current camera mode: active camera, input routing, UI-hide. */
   _applyMode() {
     const m = this._mode
-    const immersive = m === 'orbit' || m === 'firstperson' // full 3D (not transparent-over-Foundry)
+    // All 3D modes (Tactical top-down, Free, Character) are opaque now, so all capture
+    // the mouse and hide the canvas-anchored UI (#hud/#tooltip). The rest of Foundry's
+    // UI — hotbar, sidebar, controls, nav — sits above the overlay (z-30) and stays.
     this._camera = m === 'tracked' ? this._trackedCamera : this._orbitCamera
     if (this._controls) this._controls.enabled = m === 'orbit' // first-person is driven by the token
-    if (this._container) {
-      // Tracked: let the mouse fall through to Foundry (pan/zoom/select) — the
-      // camera follows. Immersive 3D (orbit/first-person): capture events.
-      this._container.style.pointerEvents = immersive ? 'auto' : 'none'
-    }
-    // Immersive modes hide the misaligned 2D UI; tracked lets it show (aligned).
-    document.body.classList.toggle('cfg-3d-active', this._visible && immersive)
+    if (this._container) this._container.style.pointerEvents = 'auto'
+    document.body.classList.toggle('cfg-3d-active', this._visible)
     // First-person uses a wider FOV; restore the default for orbit.
     if (this._orbitCamera) {
       this._orbitCamera.fov = m === 'firstperson' ? 78 : 50
@@ -1994,7 +1998,7 @@ export class Overlay3D {
           topdown: {
             name: 'topdown',
             order: 0,
-            title: 'Top-Down view (mirrors Foundry, aligned UI)',
+            title: 'Top Down / Tactical (3D — follows the selected token)',
             icon: 'fa-solid fa-table-cells',
             toggle: true,
             active: vm === 'topdown',
