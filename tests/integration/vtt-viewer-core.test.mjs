@@ -27,6 +27,10 @@ const SCENE = {
     { id: 'b', x: 1000, y: 700, width: 100, height: 100, elevation: 20 },
     { id: 'c', x: 300, y: 1200, width: 200, height: 200, elevation: 0 },
   ],
+  walls: [
+    { id: 'w1', x1: 0, y1: 0, x2: 400, y2: 0, bottom: 0, top: 300 }, // horizontal → mid (200,150,0), h 300
+    { id: 'w2', x1: 1000, y1: 500, x2: 1000, y2: 900, bottom: 0, top: 200 }, // vertical → mid (1000,100,700), h 200
+  ],
 }
 
 const log = (...a) => console.log('[viewer-test]', ...a)
@@ -79,7 +83,16 @@ try {
   check('c', 400, 0, 1300)
   if (g.second.tokenCount !== 3) fail(`reload accumulated tokens: ${g.second.tokenCount} (expected 3)`)
 
-  if (!process.exitCode) log('PASS — viewer core renders a scene JSON (3 tokens + ground, reload-stable)')
+  // Walls: extruded at elevation, aligned to the segment (world x, y=up, z).
+  if (g.first.wallCount !== 2) fail(`expected 2 walls, got ${g.first.wallCount}`)
+  const w1 = g.first.walls[0]
+  if (!w1 || !near(w1.pos[0], 200) || !near(w1.pos[1], 150) || !near(w1.pos[2], 0)) fail(`w1 at ${JSON.stringify(w1?.pos)} != [200,150,0]`)
+  if (w1 && w1.height !== 300) fail(`w1 height ${w1.height} != 300 (extruded bottom→top)`)
+  const w2 = g.first.walls[1]
+  if (!w2 || !near(w2.pos[0], 1000) || !near(w2.pos[1], 100) || !near(w2.pos[2], 700)) fail(`w2 at ${JSON.stringify(w2?.pos)} != [1000,100,700]`)
+  if (g.second.wallCount !== 2) fail(`reload accumulated walls: ${g.second.wallCount} (expected 2)`)
+
+  if (!process.exitCode) log('PASS — viewer core renders a scene JSON (3 tokens + 2 walls-at-elevation + ground, reload-stable)')
 } catch (e) {
   fail(e?.stack || e?.message || String(e))
 } finally {

@@ -40,6 +40,8 @@ export function createViewer({ element, THREE, width, height }) {
 
   /** @type {Map<string, any>} tokenId → THREE.Group */
   const tokens = new Map()
+  /** @type {any[]} extruded wall meshes */
+  const walls = []
   let ground = null
   let bounds = { width: 2000, height: 2000 }
 
@@ -58,11 +60,35 @@ export function createViewer({ element, THREE, width, height }) {
       disposeObject(g)
     }
     tokens.clear()
+    for (const wl of walls) {
+      scene.remove(wl)
+      disposeObject(wl)
+    }
+    walls.length = 0
     if (ground) {
       scene.remove(ground)
       disposeObject(ground)
       ground = null
     }
+  }
+
+  /** A wall segment as a thin box extruded from `bottom` to `top`, aligned to the segment. */
+  function addWall(wl) {
+    const x1 = wl.x1 || 0
+    const y1 = wl.y1 || 0
+    const x2 = wl.x2 || 0
+    const y2 = wl.y2 || 0
+    const bottom = wl.bottom || 0
+    const height = Math.max(1, (wl.top ?? bottom + 200) - bottom)
+    const len = Math.max(1, Math.hypot(x2 - x1, y2 - y1))
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(len, height, 8),
+      new THREE.MeshStandardMaterial({ color: wl.color ?? 0x8a8f98, roughness: 0.9 }),
+    )
+    mesh.position.set((x1 + x2) / 2, bottom + height / 2, (y1 + y2) / 2)
+    mesh.rotation.y = -Math.atan2(y2 - y1, x2 - x1) // align the box length with the segment (world XZ)
+    scene.add(mesh)
+    walls.push(mesh)
   }
 
   function addToken(t) {
@@ -104,6 +130,7 @@ export function createViewer({ element, THREE, width, height }) {
     scene.add(g)
     ground = g
     for (const t of json?.tokens || []) addToken(t)
+    for (const wl of json?.walls || []) addWall(wl)
     frameCamera()
     render()
   }
@@ -135,8 +162,10 @@ export function createViewer({ element, THREE, width, height }) {
   function getSceneGraph() {
     return {
       tokenCount: tokens.size,
+      wallCount: walls.length,
       hasGround: !!ground,
       tokens: [...tokens.entries()].map(([id, g]) => ({ id, pos: [Math.round(g.position.x), Math.round(g.position.y), Math.round(g.position.z)] })),
+      walls: walls.map((w) => ({ pos: [Math.round(w.position.x), Math.round(w.position.y), Math.round(w.position.z)], height: Math.round(w.geometry.parameters.height) })),
     }
   }
 
