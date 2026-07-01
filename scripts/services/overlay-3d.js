@@ -84,14 +84,19 @@ export class Overlay3D {
     // looking at the token), zooming to 1st person as _charDist → 0. The token aims at
     // the cursor; WASD moves relative to the camera.
     this._charDist = 0 // camera pull-back distance (world px); 0 = first person
-    this._charAzimuth = 0 // direction (radians) from token → camera, in world XZ
+    this._charAzimuth = 0 // direction (radians) from token → camera, in world XZ (Left/Right arrows)
     this._charAzimuthInit = false // azimuth is seeded once (behind the entry facing)
-    /** @type {{x:number,y:number}|null} last cursor pos (client px) for cursor-aim */
+    this._charPitch = 42 // 3rd-person camera tilt in degrees (Up/Down arrows adjust)
+    /** @type {{x:number,y:number}|null} last cursor pos (client px) — for 3D picking */
     this._cursor = null
     /** @type {((e: WheelEvent) => void)|null} character wheel-zoom handler */
     this._wheelHandler = null
-    /** @type {((e: MouseEvent) => void)|null} character cursor-tracking handler */
+    /** @type {((e: MouseEvent) => void)|null} character cursor/pick move handler */
     this._charMoveHandler = null
+    /** @type {((e: MouseEvent) => void)|null} character 3D-pick click handler */
+    this._charClickHandler = null
+    /** @type {string|null} token id currently hovered via 3D picking */
+    this._pickHoverId = null
 
     this._ground = null
     this._grid = null
@@ -595,11 +600,11 @@ export class Overlay3D {
         const dest = { x: this._fpCenter.x + (mx / len) * speed * dt, y: this._fpCenter.y + (mz / len) * speed * dt }
         if (!this._moveBlocked(this._fpCenter, dest)) {
           this._fpCenter = dest
+          this._faceMoveDir({ x: mx / len, z: mz / len }) // face where we walk
           this._fpDirty = true
         }
       }
     }
-    this._charFacingFromCursor(tok) // aim the token at the cursor
     if (this._fpDirty) {
       if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes
     } else if (!k.w && !k.a && !k.s && !k.d) {
@@ -644,7 +649,7 @@ export class Overlay3D {
       cam.lookAt(cx + Math.cos(theta) * size, eyeY, cz + Math.sin(theta) * size)
     } else {
       // Third person: camera behind + above along the azimuth, looking at the token.
-      const pitch = 42 * (Math.PI / 180)
+      const pitch = (this._charPitch || 42) * (Math.PI / 180)
       const horiz = this._charDist * Math.cos(pitch)
       const vert = this._charDist * Math.sin(pitch)
       cam.position.set(cx + Math.cos(this._charAzimuth) * horiz, eyeY + vert, cz + Math.sin(this._charAzimuth) * horiz)
@@ -658,38 +663,78 @@ export class Overlay3D {
    * the camera through the cursor to the ground at the token's elevation, then face
    * that point. Sets _fpHeading + marks dirty so the new facing commits.
    */
-  _charFacingFromCursor(tok) {
-    if (!this._cursor || !this._fpCenter) return
+  /** Turn the token to face a movement direction (world XZ) — it faces where it walks. */
+  _faceMoveDir(dir) {
+    if (!dir || (dir.x === 0 && dir.z === 0)) return
+    this._fpHeading = (((Math.atan2(dir.z, dir.x) * 180) / Math.PI - 90) % 360 + 360) % 360
+  }
+
+  /** 3D picking: the Foundry Token whose 3D model is under a client-px point, or null. */
+  _pick(clientX, clientY) {
     const THREE = this._THREE
     const cam = this._orbitCamera
-    if (!THREE || !cam) return
-    cam.updateMatrixWorld() // unproject reads matrixWorld — keep it current
+    if (!THREE || !cam || !this._tokens?.size) return null
+    cam.updateMatrixWorld()
     const w = window.innerWidth || 1
     const h = window.innerHeight || 1
-    // Unproject the cursor NDC to a world point along the view ray, then intersect the
-    // token's floor plane (y = elevation) by hand — leaner than allocating a
-    // Raycaster + Plane every frame (this runs per-frame while aiming).
-    const ndcX = (this._cursor.x / w) * 2 - 1
-    const ndcY = -((this._cursor.y / h) * 2 - 1)
-    const p = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam)
-    const ox = cam.position.x
-    const oy = cam.position.y
-    const oz = cam.position.z
-    const rx = p.x - ox
-    const ry = p.y - oy
-    const rz = p.z - oz
-    if (Math.abs(ry) < 1e-6) return // ray parallel to the floor
-    const elevY = (Number(tok.document.elevation) || 0) * this._pxPerUnit()
-    const t = (elevY - oy) / ry
-    if (t < 0) return // floor is behind the camera
-    const dx = ox + rx * t - this._fpCenter.x
-    const dz = oz + rz * t - this._fpCenter.y
-    if (Math.hypot(dx, dz) < 5) return // cursor over the token → keep the current facing
-    // forward for heading H is (cos((H+90)°), sin((H+90)°)) in world XZ → H = atan2(dz,dx)−90°.
-    const heading = (((Math.atan2(dz, dx) * 180) / Math.PI - 90) % 360 + 360) % 360
-    if (Math.abs(((heading - this._fpHeading + 540) % 360) - 180) > 0.5) {
-      this._fpHeading = heading
-      this._fpDirty = true
+    const ndc = { x: (clientX / w) * 2 - 1, y: -((clientY / h) * 2 - 1) }
+    const ray = new THREE.Raycaster()
+    ray.setFromCamera(ndc, cam)
+    const groups = []
+    for (const g of this._tokens.values()) if (g?.visible) groups.push(g)
+    const hits = ray.intersectObjects(groups, true)
+    if (!hits.length) return null
+    let o = hits[0].object
+    while (o && !o.userData?.tokenId) o = o.parent
+    const id = o?.userData?.tokenId
+    return id ? canvas?.tokens?.get?.(id) || null : null
+  }
+
+  /** Hover a 3D token → mirror it to Foundry's hover (native Target key + highlight). */
+  _onPickMove(event) {
+    if (this._mode !== 'firstperson' || !this._visible) return
+    this._cursor = { x: event.clientX, y: event.clientY }
+    const tok = this._pick(event.clientX, event.clientY)
+    const id = tok?.id || null
+    if (id === this._pickHoverId) return
+    const prev = this._pickHoverId && canvas?.tokens?.get?.(this._pickHoverId)
+    if (prev) {
+      try {
+        prev._onHoverOut?.(event)
+      } catch {
+        /* ignore */
+      }
+    }
+    this._pickHoverId = id
+    if (tok) {
+      try {
+        tok._onHoverIn?.(event, { hoverOutOthers: true })
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this._container) this._container.style.cursor = tok ? 'pointer' : ''
+  }
+
+  /** Click a 3D token → select (left) or target (right / Shift-left) — native selection. */
+  _onPickClick(event) {
+    if (this._mode !== 'firstperson' || !this._visible) return
+    const tok = this._pick(event.clientX, event.clientY)
+    if (!tok) return
+    event.preventDefault?.()
+    event.stopImmediatePropagation?.()
+    if (event.button === 2 || event.shiftKey) {
+      try {
+        tok.setTarget(!tok.isTargeted, { releaseOthers: !event.shiftKey })
+      } catch {
+        /* permission — ignore */
+      }
+    } else if (event.button === 0) {
+      try {
+        tok.control({ releaseOthers: true })
+      } catch {
+        /* permission — ignore */
+      }
     }
   }
 
@@ -731,6 +776,7 @@ export class Overlay3D {
     const dest = { x: this._fpCenter.x + dir.x * size, y: this._fpCenter.y + dir.z * size }
     if (this._moveBlocked(this._fpCenter, dest)) return // a wall blocks the step
     this._fpCenter = dest
+    this._faceMoveDir(dir) // face where we walk
     this._fpCommitNow(tok)
   }
 
@@ -757,31 +803,43 @@ export class Overlay3D {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
       this._wheelHandler = (e) => this._onWheel(e)
-      this._charMoveHandler = (e) => {
-        this._cursor = { x: e.clientX, y: e.clientY }
-      }
+      this._charMoveHandler = (e) => this._onPickMove(e)
+      this._charClickHandler = (e) => this._onPickClick(e)
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
       this._container?.addEventListener('wheel', this._wheelHandler, { passive: false, capture: true })
-      window.addEventListener('mousemove', this._charMoveHandler)
+      this._container?.addEventListener('mousemove', this._charMoveHandler)
+      this._container?.addEventListener('mousedown', this._charClickHandler)
       this._keys = { w: false, a: false, s: false, d: false }
       this._fpCenter = null
       this._fpLastTick = 0
       this._fpPitch = 0
       this._charDist = (canvas?.dimensions?.size || 100) * 4 // 3rd-person by default
       this._charAzimuthInit = false
+      this._charPitch = 42
       this._cursor = null
+      this._pickHoverId = null
       if (this._container) this._container.style.cursor = ''
     } else if (!on && this._keyHandler) {
       window.removeEventListener('keydown', this._keyHandler, true)
       window.removeEventListener('keyup', this._keyUpHandler, true)
       this._container?.removeEventListener('wheel', this._wheelHandler, { capture: true })
-      window.removeEventListener('mousemove', this._charMoveHandler)
+      this._container?.removeEventListener('mousemove', this._charMoveHandler)
+      this._container?.removeEventListener('mousedown', this._charClickHandler)
       this._keyHandler = null
       this._keyUpHandler = null
       this._wheelHandler = null
       this._charMoveHandler = null
+      this._charClickHandler = null
       this._cursor = null
+      // clear any 3D-pick hover mirrored onto Foundry
+      try {
+        const hov = this._pickHoverId && canvas?.tokens?.get?.(this._pickHoverId)
+        if (hov) hov._onHoverOut?.()
+      } catch {
+        /* ignore */
+      }
+      this._pickHoverId = null
       this._keys = { w: false, a: false, s: false, d: false }
       if (this._container) this._container.style.cursor = ''
       // The subject model is hidden in 1st person — restore it for the other modes.
@@ -834,15 +892,29 @@ export class Overlay3D {
     const tag = (t?.tagName || '').toLowerCase()
     if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
     const key = (event.key || '').toLowerCase()
-    if (key !== 'w' && key !== 'a' && key !== 's' && key !== 'd') return
+    const isArrow = key === 'arrowleft' || key === 'arrowright' || key === 'arrowup' || key === 'arrowdown'
+    const isWasd = key === 'w' || key === 'a' || key === 's' || key === 'd'
+    if (!isArrow && !isWasd) return // leave every other key native (targeting, etc.)
     const tok = this._firstPersonToken()
     if (!tok?.document) return
     event.preventDefault()
     event.stopImmediatePropagation()
-    this._keys[key] = true
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    if (isArrow) {
+      // Arrow keys orbit the camera: Left/Right = azimuth, Up/Down = pitch.
+      const yaw = (Math.PI / 180) * 6
+      if (key === 'arrowleft') this._charAzimuth -= yaw
+      else if (key === 'arrowright') this._charAzimuth += yaw
+      else if (key === 'arrowup') this._charPitch = Math.min(85, this._charPitch + 4)
+      else this._charPitch = Math.max(5, this._charPitch - 4)
+      this._charAzimuthInit = true // the user is steering the camera now
+      this._fpPositionCamera(tok)
+      return
+    }
+    // WASD moves the token (camera-relative); it faces its movement direction.
+    this._keys[key] = true
     if (event.repeat) return // grid steps fire once per press; fine movement is per-frame
-    if (!this._fineMovement()) this._fpGridStep(tok, this._fpMoveDir(key)) // W/S forward/back, A/D strafe
+    if (!this._fineMovement()) this._fpGridStep(tok, this._fpMoveDir(key))
   }
 
   /** First-person WASD keyup: release the key; commit the final pose when idle. */
@@ -984,7 +1056,7 @@ export class Overlay3D {
     const m = this._mode
     this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'WASD move · mouse aims · scroll to zoom (3rd↔1st person)' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson' ? 'WASD move · arrows turn camera · click select/target · scroll zoom' : 'drag rotate · scroll zoom · right-drag pan'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1642,6 +1714,7 @@ export class Overlay3D {
 
       const group = new THREE.Group()
       group.position.set(center.x, tokenElevPx, center.y)
+      group.userData = { tokenId: doc.id } // for 3D picking (hover/select/target)
 
       // Base ring on the token's floor — the anchor "foot" of the stand. A ring
       // (not a disc) so the floor/grid shows through; tinted by disposition.
@@ -2013,7 +2086,7 @@ export class Overlay3D {
           firstperson: {
             name: 'firstperson',
             order: 2,
-            title: 'Character View (3rd/1st person — WASD move · mouse aims · scroll to zoom)',
+            title: 'Character View (WASD move · arrows turn camera · click select/target · scroll zoom)',
             icon: 'fa-solid fa-person',
             toggle: true,
             active: vm === 'firstperson',

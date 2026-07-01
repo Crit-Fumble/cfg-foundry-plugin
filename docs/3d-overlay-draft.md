@@ -48,15 +48,14 @@ it on overlays a three.js canvas over the board that renders:
   select/hover/target** line up over the aligned 2D (Foundry's floor/lighting/fog show through, with
   the 3D walls/tokens on top). `_syncTrackedCamera` tracks `canvas.stage.pivot`; `_foundryFloor()` is
   `true` for this mode; the overlay is `pointer-events:none` so all native canvas input passes through.
-- **Character View** (Action-RPG / MMORPG feel) — **3rd person by default; scroll all the way in →
-  1st person** (the wheel is `_charDist`, zoom, not turn). The token **aims at the mouse cursor**
-  (raycast the cursor onto the token's floor plane, then face it); **WASD moves relative to the
-  camera** (not the facing); the subject model shows in 3rd person and hides in 1st. The camera sits
-  behind + above along `_charAzimuth`, seeded behind the entry facing (left-drag orbit to adjust it
-  is a follow-up). Per-player setting: **fine movement** (hold-to-walk vs one-grid-per-press).
-  **Walls block movement** (`polygonBackends.move.testCollision`). Movement + aim run per frame
-  against a local pose; the token is committed on a throttle, so it stays in sync. (Internally still
-  the `firstperson` mode key.)
+- **Character View** (MMORPG feel) — **3rd person by default; scroll all the way in → 1st person**
+  (the wheel is `_charDist`, zoom). **Arrow keys orbit the camera** (Left/Right = `_charAzimuth`,
+  Up/Down = `_charPitch`) — native pan is intentionally overridden here; **WASD moves camera-relative
+  and the token faces its movement direction** (`_faceMoveDir`); the **mouse is free for 3D picking**
+  — `_pick` raycasts the cursor onto the 3D token under it, hover mirrors Foundry's hover (native
+  Target key), left-click selects (`token.control`), right/Shift-click targets (`token.setTarget`).
+  Token groups carry `userData.tokenId`. The subject model shows in 3rd, hides in 1st. Per-player
+  setting: **fine movement**. **Walls block movement**. (Internally still the `firstperson` mode key.)
 - a **per-player "follow selected token's floor" setting** (off by default → the slice follows
   Foundry's navigated level, matching Foundry's own UI; on → selecting a token slices to its floor);
 - **tiles as floors at their elevation** — multi-floor "Levels" scenes stack in 3D: each tile renders

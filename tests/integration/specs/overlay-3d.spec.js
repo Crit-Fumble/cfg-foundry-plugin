@@ -352,8 +352,11 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   await page.waitForTimeout(400)
   let a = await read(tokenId)
   console.log('[overlay-3d] character move W:', JSON.stringify({ b, a }))
-  expect(Math.round(Math.hypot(a.x - b.x, a.y - b.y)), 'W moves one grid square').toBe(gridSize)
-  expect(a.rotation, 'movement does not change facing').toBe(b.rotation)
+  const mdx = a.x - b.x
+  const mdy = a.y - b.y
+  const moveHeading = (((Math.atan2(mdy, mdx) * 180) / Math.PI - 90) % 360 + 360) % 360
+  expect(Math.round(Math.hypot(mdx, mdy)), 'W moves one grid square').toBe(gridSize)
+  expect(Math.abs(((a.rotation - moveHeading + 540) % 360) - 180), 'the token faces its movement direction').toBeLessThan(2)
   await hideChrome(page)
   await page.screenshot({ path: join(SHOTS, '09-character-after-move.png') })
 
@@ -373,27 +376,43 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   expect(distIn, 'scroll-in zooms to 1st person, clamped >= 0').toBe(0)
   expect((await read(tokenId)).rotation, 'the wheel does not turn the token').toBe(rotBeforeWheel)
 
-  // (c) Cursor-aim: the token faces the cursor's ground position — two different
-  //     cursor positions produce two different facings (_fpHeading, before the
-  //     throttled commit). Fixed camera → deterministic screen→world mapping.
+  // (c) Arrow keys orbit the camera (Left/Right = azimuth, Up/Down = pitch); they do
+  //     not pan the map or move the token.
   await reset(tokenId)
   await page.waitForTimeout(200)
-  const aimAt = (x, y) => page.evaluate(([cx, cy]) => {
+  const camState = () => page.evaluate(() => {
+    const i = window.CFGCore.overlay3D._instance
+    return { az: i._charAzimuth, pitch: i._charPitch }
+  })
+  const camB = await camState()
+  await tap('ArrowLeft')
+  await tap('ArrowUp')
+  await page.waitForTimeout(150)
+  const camA = await camState()
+  console.log('[overlay-3d] arrow camera:', JSON.stringify({ camB, camA }))
+  expect(camA.az !== camB.az, 'Left/Right arrow rotates the camera azimuth').toBe(true)
+  expect(camA.pitch !== camB.pitch, 'Up/Down arrow tilts the camera pitch').toBe(true)
+
+  // (c2) 3D picking: a token under a screen point resolves to its Foundry token (so
+  //      hover/select/target work), and token groups are tagged with their id.
+  const picked = await page.evaluate(() => {
     const inst = window.CFGCore.overlay3D._instance
-    const tok = inst._firstPersonToken()
-    inst._fpSyncLocalFromToken(tok)
-    inst._charDist = 400
-    inst._charAzimuth = Math.PI / 2
-    inst._charAzimuthInit = true
-    inst._fpPositionCamera(tok)
-    inst._cursor = { x: cx, y: cy }
-    inst._charFacingFromCursor(tok)
-    return Math.round(inst._fpHeading)
-  }, [x, y])
-  const rotLeft = await aimAt(300, 540)
-  const rotRight = await aimAt(1620, 540)
-  console.log('[overlay-3d] cursor aim L/R:', rotLeft, rotRight)
-  expect(rotLeft !== rotRight, 'the token faces the cursor (left vs right differ)').toBe(true)
+    const cam = inst._orbitCamera
+    const other =
+      canvas.tokens.placeables.find((t) => t.name?.startsWith('Giant')) ||
+      canvas.tokens.placeables.find((t) => t.id !== inst._firstPersonToken().id)
+    const g = inst._tokens.get(other.id)
+    cam.position.set(g.position.x + 1, g.position.y + 600, g.position.z + 1) // straight above the token
+    cam.lookAt(g.position.x, g.position.y, g.position.z)
+    cam.updateMatrixWorld(true)
+    const v = g.position.clone().project(cam)
+    const sx = ((v.x + 1) / 2) * window.innerWidth
+    const sy = ((1 - v.y) / 2) * window.innerHeight
+    return { otherId: other.id, tagged: g.userData?.tokenId === other.id, hitId: inst._pick(sx, sy)?.id || null }
+  })
+  console.log('[overlay-3d] 3D pick:', JSON.stringify(picked))
+  expect(picked.tagged, 'token groups are tagged with their id for picking').toBe(true)
+  expect(picked.hitId, '3D picking resolves the token under the cursor').toBe(picked.otherId)
 
   // (d) Subject visibility: the token model shows in 3rd person, hides in 1st.
   const subjVisible = () => page.evaluate(() => {
