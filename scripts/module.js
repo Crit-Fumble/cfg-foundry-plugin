@@ -33,7 +33,7 @@ import { Overlay3D } from './services/overlay-3d.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-const MODULE_VERSION = '2.6.1'
+const MODULE_VERSION = '2.6.2'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'

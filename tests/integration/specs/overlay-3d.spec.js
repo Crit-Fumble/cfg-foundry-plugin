@@ -99,6 +99,9 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
       { name: 'Flier (Ground +15ft)', x: 1300, y: 1550, level: groundId, elevation: 15, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
       // FLYING over the UPPER floor (elev 30 over base 20) → its post is anchored to the upper floor, not the ground.
       { name: 'Upstairs flier (+30ft)', x: 1500, y: 1300, level: upperId, elevation: 30, width: 1, height: 1, texture: { src }, disposition: -1, actorId: actor.id },
+      // BELOW the Ground floor (elev -15 under base 0) → post attaches at the mini's TOP,
+      // not its feet, so it reads as hanging from the surface rather than piercing through.
+      { name: 'Burrower (Ground -15ft)', x: 1600, y: 1450, level: groundId, elevation: -15, width: 1, height: 1, texture: { src }, disposition: 0, actorId: actor.id },
     ])
     // A centered room with corners on the scene grid, fully inside the scene
     // rect (no padding overhang) — makes wall/token alignment obvious.
@@ -169,11 +172,26 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     })(),
   }))
   expect(info.ready).toBe(true)
-  expect(info.tokens, 'every 3D mode renders its own opaque token minis').toBe(5)
+  expect(info.tokens, 'every 3D mode renders its own opaque token minis').toBe(6)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
   expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
   expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
+
+  // Underground token (elevation -15 under its floor base 0): the flight-stand post's
+  // LOWER edge should sit at the mini's TOP (≈ its footprint, one grid square here), not
+  // at its feet (local y = 0) — hanging from the surface, not piercing through the mini.
+  const burrower = await page.evaluate(() => {
+    const inst = window.CFGCore.overlay3D._instance
+    const doc = canvas.scene.tokens.find((t) => t.name?.startsWith('Burrower'))
+    const g = inst._viewer.tokens.get(doc.id)
+    const stalk = g?.children.find((c) => c.geometry?.type === 'CylinderGeometry')
+    const lowerY = stalk ? stalk.position.y - stalk.geometry.parameters.height / 2 : null
+    return { lowerY, footprint: canvas.dimensions.size }
+  })
+  console.log('[overlay-3d] burrower stalk:', JSON.stringify(burrower))
+  expect(burrower.lowerY, 'no stalk found on the underground token').not.toBeNull()
+  expect(Math.abs(burrower.lowerY - burrower.footprint), `post's lower edge ${burrower.lowerY} should be at the mini's top (footprint ${burrower.footprint}), not its feet (0)`).toBeLessThan(1)
 
   // --- Top Down — an angled bird's-eye 3D: opaque, camera elevated + TILTED (so wall
   //     sides show), arrow-pan + wheel-zoom + 3D-pick select/target. ---
@@ -264,7 +282,7 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   }))
   console.log('[overlay-3d] floor-slice (focus ground floor):', JSON.stringify(sliced))
   expect(sliced.bg, 'slice hides the Upper floor map').toBe(1)
-  expect(sliced.tokens, 'slice hides the upstairs flier on the upper floor').toBe(4)
+  expect(sliced.tokens, 'slice hides the upstairs flier on the upper floor').toBe(5)
   await page.evaluate((p) => window.CFGCore.overlay3D.setView(p), 'angle')
   await hideChrome(page)
   await page.waitForTimeout(600)
