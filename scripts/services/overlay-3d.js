@@ -2055,7 +2055,7 @@ export class Overlay3D {
             onChange: (event, active) => this.setSlice(active),
           },
         }
-        const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-cubes', visible: true, tools }
+        const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-panorama', visible: true, tools }
         if (Array.isArray(controls)) {
           // Legacy (v12) array shape — tools as an array.
           controls.push({ ...group, tools: Object.values(tools) })
