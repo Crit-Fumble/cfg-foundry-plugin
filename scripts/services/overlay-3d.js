@@ -87,6 +87,11 @@ export class Overlay3D {
     this._charAzimuth = 0 // direction (radians) from token → camera, in world XZ (Left/Right arrows)
     this._charAzimuthInit = false // azimuth is seeded once (behind the entry facing)
     this._charPitch = 42 // 3rd-person camera tilt in degrees (Up/Down arrows adjust)
+    // Top-Down (tactical) — an angled bird's-eye: a perspective camera high above a pan
+    // focus, tilted so wall sides show. Arrow keys pan the focus; the wheel zooms.
+    /** @type {{x:number,z:number}|null} top-down pan focus (world XZ); null = re-seed */
+    this._trackFocus = null
+    this._trackDist = 0 // top-down camera distance/height (world px); wheel-controlled
     /** @type {{x:number,y:number}|null} last cursor pos (client px) — for 3D picking */
     this._cursor = null
     /** @type {((e: WheelEvent) => void)|null} character wheel-zoom handler */
@@ -527,18 +532,31 @@ export class Overlay3D {
    * screen = (world - stage.pivot) * stage.scale + screenCenter.
    */
   _syncTrackedCamera() {
-    const cam = this._trackedCamera
-    const stage = canvas?.stage
-    if (!cam || !stage) return
-    // Top-down mirrors Foundry's pan/zoom 1:1, so the 3D overlays Foundry's own canvas:
-    // native arrow-pan moves the view, and — with the overlay click-through — native
-    // mouse hover/select/target line up over the aligned 2D.
-    const px = stage.pivot?.x ?? 0
-    const pz = stage.pivot?.y ?? 0
-    cam.position.set(px, 100000, pz)
-    cam.lookAt(px, 0, pz)
-    cam.zoom = stage.scale?.x || 1
+    const cam = this._orbitCamera
+    if (!cam) return
+    // Angled bird's-eye: a perspective camera high above the pan focus, tilted so the
+    // near (south-facing) sides of walls + the 3D minis read with depth. Arrow keys pan
+    // the focus; the wheel changes _trackDist (height).
+    if (!this._trackFocus) this._trackFocus = this._defaultTrackFocus()
+    const size = canvas?.dimensions?.size || 100
+    if (!this._trackDist) this._trackDist = size * 12
+    const f = this._trackFocus
+    const pitch = 60 * (Math.PI / 180) // from horizontal — steep but angled, not straight down
+    const horiz = this._trackDist * Math.cos(pitch)
+    const vert = this._trackDist * Math.sin(pitch)
+    cam.up.set(0, 1, 0)
+    cam.position.set(f.x, vert, f.z + horiz) // south of + above the focus, looking north-down
+    cam.lookAt(f.x, 0, f.z)
+    cam.fov = 50
     cam.updateProjectionMatrix()
+  }
+
+  /** Default top-down pan focus (world XZ): the controlled token, else the scene centre. */
+  _defaultTrackFocus() {
+    const tok = this._firstPersonToken()
+    if (tok?.center) return { x: tok.center.x, z: tok.center.y }
+    const d = canvas?.dimensions
+    return { x: (d?.width || 2000) / 2, z: (d?.height || 2000) / 2 }
   }
 
   /**
@@ -692,7 +710,7 @@ export class Overlay3D {
 
   /** Hover a 3D token → mirror it to Foundry's hover (native Target key + highlight). */
   _onPickMove(event) {
-    if (this._mode !== 'firstperson' || !this._visible) return
+    if (!this._visible) return // 3D picking works in every 3D mode
     this._cursor = { x: event.clientX, y: event.clientY }
     const tok = this._pick(event.clientX, event.clientY)
     const id = tok?.id || null
@@ -718,7 +736,7 @@ export class Overlay3D {
 
   /** Click a 3D token → select (left) or target (right / Shift-left) — native selection. */
   _onPickClick(event) {
-    if (this._mode !== 'firstperson' || !this._visible) return
+    if (!this._visible) return // 3D picking works in every 3D mode
     const tok = this._pick(event.clientX, event.clientY)
     if (!tok) return
     event.preventDefault?.()
@@ -867,13 +885,25 @@ export class Overlay3D {
    * in toward 1st person (_charDist → 0). Turning is by the cursor, not the wheel.
    */
   _onWheel(event) {
-    if (this._mode !== 'firstperson' || !this._visible) return
+    if (!this._visible) return
+    const m = this._mode
+    const size = canvas?.dimensions?.size || 100
+    if (m === 'tracked') {
+      event.preventDefault?.()
+      event.stopImmediatePropagation?.()
+      if (!this._trackDist) this._trackDist = size * 12
+      const stepPx = size * 1.5
+      this._trackDist = Math.max(size * 3, Math.min(size * 40, this._trackDist + (event.deltaY > 0 ? stepPx : -stepPx)))
+      this._syncTrackedCamera()
+      this._render()
+      return
+    }
+    if (m !== 'firstperson') return // Free (orbit) → OrbitControls handles the wheel
     const tok = this._firstPersonToken()
     if (!tok?.document) return
     event.preventDefault?.()
     event.stopImmediatePropagation?.()
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
-    const size = canvas?.dimensions?.size || 100
     const stepPx = size * 0.75
     this._charDist = Math.max(0, Math.min(size * 10, this._charDist + (event.deltaY > 0 ? stepPx : -stepPx)))
     this._fpPositionCamera(tok)
@@ -887,12 +917,30 @@ export class Overlay3D {
    * typing in a field.
    */
   _onKeyDown(event) {
-    if (this._mode !== 'firstperson' || !this._visible) return
+    if (!this._visible) return
+    const m = this._mode
+    if (m !== 'firstperson' && m !== 'tracked') return // Free/2D: leave keys native
     const t = event.target
     const tag = (t?.tagName || '').toLowerCase()
     if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
     const key = (event.key || '').toLowerCase()
     const isArrow = key === 'arrowleft' || key === 'arrowright' || key === 'arrowup' || key === 'arrowdown'
+    // Top-Down: arrow keys PAN the camera focus across the board.
+    if (m === 'tracked') {
+      if (!isArrow) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (!this._trackFocus) this._trackFocus = this._defaultTrackFocus()
+      const step = (canvas?.dimensions?.size || 100) * 1.5
+      if (key === 'arrowleft') this._trackFocus.x -= step
+      else if (key === 'arrowright') this._trackFocus.x += step
+      else if (key === 'arrowup') this._trackFocus.z -= step
+      else this._trackFocus.z += step
+      this._syncTrackedCamera()
+      this._render()
+      return
+    }
+    // First-person: WASD move + arrows orbit the camera.
     const isWasd = key === 'w' || key === 'a' || key === 's' || key === 'd'
     if (!isArrow && !isWasd) return // leave every other key native (targeting, etc.)
     const tok = this._firstPersonToken()
@@ -901,7 +949,6 @@ export class Overlay3D {
     event.stopImmediatePropagation()
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
     if (isArrow) {
-      // Arrow keys orbit the camera: Left/Right = azimuth, Up/Down = pitch.
       const yaw = (Math.PI / 180) * 6
       if (key === 'arrowleft') this._charAzimuth -= yaw
       else if (key === 'arrowright') this._charAzimuth += yaw
@@ -929,35 +976,32 @@ export class Overlay3D {
   }
 
   /**
-   * Top-down mirrors Foundry's own canvas as the floor (its computed lighting, vision,
-   * and fog come through, reused as the ground, with our 3D walls/tokens on top) and
-   * stays click-through so native pan/select/target work. The perspective modes (Free,
-   * Character) render a full opaque 3D scene (our ground + 3D lighting/shadows) instead.
+   * Every 3D mode now renders a full opaque scene (our own ground/floor/walls/tokens +
+   * 3D lighting). Nothing is transparent-over-Foundry anymore — top-down is an angled
+   * bird's-eye, not a flat mirror — so Foundry's 2D never shows through to duplicate.
    */
   _foundryFloor() {
-    return this._mode === 'tracked'
+    return false
   }
 
   /** Apply the current camera mode: active camera, input routing, UI-hide. */
   _applyMode() {
     const m = this._mode
-    const immersive = m === 'orbit' || m === 'firstperson' // opaque perspective 3D (not over Foundry)
-    this._camera = m === 'tracked' ? this._trackedCamera : this._orbitCamera
-    if (this._controls) this._controls.enabled = m === 'orbit' // first-person is driven by the token
-    // Top-down is click-through so Foundry's native arrow-pan + mouse select/hover/target
-    // work over the aligned 2D; perspective modes capture the mouse (camera + 3D picking).
-    if (this._container) this._container.style.pointerEvents = immersive ? 'auto' : 'none'
-    // Immersive modes hide the misaligned canvas-anchored UI; top-down keeps it (aligned).
-    document.body.classList.toggle('cfg-3d-active', this._visible && immersive)
-    // First-person uses a wider FOV; restore the default for orbit.
+    // All 3D modes are opaque, use the perspective camera, and capture the mouse for 3D
+    // picking. cfg-3d-active hides only the canvas-anchored #hud/#tooltip; the hotbar +
+    // sidebar + controls stay above the overlay (z-30).
+    this._camera = this._orbitCamera
+    if (this._controls) this._controls.enabled = m === 'orbit' // drag-orbit only in Free Camera
+    if (this._container) this._container.style.pointerEvents = 'auto'
+    document.body.classList.toggle('cfg-3d-active', this._visible)
     if (this._orbitCamera) {
       this._orbitCamera.fov = m === 'firstperson' ? 78 : 50
       this._orbitCamera.updateProjectionMatrix()
     }
-    this._setFpInput(m === 'firstperson') // WASD + mouse-look only in first-person
+    this._setFpInput(this._visible) // keyboard + wheel + 3D-pick mouse for every 3D mode
     if (m === 'orbit') this.setView('default')
     else if (m === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
-    else this._syncTrackedCamera()
+    else this._syncTrackedCamera() // top-down angled bird's-eye
     this._render()
   }
 
@@ -1054,9 +1098,13 @@ export class Overlay3D {
   _updateControlBar() {
     if (!this._controlBar) return
     const m = this._mode
-    this._controlBar.style.display = this._visible && (m === 'orbit' || m === 'firstperson') ? '' : 'none'
+    this._controlBar.style.display = this._visible ? '' : 'none'
     this._controlBar.textContent =
-      m === 'firstperson' ? 'WASD move · arrows turn camera · click select/target · scroll zoom' : 'drag rotate · scroll zoom · right-drag pan'
+      m === 'firstperson'
+        ? 'WASD move · arrows turn camera · click select/target · scroll zoom'
+        : m === 'tracked'
+          ? 'arrows pan · scroll zoom · click select/target'
+          : 'drag rotate · scroll zoom · click select/target'
   }
 
   _buildGround(rect, cx, cz) {
@@ -1651,11 +1699,6 @@ export class Overlay3D {
     try {
       const THREE = this._THREE
       if (!doc) return
-      // Top-down is transparent over Foundry's own canvas, so Foundry's native 2D tokens
-      // show through. Don't draw our own token mini there — it would duplicate them and
-      // visibly separate during Foundry's move animation. (Perspective modes are opaque,
-      // so they DO render their own tokens.) Foundry's tokens stay the source of truth.
-      if (this._foundryFloor()) return
       if (!this._docInSlice(doc)) return // token on a floor above the slice → hidden
       if (!this._isGM()) {
         // Players: only render tokens Foundry shows them — its placeable visibility
@@ -2026,7 +2069,7 @@ export class Overlay3D {
           topdown: {
             name: 'topdown',
             order: 0,
-            title: 'Top Down (3D over Foundry — native pan · select · target)',
+            title: 'Top Down (angled 3D — arrows pan · scroll zoom · click select/target)',
             icon: 'fa-solid fa-table-cells',
             toggle: true,
             active: vm === 'topdown',

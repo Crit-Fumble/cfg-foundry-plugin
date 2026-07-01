@@ -169,36 +169,36 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     })(),
   }))
   expect(info.ready).toBe(true)
-  expect(info.tokens, 'top-down draws no overlay token minis — Foundry\'s own 2D tokens show through').toBe(0)
+  expect(info.tokens, 'every 3D mode renders its own opaque token minis').toBe(5)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
   expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
   expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
 
-  // --- Top Down — the 3D mirrors Foundry's pan/zoom and stays click-through, so native
-  //     arrow-pan + mouse select/hover/target line up over the aligned 2D. ---
+  // --- Top Down — an angled bird's-eye 3D: opaque, camera elevated + TILTED (so wall
+  //     sides show), arrow-pan + wheel-zoom + 3D-pick select/target. ---
   expect(await page.evaluate(() => window.CFGCore.overlay3D.getMode())).toBe('tracked')
-  await page.evaluate(async () => {
-    await canvas.pan({ x: 1300, y: 1700, scale: 0.5 })
-  })
-  await page.waitForTimeout(700)
-  const track = await page.evaluate(() => {
+  await page.waitForTimeout(400)
+  const td = await page.evaluate(() => {
     const inst = window.CFGCore.overlay3D._instance
-    const cam = inst._trackedCamera
+    inst._syncTrackedCamera()
+    const cam = inst._orbitCamera
+    const focusBefore = { ...inst._trackFocus }
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
     return {
-      camX: Math.round(cam.position.x),
-      camZ: Math.round(cam.position.z),
-      pivotX: Math.round(canvas.stage.pivot.x),
-      pivotZ: Math.round(canvas.stage.pivot.y),
-      transparent: inst._foundryFloor() === true,
-      clickThrough: getComputedStyle(document.getElementById('cfg-3d-overlay')).pointerEvents,
+      opaque: inst._foundryFloor() === false,
+      pe: getComputedStyle(document.getElementById('cfg-3d-overlay')).pointerEvents,
+      camY: Math.round(cam.position.y),
+      camZoff: Math.round(cam.position.z - inst._trackFocus.z), // angled → non-zero horizontal offset
+      pannedX: inst._trackFocus.x - focusBefore.x,
     }
   })
-  console.log('[overlay-3d] top-down mirrors Foundry:', JSON.stringify(track))
-  expect(Math.abs(track.camX - track.pivotX), 'camera mirrors Foundry pan (x)').toBeLessThan(5)
-  expect(Math.abs(track.camZ - track.pivotZ), 'camera mirrors Foundry pan (z)').toBeLessThan(5)
-  expect(track.transparent, 'top-down is transparent over Foundry (native floor + visuals show)').toBe(true)
-  expect(track.clickThrough, 'top-down is click-through so native mouse select/target works').toBe('none')
+  console.log('[overlay-3d] top-down angled:', JSON.stringify(td))
+  expect(td.opaque, 'top-down is opaque (own 3D scene — no Foundry-2D show-through to duplicate)').toBe(true)
+  expect(td.pe, 'top-down captures the mouse for 3D picking').toBe('auto')
+  expect(td.camY, 'camera is elevated above the board').toBeGreaterThan(100)
+  expect(Math.abs(td.camZoff), 'camera is ANGLED (horizontal offset from focus), not straight down').toBeGreaterThan(50)
+  expect(td.pannedX, 'ArrowRight pans the camera focus').toBeGreaterThan(0)
 
   await hideChrome(page) // hides the notification banner; the Token HUD stays (it aligns)
   await page.screenshot({ path: join(SHOTS, '02-tracked.png') })
@@ -206,8 +206,6 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   // --- Orbit (free-look) mode. ---
   await page.evaluate(() => window.CFGCore.overlay3D.setMode('orbit'))
   await page.waitForTimeout(400)
-  // The perspective modes ARE opaque, so they render their own token minis (all 5).
-  expect(await page.evaluate(() => window.CFGCore.overlay3D.tokenCount()), 'perspective modes render their own token minis').toBe(5)
 
   // Slice OFF → the full multi-floor "dollhouse" (both level maps render) for the
   // review angles.
