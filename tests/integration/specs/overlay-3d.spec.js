@@ -188,7 +188,8 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     const doc = canvas.scene.tokens.find((t) => t.name?.startsWith('Burrower'))
     const g = inst._viewer.tokens.get(doc.id)
     const stalk = g?.children.find((c) => c.geometry?.type === 'CylinderGeometry')
-    const lowerY = stalk ? stalk.position.y - stalk.geometry.parameters.height / 2 : null
+    // Stalks use the core's POOLED unit cylinder scaled per-token: visual height = parameters.height × scale.y.
+    const lowerY = stalk ? stalk.position.y - (stalk.geometry.parameters.height * stalk.scale.y) / 2 : null
     return { lowerY, footprint: canvas.dimensions.size }
   })
   console.log('[overlay-3d] burrower stalk:', JSON.stringify(burrower))
