@@ -1405,7 +1405,32 @@ export class Overlay3D {
         if (wtop - wbottom < 0.01) continue // nothing left after the cut
         const len = Math.hypot(x2 - x1, y2 - y1)
         if (len < 1) continue
-        out.push({ id: doc.id, x1, y1, x2, y2, bottom: wbottom * pxPerUnit, top: wtop * pxPerUnit, opacity: 0.85 })
+        // Doors/windows (mirrors the shared adapter's stored-doc mapping):
+        // door 0/1/2 = none/door/SECRET, ds 0/1/2 = closed/open/locked. A
+        // secret door must be indistinguishable from a wall for players until
+        // the GM opens it (then it reads as an ordinary open door). Window
+        // signature: blocks movement, doesn't block sight (none/proximity).
+        const ds = doc.ds === 1 ? 'open' : doc.ds === 2 ? 'locked' : 'closed'
+        let kind = 'wall'
+        let doorState
+        if (doc.door === 1) {
+          kind = 'door'
+          doorState = ds
+        } else if (doc.door === 2) {
+          if (game.user?.isGM) {
+            kind = 'secretDoor'
+            doorState = ds
+          } else if (ds === 'open') {
+            kind = 'door'
+            doorState = 'open'
+          }
+        } else if ((doc.move ?? 0) > 0 && (doc.sight === 0 || doc.sight === 30)) {
+          kind = 'window'
+        }
+        const wall = { id: doc.id, x1, y1, x2, y2, bottom: wbottom * pxPerUnit, top: wtop * pxPerUnit, kind }
+        if (kind === 'wall') wall.opacity = 0.85 // door/window style opacity is the core's business
+        if (doorState) wall.doorState = doorState
+        out.push(wall)
       } catch {
         /* skip a malformed wall */
       }
