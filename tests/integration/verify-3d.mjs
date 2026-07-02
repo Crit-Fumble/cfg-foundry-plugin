@@ -132,12 +132,12 @@ try {
     const t = canvas.tokens.placeables.find((x) => x.name?.startsWith('Flyer'))
     const inst = window.CFGCore.overlay3D._instance
     const before = t ? { x: t.document.x, y: t.document.y, e: t.document.elevation } : null
-    const gBefore = t && inst._tokens.get(t.id) ? { ...inst._tokens.get(t.id).position } : null
+    const gBefore = t && inst._viewer.tokens.get(t.id) ? { ...inst._viewer.tokens.get(t.id).position } : null
     if (t) await t.document.update({ x: 1700, y: 1300, elevation: 40 }, { teleport: true })
     const after = t ? { x: t.document.x, y: t.document.y, e: t.document.elevation } : null
     // give the hook a tick
     await new Promise((r) => setTimeout(r, 400))
-    const gAfter = t && inst._tokens.get(t.id) ? { ...inst._tokens.get(t.id).position } : null
+    const gAfter = t && inst._viewer.tokens.get(t.id) ? { ...inst._viewer.tokens.get(t.id).position } : null
     return { before, after, gBefore, gAfter, pxPerUnit: inst._pxPerUnit() }
   })
   log('MOVE INFO', JSON.stringify(moveInfo))
