@@ -299,6 +299,12 @@ export class Overlay3D {
       GLTFLoader: this._GLTFLoader,
       powerPreference: this._gpuPreference(),
       shadows: this._shadowsEnabled(),
+      // Adaptive render quality (#166): 'auto' detects a tier from the GPU/device
+      // (Steam Deck / integrated / software step down; a thin fragment-uniform
+      // budget hard-caps lights so the shader still compiles), or a user-pinned
+      // tier. The core owns pixelRatio, the light budget, and a runtime frame
+      // governor from here on — so we no longer setPixelRatio() ourselves.
+      quality: this._qualityPreference(),
     })
     this._viewer = viewer
     this._renderer = viewer.renderer
@@ -307,7 +313,6 @@ export class Overlay3D {
     this._orbitCamera = viewer.camera
 
     const renderer = viewer.renderer
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.setClearColor(0x000000, 0) // transparent when scene.background is null
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
@@ -1902,6 +1907,19 @@ export class Overlay3D {
     return true
   }
 
+  /** Render-quality preference passed to `createViewer()` (#166). 'auto' lets the
+   * core detect a tier from the GPU/device; a pinned tier overrides. Controlled by
+   * the "3D View — Performance" setting. */
+  _qualityPreference() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dQuality')
+      if (v === 'high' || v === 'medium' || v === 'low' || v === 'potato') return v
+    } catch {
+      /* not registered yet */
+    }
+    return 'auto'
+  }
+
   /**
    * Whether selecting a token should slice the 3D view to that token's floor.
    * Off by default: the slice then follows Foundry's navigated/viewed level
@@ -1958,6 +1976,16 @@ export class Overlay3D {
       config: true,
       type: Boolean,
       default: true,
+      onChange: notify,
+    })
+    reg('overlay3dQuality', {
+      name: '3D View — Performance',
+      hint: 'Auto (recommended) picks a quality tier from your GPU — Steam Deck / laptops step down automatically, and it caps lights so big scenes still load. Pin a lower tier for more speed (fewer lights, lower resolution, no shadows). The view also auto-scales resolution live to keep motion smooth.',
+      scope: 'client',
+      config: true,
+      type: String,
+      choices: { auto: 'Auto (recommended)', high: 'High', medium: 'Medium', low: 'Low', potato: 'Potato (max speed)' },
+      default: 'auto',
       onChange: notify,
     })
     reg('overlay3dFocusFollow', {
