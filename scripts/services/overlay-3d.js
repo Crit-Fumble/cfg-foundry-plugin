@@ -708,8 +708,19 @@ export class Overlay3D {
   _fpSyncSubjectVisual(tok) {
     const g = this._viewer?.tokens?.get?.(tok.id)
     if (!g || !this._fpCenter) return
-    const elevPx = Number(tok.document.elevation || 0) * this._pxPerUnit()
+    // Base rides the heightmap: ground = terrain surface at the CURRENT position + the token's
+    // own (above-ground) elevation, so the character walks up/down the terrain automatically.
+    const elevPx = this._fpGroundPx() + Number(tok.document.elevation || 0) * this._pxPerUnit()
     g.position.set(this._fpCenter.x, elevPx, this._fpCenter.y)
+  }
+
+  /** Heightmap surface height (px) under the first-person character (at `_fpCenter`); 0 when
+   * there is no terrain field — so flat-floor scenes behave exactly as before. */
+  _fpGroundPx() {
+    const c = this._fpCenter
+    if (!c) return 0
+    const t = this._sampleTerrain(c.x, c.y)
+    return t != null ? t * this._pxPerUnit() : 0
   }
 
   /** A unit move direction (world XZ) for a semantic move (from Foundry's move
@@ -736,7 +747,9 @@ export class Overlay3D {
     const cam = this._orbitCamera
     if (!cam || !this._fpCenter) return
     const size = canvas?.dimensions?.size || 100
-    const eyeY = (Number(tok.document.elevation) || 0) * this._pxPerUnit() + size * 0.9 // ~eye height
+    // Eye height sits on the terrain surface under the character (+ any above-ground elevation),
+    // so entering Character view no longer starts below the heightmap / clips through it.
+    const eyeY = this._fpGroundPx() + (Number(tok.document.elevation) || 0) * this._pxPerUnit() + size * 0.9
     const cx = this._fpCenter.x
     const cz = this._fpCenter.y
     cam.up.set(0, 1, 0)
@@ -2077,6 +2090,7 @@ export class Overlay3D {
       pxPerUnit: this._pxPerUnit(),
       docInSlice: (doc) => this._docInSlice(doc),
       assetUrl: (src) => this._assetUrl(src),
+      terrainAt: (x, y) => this._sampleTerrain(x, y), // heightmap ground (units) so tiles sit ON the terrain
     })
   }
 

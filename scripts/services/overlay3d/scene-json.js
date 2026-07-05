@@ -116,13 +116,16 @@ export function buildTilesJson(docs, ctx) {
       if (w < 1 || h < 1) continue
       const elev = levelsElevation(d)
       const src = d.texture?.src
+      // Ride the heightmap terrain (if any) so a ground tile isn't buried under raised land.
+      const ground = ctx.terrainAt ? ctx.terrainAt((Number(d.x) || 0) + w / 2, (Number(d.y) || 0) + h / 2) : null
+      const lift = ground != null ? ground * ctx.pxPerUnit + 2 : 0 // +2px avoids z-fighting with the surface
       out.push({
         id: d.id,
         x: Number(d.x) || 0,
         y: Number(d.y) || 0,
         width: w,
         height: h,
-        elevation: elev * ctx.pxPerUnit,
+        elevation: elev * ctx.pxPerUnit + lift,
         texture: src ? ctx.assetUrl(src) : null,
         alpha: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1,
         color: elev > 0 ? 0x7a6a52 : 0x515b6b, // no texture → tint by elevation
