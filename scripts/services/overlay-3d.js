@@ -23,6 +23,7 @@
 // Pure, Foundry-free scene-JSON producers (decomposition phase 1) — no THREE, so this
 // static import adds nothing to load-time cost. See overlay3d/scene-json.js.
 import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTokenJson, buildLightsJson, buildLevelsJson, buildRegionsJson, buildTerrainJson, levelBase, levelTop, levelContainingElevation, resolveActiveLevel, parseHexColor } from './overlay3d/scene-json.js'
+import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
 
@@ -101,6 +102,13 @@ export class Overlay3D {
 
     /** @type {boolean} floor-slice: hide floors above the active level (cutaway, like TaleSpire) */
     this._sliceFloors = true
+    /** Terrain sculpt: active brush ('raise'|'lower'|'level'|'smooth'|null), radius (field
+     * fraction), per-dab strength (units), and the live working height field during a stroke. */
+    this._sculptMode = null
+    this._sculptRadius = 0.08
+    this._sculptStrength = 1.5
+    this._sculptDrag = false
+    this._sculptHeights = null
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
     this._frame = null
 
@@ -886,6 +894,12 @@ export class Overlay3D {
    */
   _onCharDown(event) {
     if (!this._visible) return
+    // Sculpt: a left-drag paints the active terrain brush (raycast → height field).
+    if (this._sculptActive() && event.button === 0) {
+      event.preventDefault?.()
+      this._sculptBegin(event)
+      return
+    }
     // Top-Down: LEFT-drag pans the view (grab-the-map, like Foundry's canvas); a bare
     // left-click (no drag) still selects. Defer the pick to mouseup so a drag doesn't select.
     if (this._mode === 'tracked' && event.button === 0) {
@@ -907,6 +921,10 @@ export class Overlay3D {
 
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
+    if (this._sculptDrag) {
+      this._sculptApply(event)
+      return
+    }
     const d = this._charDrag
     if (d && d.mode === 'trackpan') {
       const dx = event.clientX - d.x
@@ -940,6 +958,10 @@ export class Overlay3D {
 
   /** Mouse up: finish the marquee (target the enclosed group) or resolve a bare click. */
   _onCharUp(event) {
+    if (this._sculptDrag) {
+      this._sculptEnd()
+      return
+    }
     const d = this._charDrag
     this._charDrag = null
     if (d && d.mode === 'trackpan') {
@@ -1279,6 +1301,14 @@ export class Overlay3D {
    */
   _onWheel(event) {
     if (!this._visible) return
+    // Sculpting: the wheel sizes the brush instead of zooming the camera.
+    if (this._sculptActive()) {
+      event.preventDefault?.()
+      event.stopImmediatePropagation?.()
+      const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
+      this._sculptRadius = Math.max(0.02, Math.min(0.5, this._sculptRadius * step))
+      return
+    }
     const m = this._mode
     const size = canvas?.dimensions?.size || 100
     if (m === 'tracked') {
@@ -2316,6 +2346,78 @@ export class Overlay3D {
   }
 
   /* ------------------------------------------------------------------ */
+  /*  Terrain sculpt brush                                               */
+  /* ------------------------------------------------------------------ */
+
+  /** Select a sculpt brush (or null to stop). Sculpting needs an overhead/free 3D view to
+   *  see + raycast the terrain, so switch to Top-Down if we're off or in Character view. */
+  _setSculptMode(mode) {
+    this._sculptMode = mode
+    if (mode && (this._mode === 'firstperson' || !this._visible)) this.setViewMode('topdown')
+    try {
+      ui?.controls?.render?.()
+    } catch {
+      /* controls not ready */
+    }
+  }
+
+  /** True while a sculpt tool is active — the drag sculpts instead of panning/picking. */
+  _sculptActive() {
+    return !!this._sculptMode && this._visible
+  }
+
+  /** Start a sculpt stroke: snapshot the scene's height field into a live working copy. */
+  _sculptBegin(event) {
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    if (!field?.heights?.length) {
+      ui?.notifications?.warn?.('No 3D terrain on this scene yet — add a heightfield first.')
+      return
+    }
+    this._sculptCols = Math.floor(Number(field.cols))
+    this._sculptRows = Math.floor(Number(field.rows))
+    this._sculptHeights = field.heights.slice()
+    this._sculptDrag = true
+    if (this._sculptMode === 'level') {
+      const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
+      const i = uv ? Math.round(uv.u * (this._sculptCols - 1)) : 0
+      const j = uv ? Math.round(uv.v * (this._sculptRows - 1)) : 0
+      this._sculptLevel = Number(this._sculptHeights[j * this._sculptCols + i]) || 0
+    }
+    this._sculptApply(event)
+  }
+
+  /** Apply one brush dab under the cursor + re-displace the terrain mesh in place. */
+  _sculptApply(event) {
+    if (!this._sculptDrag || !this._sculptHeights) return
+    const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
+    if (!uv) return
+    const raise = this._sculptMode === 'raise' || this._sculptMode === 'lower'
+    this._sculptHeights = applyTerrainBrush(this._sculptHeights, this._sculptCols, this._sculptRows, {
+      mode: this._sculptMode,
+      u: uv.u,
+      v: uv.v,
+      radius: this._sculptRadius,
+      strength: raise ? this._sculptStrength : 0.5,
+      level: this._sculptLevel || 0,
+    })
+    const px = this._pxPerUnit()
+    this._viewer?.updateTerrainHeights?.(this._sculptHeights.map((val) => val * px))
+  }
+
+  /** End the stroke: persist the height field to the scene flag (multiplayer + reload). */
+  _sculptEnd() {
+    this._sculptDrag = false
+    const h = this._sculptHeights
+    this._sculptHeights = null
+    if (!h) return
+    try {
+      canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols: this._sculptCols, rows: this._sculptRows, heights: h })
+    } catch {
+      /* not a GM / no scene */
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /*  Scene-control toggle (Foundry v13/v14 Record API)                  */
   /* ------------------------------------------------------------------ */
 
@@ -2366,6 +2468,42 @@ export class Overlay3D {
             toggle: true,
             active: this._sliceFloors !== false,
             onChange: (event, active) => this.setSlice(active),
+          },
+          sculptRaise: {
+            name: 'sculptRaise',
+            order: 10,
+            title: 'Sculpt: RAISE terrain — drag on the terrain (scroll = brush size)',
+            icon: 'fa-solid fa-mound',
+            toggle: true,
+            active: this._sculptMode === 'raise',
+            onChange: (event, active) => this._setSculptMode(active ? 'raise' : null),
+          },
+          sculptLower: {
+            name: 'sculptLower',
+            order: 11,
+            title: 'Sculpt: LOWER terrain — drag on the terrain',
+            icon: 'fa-solid fa-hill-rockslide',
+            toggle: true,
+            active: this._sculptMode === 'lower',
+            onChange: (event, active) => this._setSculptMode(active ? 'lower' : null),
+          },
+          sculptLevel: {
+            name: 'sculptLevel',
+            order: 12,
+            title: 'Sculpt: LEVEL/flatten — flattens to the first-click height (makes cliffs/mesas)',
+            icon: 'fa-solid fa-ruler-horizontal',
+            toggle: true,
+            active: this._sculptMode === 'level',
+            onChange: (event, active) => this._setSculptMode(active ? 'level' : null),
+          },
+          sculptSmooth: {
+            name: 'sculptSmooth',
+            order: 13,
+            title: 'Sculpt: SMOOTH terrain — softens bumps and slopes',
+            icon: 'fa-solid fa-wind',
+            toggle: true,
+            active: this._sculptMode === 'smooth',
+            onChange: (event, active) => this._setSculptMode(active ? 'smooth' : null),
           },
         }
         const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-panorama', visible: true, tools }
