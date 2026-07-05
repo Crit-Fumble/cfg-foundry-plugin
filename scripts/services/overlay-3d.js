@@ -105,7 +105,7 @@ export class Overlay3D {
     /** Terrain sculpt: active brush ('raise'|'lower'|'level'|'smooth'|null), radius (field
      * fraction), per-dab strength (units), and the live working height field during a stroke. */
     this._sculptMode = null
-    this._sculptRadius = 0.08
+    this._sculptRadius = 0.05
     this._sculptStrength = 1.5
     this._sculptDrag = false
     this._sculptHeights = null
@@ -921,8 +921,10 @@ export class Overlay3D {
 
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
-    if (this._sculptDrag) {
-      this._sculptApply(event)
+    if (this._sculptActive()) {
+      // Show the brush ring under the cursor; drag applies dabs. No pick/pan while sculpting.
+      this._viewer?.showBrushCursor?.(event.clientX, event.clientY, this._sculptRadius)
+      if (this._sculptDrag) this._sculptApply(event)
       return
     }
     const d = this._charDrag
@@ -2354,10 +2356,76 @@ export class Overlay3D {
   _setSculptMode(mode) {
     this._sculptMode = mode
     if (mode && (this._mode === 'firstperson' || !this._visible)) this.setViewMode('topdown')
+    if (!mode) this._viewer?.hideBrushCursor?.()
     try {
       ui?.controls?.render?.()
     } catch {
       /* controls not ready */
+    }
+  }
+
+  /**
+   * Generate a STARTING height field from the scene's map image (classify land/water/beach/
+   * rock by colour, erode isolated rock-noise) into the heightfield flag. This is the base
+   * terrain + a one-click way to recover from over-sculpting; the GM then shapes it by hand.
+   */
+  async _generateTerrainFromMap() {
+    const scene = canvas?.scene
+    const src = scene?.background?.src
+    if (!src) {
+      ui?.notifications?.warn?.('This scene has no background image to generate terrain from.')
+      return
+    }
+    try {
+      const cols = 80
+      const rows = 80
+      const url = typeof foundry?.utils?.getRoute === 'function' ? foundry.utils.getRoute(src) : src
+      const img = await new Promise((ok, no) => {
+        const im = new Image()
+        im.crossOrigin = 'anonymous'
+        im.onload = () => ok(im)
+        im.onerror = () => no(new Error('image load failed'))
+        im.src = url
+      })
+      const cv = document.createElement('canvas')
+      cv.width = cols
+      cv.height = rows
+      const g2 = cv.getContext('2d', { willReadFrequently: true })
+      g2.drawImage(img, 0, 0, cols, rows)
+      const px = g2.getImageData(0, 0, cols, rows).data
+      const T = new Array(cols * rows) // 0 water · 1 beach · 2 grass · 3 rock
+      for (let k = 0; k < cols * rows; k++) {
+        const r = px[k * 4]
+        const gr = px[k * 4 + 1]
+        const b = px[k * 4 + 2]
+        if (b > r + 15 && b > 95 && gr > r) T[k] = 0
+        else if (r > 165 && gr > 145 && b < 165 && r >= gr - 10) T[k] = 1
+        else if (Math.abs(r - gr) < 20 && Math.abs(gr - b) < 20 && r > 100 && r < 200) T[k] = 3
+        else T[k] = 2
+      }
+      const T2 = T.slice() // erode isolated rock (noise) — keep connected ridges
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+          const k = j * cols + i
+          if (T[k] !== 3) continue
+          let n = 0
+          for (let dj = -1; dj <= 1; dj++) {
+            for (let di = -1; di <= 1; di++) {
+              if (!di && !dj) continue
+              const ii = i + di
+              const jj = j + dj
+              if (ii >= 0 && ii < cols && jj >= 0 && jj < rows && T[jj * cols + ii] === 3) n++
+            }
+          }
+          if (n < 2) T2[k] = 2
+        }
+      }
+      const HT = { 0: -4, 1: 0, 2: 6, 3: 30 } // shallow water · flat beach · raised grass · tall rock
+      await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: T2.map((t) => HT[t]) })
+      ui?.notifications?.info?.('Generated 3D terrain from the map — sculpt from here.')
+    } catch (e) {
+      console.warn('CFG Core | generate terrain from map failed', e)
+      ui?.notifications?.error?.('Terrain generation failed (see console).')
     }
   }
 
@@ -2468,6 +2536,14 @@ export class Overlay3D {
             toggle: true,
             active: this._sliceFloors !== false,
             onChange: (event, active) => this.setSlice(active),
+          },
+          terrainGenerate: {
+            name: 'terrainGenerate',
+            order: 9,
+            title: 'Generate 3D terrain from the map — a base heightmap you sculpt from (also resets over-sculpted terrain)',
+            icon: 'fa-solid fa-mountain-sun',
+            button: true,
+            onChange: () => this._generateTerrainFromMap(),
           },
           sculptRaise: {
             name: 'sculptRaise',
