@@ -15,14 +15,20 @@ export async function ensureInGame(page) {
   await page.goto('/game')
   await page.waitForLoadState('domcontentloaded')
 
-  // No session → Foundry 302s /game to /join. Pick the Gamemaster and submit.
+  // No session → Foundry 302s /game to /join. Pick a GM and submit. Foundry allows
+  // concurrent users, so FOUNDRY_TEST_USER lets a headless run join as a DIFFERENT GM
+  // (e.g. a service account) than a human who's connected — a substring match on the
+  // user name; default is any Gamemaster/GM.
   if (page.url().includes('/join')) {
     const gmSelect = page.locator('select[name="userid"]')
     await gmSelect.waitFor({ timeout: 30_000 })
+    const prefer = (process.env.FOUNDRY_TEST_USER || '').trim().toLowerCase()
     for (const opt of await gmSelect.locator('option').all()) {
       const value = await opt.getAttribute('value')
-      const text = (await opt.textContent()) || ''
-      if (value && /gamemaster|gm/i.test(text)) {
+      const text = ((await opt.textContent()) || '').trim()
+      if (!value) continue
+      const match = prefer ? text.toLowerCase().includes(prefer) : /gamemaster|gm/i.test(text)
+      if (match) {
         await gmSelect.selectOption(value)
         break
       }

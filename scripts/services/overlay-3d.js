@@ -20,21 +20,11 @@
  * (cfg-core-dev-tools) for the full plan.
  */
 
-const OVERLAY_ID = 'cfg-3d-overlay'
+// Pure, Foundry-free scene-JSON producers (decomposition phase 1) — no THREE, so this
+// static import adds nothing to load-time cost. See overlay3d/scene-json.js.
+import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTokenJson, buildLightsJson, buildLevelsJson, buildRegionsJson, buildTerrainJson, levelBase, levelTop, levelContainingElevation, resolveActiveLevel, parseHexColor } from './overlay3d/scene-json.js'
 
-/** Foundry CONST.TOKEN_DISPOSITIONS → a tint for placeholder/footprint marks. */
-function dispositionColor(disposition) {
-  switch (disposition) {
-    case 1:
-      return 0x4caf50 // friendly
-    case -1:
-      return 0xf44336 // hostile
-    case -2:
-      return 0x9c27b0 // secret
-    default:
-      return 0x2196f3 // neutral
-  }
-}
+const OVERLAY_ID = 'cfg-3d-overlay'
 
 export class Overlay3D {
   constructor() {
@@ -75,13 +65,14 @@ export class Overlay3D {
     /** @type {string|null} last token the user controlled (the first-person subject) */
     this._lastTokenId = null
     /** @type {{w:boolean,a:boolean,s:boolean,d:boolean}} held WASD keys (first-person) */
-    this._keys = { w: false, a: false, s: false, d: false }
+    this._keys = { fwd: false, back: false, left: false, right: false }
     /** @type {((e: KeyboardEvent) => void)|null} first-person key-up handler */
     this._keyUpHandler = null
     // First-person local camera state — driven smoothly, committed to the token on a throttle.
     this._fpHeading = 0
     this._fpPitch = 0
     this._fpCenter = null
+    this._fpGoal = null // grid-mode glide target cell (world px), or null when idle
     this._fpLastTick = 0
     this._fpCommitAt = 0
     this._fpDirty = false
@@ -152,6 +143,9 @@ export class Overlay3D {
       this._on('createTile', () => this._scheduleRebuild())
       this._on('updateTile', () => this._scheduleRebuild())
       this._on('deleteTile', () => this._scheduleRebuild())
+      this._on('createRegion', () => this._scheduleRebuild())
+      this._on('updateRegion', () => this._scheduleRebuild())
+      this._on('deleteRegion', () => this._scheduleRebuild())
       this._on('createLevel', () => this._scheduleRebuild())
       this._on('updateLevel', () => this._scheduleRebuild())
       this._on('deleteLevel', () => this._scheduleRebuild())
@@ -164,11 +158,15 @@ export class Overlay3D {
       // Remember the controlled token (the first-person subject) + focus-follow slice.
       this._on('controlToken', (token, controlled) => {
         if (controlled && token?.id) this._lastTokenId = token.id
-        if (this._mode === 'firstperson') this._fpCenter = null // re-anchor first-person to the new subject
+        if (this._mode === 'firstperson') {
+          this._fpCenter = null // re-anchor first-person to the new subject
+          this._fpGoal = null
+          this._subjectElev = undefined // re-baseline elevation for the new subject
+        }
         // Rebuild on focus-follow (slice) or in first-person (to hide the new subject).
         if (this._focusFollowEnabled() || this._mode === 'firstperson') this._scheduleRebuild()
       })
-      this._on('updateToken', (doc) => this._onUpdateToken(doc))
+      this._on('updateToken', (doc, change) => this._onUpdateToken(doc, change))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
       // both so position + elevation stay live regardless of how it changed.
@@ -305,6 +303,10 @@ export class Overlay3D {
       // tier. The core owns pixelRatio, the light budget, and a runtime frame
       // governor from here on — so we no longer setPixelRatio() ourselves.
       quality: this._qualityPreference(),
+      // Frame-rate cap (#166) — default 15fps: a steady 15 is smoother and far
+      // lighter on old/integrated GPUs than an uncapped, stuttering 30-40.
+      // Player-settable ("3D View — Frame rate cap"); null = uncapped.
+      fpsCap: this._fpsCapPreference(),
     })
     this._viewer = viewer
     this._renderer = viewer.renderer
@@ -491,6 +493,8 @@ export class Overlay3D {
       walls: this._buildWallsJson(),
       tiles: this._buildTilesJson(),
       notes: this._buildNotesJson(),
+      regions: this._buildRegionsJson(),
+      terrain: this._buildTerrainJson(),
     })
 
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
@@ -540,6 +544,23 @@ export class Overlay3D {
     cam.lookAt(f.x, 0, f.z)
     cam.fov = 50
     cam.updateProjectionMatrix()
+  }
+
+  /**
+   * Grab-pan the top-down view by a screen-pixel delta — the world point under the cursor
+   * tracks it, like dragging Foundry's canvas. Screen px → world px via the camera's ground
+   * footprint (2·height·tan(fov/2) over the viewport height). Signs are the inverse of the
+   * arrow-key pan (drag the map, don't push the focus).
+   */
+  _trackPan(dx, dy) {
+    if (!this._trackFocus) this._trackFocus = this._defaultTrackFocus()
+    if (!this._trackDist) this._trackDist = (canvas?.dimensions?.size || 100) * 12
+    const H = this._container?.clientHeight || window.innerHeight || 900
+    const wpp = (2 * this._trackDist * Math.tan((50 / 2) * (Math.PI / 180))) / H
+    this._trackFocus.x -= dx * wpp
+    this._trackFocus.z -= dy * wpp
+    this._syncTrackedCamera()
+    this._render()
   }
 
   /** Default top-down pan focus (world XZ): the controlled token, else the scene centre. */
@@ -593,35 +614,85 @@ export class Overlay3D {
     const dt = this._fpLastTick ? Math.min(0.1, (now - this._fpLastTick) / 1000) : 0
     this._fpLastTick = now
     const k = this._keys
-    if (dt > 0 && this._fineMovement() && (k.w || k.a || k.s || k.d)) {
-      let mx = 0
-      let mz = 0
-      for (const key of ['w', 'a', 's', 'd']) {
-        if (!k[key]) continue
-        const d = this._fpMoveDir(key)
-        mx += d.x
-        mz += d.z
-      }
-      const len = Math.hypot(mx, mz)
-      if (len > 0) {
-        const size = canvas?.dimensions?.size || 100
-        const speed = size * 3.5 // px/sec (~3.5 grids/sec)
-        const dest = { x: this._fpCenter.x + (mx / len) * speed * dt, y: this._fpCenter.y + (mz / len) * speed * dt }
-        if (!this._moveBlocked(this._fpCenter, dest)) {
-          this._fpCenter = dest
-          this._faceMoveDir({ x: mx / len, z: mz / len }) // face where we walk
-          this._fpDirty = true
+    const moving = k.fwd || k.back || k.left || k.right
+    if (this._fineMovement()) {
+      // Fine (off-grid) movement — smooth, camera-relative, integrated per frame.
+      if (dt > 0 && moving) {
+        let mx = 0
+        let mz = 0
+        for (const sem of ['fwd', 'back', 'left', 'right']) {
+          if (!k[sem]) continue
+          const d = this._fpMoveDir(sem)
+          mx += d.x
+          mz += d.z
+        }
+        const len = Math.hypot(mx, mz)
+        if (len > 0) {
+          const size = canvas?.dimensions?.size || 100
+          const speed = size * 3.5 // px/sec (~3.5 grids/sec)
+          const dest = { x: this._fpCenter.x + (mx / len) * speed * dt, y: this._fpCenter.y + (mz / len) * speed * dt }
+          if (!this._moveBlocked(this._fpCenter, dest)) {
+            this._fpCenter = dest
+            this._fpDirty = true
+          }
         }
       }
+      if (this._fpDirty) {
+        if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes
+      } else if (!moving) {
+        this._syncExternalMove(tok) // idle → follow genuine external moves only
+      }
+    } else {
+      // Grid-locked movement (Foundry default on a gridded scene): glide smoothly
+      // cell-to-cell, each destination snapped to the grid. Hold to walk cell-by-
+      // cell, tap for one cell — the token never lands off-grid.
+      this._fpGridWalk(tok, dt)
+      if (!this._fpGoal && !moving) this._syncExternalMove(tok) // idle → genuine external moves only
     }
-    if (this._fpDirty) {
-      if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes
-    } else if (!k.w && !k.a && !k.s && !k.d) {
-      this._fpSyncLocalFromToken(tok) // idle → follow the token (external moves, discrete commits)
+    // Facing is LOCKED to the camera (mouse/arrows), not to movement: the character
+    // looks where you look. Camera-forward = -(cos az, sin az); persisted on commit.
+    this._fpHeading = (((Math.atan2(-Math.sin(this._charAzimuth), -Math.cos(this._charAzimuth)) * 180) / Math.PI - 90) % 360 + 360) % 360
+    // Elevation (Q/E) changed → rebuild the subject so its height stalk/base match the
+    // new floor gap THIS frame. `_fpSyncSubjectVisual` sets the mini's Y per frame, but
+    // the stalk length is baked at build time — a bare Y move leaves the pole the wrong
+    // length until an unrelated rebuild (the "one-move pole lag"). Detected locally so
+    // it's immune to when/whether Foundry's movement pipeline fires the update hook.
+    const elevNow = Number(tok.document.elevation || 0)
+    if (this._subjectElev === undefined) {
+      this._subjectElev = elevNow
+      this._fpActiveLevelId = this._activeLevel()?.id ?? null // baseline the floor with the elevation
+    } else if (elevNow !== this._subjectElev) {
+      this._subjectElev = elevNow
+      this._rebuildSubject(tok)
+      // Elevation drives vision: if rising/falling across a floor band changes the active
+      // level, re-slice the whole scene (walls/levels/backgrounds follow the character).
+      // Guarded to multi-level scenes so single-level scenes never pay a rebuild here.
+      if ((canvas?.scene?.levels?.size || 0) > 1) {
+        const lvlNow = this._activeLevel()?.id ?? null
+        if (lvlNow !== this._fpActiveLevelId) {
+          this._fpActiveLevelId = lvlNow
+          this._scheduleRebuild()
+        }
+      }
     }
     this._charUpdateSubjectVisibility(tok)
     this._fpSyncSubjectVisual(tok)
     this._fpPositionCamera(tok)
+  }
+
+  /** Rebuild the subject's 3D group (remove + re-add) so its height stalk/base reflect
+   * the current elevation — the actively-driven first-person subject skips the normal
+   * position-only updateToken rebuild, so its stalk is refreshed here on elevation change. */
+  _rebuildSubject(tok) {
+    try {
+      const id = tok.id
+      this._removeToken(id)
+      const fresh = canvas?.scene?.tokens?.get?.(id) || tok.document
+      const t = this._tokenJson(fresh)
+      if (t) this._viewer.applyDelta({ tokens: [t] })
+    } catch {
+      /* ignore — the next elevation change or hook rebuild corrects it */
+    }
   }
 
   /**
@@ -641,18 +712,18 @@ export class Overlay3D {
     g.position.set(this._fpCenter.x, elevPx, this._fpCenter.y)
   }
 
-  /** A unit move direction (world XZ) for a WASD key, relative to the CAMERA
-   * (Action-RPG): W = into the screen (away from the camera), S back, A/D screen
-   * left/right. The token aims independently at the cursor. */
-  _fpMoveDir(key) {
+  /** A unit move direction (world XZ) for a semantic move (from Foundry's move
+   * bindings), relative to the CAMERA: fwd = into the screen (the way the camera
+   * looks), back = away, right/left = strafe. The camera azimuth is the reference. */
+  _fpMoveDir(sem) {
     // _charAzimuth points from the token TO the camera; "forward" (into the screen)
     // is the opposite — the direction the camera looks.
     const f = { x: -Math.cos(this._charAzimuth), z: -Math.sin(this._charAzimuth) }
-    const r = { x: -f.z, z: f.x } // screen-right = forward rotated 90° in world XZ
-    if (key === 'w') return f
-    if (key === 's') return { x: -f.x, z: -f.z }
-    if (key === 'd') return r
-    if (key === 'a') return { x: -r.x, z: -r.z }
+    const r = { x: -f.z, z: f.x } // screen-right = forward × up in world XZ
+    if (sem === 'fwd') return f
+    if (sem === 'back') return { x: -f.x, z: -f.z }
+    if (sem === 'right') return r
+    if (sem === 'left') return { x: -r.x, z: -r.z }
     return { x: 0, z: 0 }
   }
 
@@ -670,10 +741,15 @@ export class Overlay3D {
     const cz = this._fpCenter.y
     cam.up.set(0, 1, 0)
     if (this._charDist < size * 0.5) {
-      // First person: at the eyes, looking where the token faces (the cursor).
-      const theta = (this._fpHeading + 90) * (Math.PI / 180)
+      // First person: at the eyes, looking along the CAMERA direction (mouse-look) —
+      // never the token facing, so walking/strafing can't spin the view. Pitch tilts
+      // the look up/down (42° = level, matching the 3rd-person neutral).
+      const fx = -Math.cos(this._charAzimuth)
+      const fz = -Math.sin(this._charAzimuth)
+      const pitchRad = (42 - (this._charPitch || 42)) * (Math.PI / 180)
+      const ch = Math.cos(pitchRad)
       cam.position.set(cx, eyeY, cz)
-      cam.lookAt(cx + Math.cos(theta) * size, eyeY, cz + Math.sin(theta) * size)
+      cam.lookAt(cx + fx * ch * size, eyeY + Math.sin(pitchRad) * size, cz + fz * ch * size)
     } else {
       // Third person: camera behind + above along the azimuth, looking at the token.
       const pitch = (this._charPitch || 42) * (Math.PI / 180)
@@ -683,17 +759,6 @@ export class Overlay3D {
       cam.lookAt(cx, eyeY, cz)
     }
     cam.updateProjectionMatrix()
-  }
-
-  /**
-   * Aim the token's facing at the cursor's position on its floor plane: raycast from
-   * the camera through the cursor to the ground at the token's elevation, then face
-   * that point. Sets _fpHeading + marks dirty so the new facing commits.
-   */
-  /** Turn the token to face a movement direction (world XZ) — it faces where it walks. */
-  _faceMoveDir(dir) {
-    if (!dir || (dir.x === 0 && dir.z === 0)) return
-    this._fpHeading = (((Math.atan2(dir.z, dir.x) * 180) / Math.PI - 90) % 360 + 360) % 360
   }
 
   /** 3D picking: the Foundry Token whose 3D model is under a client-px point, or null. */
@@ -715,6 +780,36 @@ export class Overlay3D {
     while (o && !o.userData?.tokenId) o = o.parent
     const id = o?.userData?.tokenId
     return id ? canvas?.tokens?.get?.(id) || null : null
+  }
+
+  /**
+   * Forgiving pick for CLICKS: the nearest token whose 3D group projects within a
+   * screen-space tolerance of the cursor. 3D minis are small/billboarded, so an exact
+   * ray hit is fiddly (the main reason selection feels harder than 2D); this makes a
+   * click *near* a token select it, while the nearest-wins rule avoids grabbing the
+   * wrong one. Hover still uses the exact `_pick` so highlighting stays crisp.
+   */
+  _pickNearest(clientX, clientY) {
+    const THREE = this._THREE
+    const cam = this._orbitCamera
+    if (!THREE || !cam || !this._viewer?.tokens?.size) return null
+    cam.updateMatrixWorld()
+    const w = window.innerWidth || 1
+    const h = window.innerHeight || 1
+    const v = new THREE.Vector3()
+    let bestId = null
+    let bestD = 44 // px tolerance
+    for (const [id, g] of this._viewer.tokens.entries()) {
+      if (!g?.visible) continue
+      g.getWorldPosition(v).project(cam)
+      if (v.z > 1) continue // behind the camera
+      const d = Math.hypot((v.x * 0.5 + 0.5) * w - clientX, (-v.y * 0.5 + 0.5) * h - clientY)
+      if (d < bestD) {
+        bestD = d
+        bestId = id
+      }
+    }
+    return bestId ? canvas?.tokens?.get?.(bestId) || null : null
   }
 
   /** Hover a 3D token → mirror it to Foundry's hover (native Target key + highlight). */
@@ -743,10 +838,11 @@ export class Overlay3D {
     if (this._container) this._container.style.cursor = tok ? 'pointer' : ''
   }
 
-  /** Click a 3D token → select (left) or target (right / Shift-left) — native selection. */
+  /** Click a 3D token → select (left) or target (right / Shift-left) — native selection.
+   * Falls back to the forgiving screen-space pick when the exact ray misses. */
   _onPickClick(event) {
     if (!this._visible) return // 3D picking works in every 3D mode
-    const tok = this._pick(event.clientX, event.clientY)
+    const tok = this._pick(event.clientX, event.clientY) || this._pickNearest(event.clientX, event.clientY)
     if (!tok) return
     event.preventDefault?.()
     event.stopImmediatePropagation?.()
@@ -763,6 +859,171 @@ export class Overlay3D {
         /* permission — ignore */
       }
     }
+  }
+
+  /**
+   * Character-view mouse, matching Foundry's button roles as closely as the 3D view
+   * allows:
+   *   - LEFT drag  → a selection MARQUEE: on release, target every token inside the
+   *                  box (AoE on a group of enemies). A bare left click selects the
+   *                  single token under it.
+   *   - RIGHT drag → mouse-look (Foundry uses right-drag to pan the canvas). A bare
+   *                  right click targets the single token under it.
+   * Free-Camera and Top-Down keep their existing hover-on-move + select-on-down.
+   */
+  _onCharDown(event) {
+    if (!this._visible) return
+    // Top-Down: LEFT-drag pans the view (grab-the-map, like Foundry's canvas); a bare
+    // left-click (no drag) still selects. Defer the pick to mouseup so a drag doesn't select.
+    if (this._mode === 'tracked' && event.button === 0) {
+      this._charDrag = { mode: 'trackpan', x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
+      return
+    }
+    if (this._mode !== 'firstperson') {
+      this._onPickClick(event) // Free: select on mousedown, unchanged
+      return
+    }
+    if (event.button === 2) {
+      this._charDrag = { mode: 'look', x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, button: 2, moved: false }
+      event.preventDefault?.()
+    } else if (event.button === 0) {
+      this._charDrag = { mode: 'marquee', x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, button: 0, moved: false }
+      event.preventDefault?.()
+    }
+  }
+
+  /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
+  _onCharMove(event) {
+    const d = this._charDrag
+    if (d && d.mode === 'trackpan') {
+      const dx = event.clientX - d.x
+      const dy = event.clientY - d.y
+      d.x = event.clientX
+      d.y = event.clientY
+      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 3) {
+        d.moved = true
+        document.body.style.cursor = 'grabbing'
+      }
+      if (d.moved) this._trackPan(dx, dy)
+      return
+    }
+    if (d && this._mode === 'firstperson') {
+      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 4) d.moved = true
+      if (d.mode === 'look') {
+        const dx = event.clientX - d.x
+        const dy = event.clientY - d.y
+        d.x = event.clientX
+        d.y = event.clientY
+        if (d.moved) this._applyCharLook(dx, dy)
+        return
+      }
+      if (d.mode === 'marquee') {
+        if (d.moved) this._marqueeUpdate(d.sx, d.sy, event.clientX, event.clientY)
+        return
+      }
+    }
+    this._onPickMove(event)
+  }
+
+  /** Mouse up: finish the marquee (target the enclosed group) or resolve a bare click. */
+  _onCharUp(event) {
+    const d = this._charDrag
+    this._charDrag = null
+    if (d && d.mode === 'trackpan') {
+      document.body.style.cursor = ''
+      if (!d.moved) this._onPickClick(event) // bare left-click → select the token under it
+      return
+    }
+    if (!d || this._mode !== 'firstperson') return
+    if (d.mode === 'marquee') {
+      this._marqueeClear()
+      if (d.moved) this._marqueeTarget(d.sx, d.sy, event.clientX, event.clientY) // box → target group
+      else this._onPickClick(event) // bare left-click → select the single token (control)
+      return
+    }
+    if (d.mode === 'look' && !d.moved) this._onPickClick(event) // bare right-click → target single
+  }
+
+  /** Draw/resize the on-screen selection marquee (viewport-fixed overlay). */
+  _marqueeUpdate(sx, sy, cx, cy) {
+    let el = this._marqueeEl
+    if (!el) {
+      el = document.createElement('div')
+      el.style.cssText = 'position:fixed;z-index:60;pointer-events:none;border:1px solid #ffb300;background:rgba(255,179,0,0.12);border-radius:2px'
+      document.body.appendChild(el)
+      this._marqueeEl = el
+    }
+    el.style.left = `${Math.min(sx, cx)}px`
+    el.style.top = `${Math.min(sy, cy)}px`
+    el.style.width = `${Math.abs(cx - sx)}px`
+    el.style.height = `${Math.abs(cy - sy)}px`
+  }
+
+  /** Remove the marquee overlay element. */
+  _marqueeClear() {
+    if (this._marqueeEl) {
+      this._marqueeEl.remove()
+      this._marqueeEl = null
+    }
+  }
+
+  /** Target every visible token whose 3D position projects inside the drag box (releasing
+   * prior targets); an empty box clears all targets — like Foundry's marquee, but targeting. */
+  _marqueeTarget(sx, sy, cx, cy) {
+    const THREE = this._THREE
+    const cam = this._orbitCamera
+    if (!THREE || !cam || !this._viewer?.tokens?.size) return
+    cam.updateMatrixWorld()
+    const w = window.innerWidth || 1
+    const h = window.innerHeight || 1
+    const minX = Math.min(sx, cx)
+    const maxX = Math.max(sx, cx)
+    const minY = Math.min(sy, cy)
+    const maxY = Math.max(sy, cy)
+    const v = new THREE.Vector3()
+    const ids = []
+    for (const [id, g] of this._viewer.tokens.entries()) {
+      if (!g?.visible) continue
+      g.getWorldPosition(v).project(cam)
+      if (v.z > 1) continue // behind the camera
+      const px = (v.x * 0.5 + 0.5) * w
+      const py = (-v.y * 0.5 + 0.5) * h
+      if (px >= minX && px <= maxX && py >= minY && py <= maxY) ids.push(id)
+    }
+    if (!ids.length) {
+      try {
+        for (const t of Array.from(game.user?.targets || [])) t.setTarget(false, { releaseOthers: false })
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+    let first = true
+    for (const id of ids) {
+      const tok = canvas?.tokens?.get?.(id)
+      if (!tok) continue
+      try {
+        tok.setTarget(true, { releaseOthers: first })
+        first = false
+      } catch {
+        /* permission — ignore */
+      }
+    }
+  }
+
+  /**
+   * Apply an MMO look-drag delta (client px) to the character camera. Azimuth in
+   * radians, pitch in degrees; the constants match the demo's 0.006 rad/px feel
+   * (0.006 rad ≈ 0.344°). Polarity is the confirmed one: drag right swings the
+   * camera right, drag down looks down.
+   */
+  _applyCharLook(dx, dy) {
+    this._charAzimuth += dx * 0.006
+    this._charAzimuthInit = true // user is steering — stop auto-seeding from heading
+    // Non-inverted vertical: mouse UP (dy<0) → lower pitch → look up; mouse DOWN → look down.
+    this._charPitch = Math.max(5, Math.min(85, this._charPitch + dy * 0.344))
+    const tok = this._firstPersonToken()
+    if (tok) this._fpPositionCamera(tok) // camera direction is the azimuth in both 3rd & 1st person
   }
 
   /** Show the subject token's model in 3rd person; hide it in 1st (the camera is
@@ -782,6 +1043,26 @@ export class Overlay3D {
   }
 
   /**
+   * Idle re-anchor: snap `_fpCenter` to the token ONLY on a genuine EXTERNAL move (a
+   * GM drag, a teleport, another client). Our own just-committed cell already equals
+   * `_fpCenter` to within rounding, so re-anchoring to it every idle frame would
+   * re-nudge the camera by sub-pixels continuously — the residual end-of-move camera
+   * jitter. A few-px threshold ignores that while still catching real moves.
+   */
+  _syncExternalMove(tok) {
+    if (!this._fpCenter) return this._fpSyncLocalFromToken(tok)
+    // Our own commit is an ASYNC doc.update: for a short window after it the token
+    // still reads its PRE-move centre. Re-anchoring `_fpCenter` to that stale value is
+    // exactly the post-move camera jitter AND the "moves in the last input" lag — the
+    // mini/camera get yanked back a cell until the update lands. Trust the local centre
+    // during that window; after it, a real difference is a genuine external move.
+    const now = typeof performance !== 'undefined' ? performance.now() : 0
+    if (now - (this._fpCommitAt || 0) < 300) return
+    const c = tok.center
+    if (c && Math.hypot(c.x - this._fpCenter.x, c.y - this._fpCenter.y) > 3) this._fpSyncLocalFromToken(tok)
+  }
+
+  /**
    * Commit the local camera state (position + facing) to the token document. No
    * `teleport` — Foundry's default "walk" movement action animates the sprite and
    * shows its native measuring ruler during the move (matching the 2D view), and
@@ -795,12 +1076,13 @@ export class Overlay3D {
     try {
       const doc = tok.document
       const { w, h } = this._tokenSizePx(doc)
-      // showRuler: our update has no `method` (defaults to "api"), which — unlike
-      // Foundry's own "dragging" — defaults showRuler to false. Ask for it explicitly
-      // so the native measuring ruler appears during the move, same as the 2D view.
+      // animate:false — we already render the motion locally (the glide + camera
+      // follow `_fpCenter` every frame), so Foundry's native token animation is
+      // redundant and, running underneath, fires mid-flight update hooks that fight
+      // our per-frame sync. Commit the final cell position instantly instead.
       doc.update(
         { x: Math.round(this._fpCenter.x - w / 2), y: Math.round(this._fpCenter.y - h / 2), rotation: Math.round(this._fpHeading) },
-        { showRuler: true },
+        { animate: false },
       )
     } catch {
       /* permission / movement rejected — ignore */
@@ -809,14 +1091,75 @@ export class Overlay3D {
     this._fpDirty = false
   }
 
-  /** One grid-step in a unit direction (world XZ), blocked by walls. */
-  _fpGridStep(tok, dir) {
+  /**
+   * Grid-locked walk, run per frame in grid mode. Glides `_fpCenter` toward the
+   * current goal cell (`_fpGoal`); on arrival — or when idle with a key held — picks
+   * the next cell one grid step along the camera-relative input and snaps it to the
+   * grid. Grid-locked like Foundry, yet fluid: the camera and the subject's 3D mini
+   * follow `_fpCenter` every frame, so there's no per-cell teleport.
+   */
+  _fpGridWalk(tok, dt) {
     const size = canvas?.dimensions?.size || 100
-    const dest = { x: this._fpCenter.x + dir.x * size, y: this._fpCenter.y + dir.z * size }
-    if (this._moveBlocked(this._fpCenter, dest)) return // a wall blocks the step
-    this._fpCenter = dest
-    this._faceMoveDir(dir) // face where we walk
-    this._fpCommitNow(tok)
+    // 1) Glide toward the active goal cell.
+    if (this._fpGoal) {
+      const gx = this._fpGoal.x - this._fpCenter.x
+      const gy = this._fpGoal.y - this._fpCenter.y
+      const dist = Math.hypot(gx, gy)
+      const step = size * 4 * Math.max(0, dt) // ~4 cells/sec glide
+      if (dist <= step || dist < 1) {
+        this._fpCenter = { x: this._fpGoal.x, y: this._fpGoal.y }
+        this._fpGoal = null
+        this._fpDirty = true
+        this._fpCommitNow(tok) // arrived on a cell → persist
+      } else {
+        this._fpCenter = { x: this._fpCenter.x + (gx / dist) * step, y: this._fpCenter.y + (gy / dist) * step }
+        this._fpDirty = true
+      }
+    }
+    // 2) Not gliding + a key held → start the next cell. Quantize the camera-relative
+    // move to one of 8 grid directions FIRST, then step exactly one cell that way
+    // (snapped) — crisp and predictable, never a fuzzy diagonal that snaps oddly.
+    if (!this._fpGoal) {
+      const k = this._keys
+      let mx = 0
+      let mz = 0
+      for (const sem of ['fwd', 'back', 'left', 'right']) {
+        if (!k[sem]) continue
+        const d = this._fpMoveDir(sem)
+        mx += d.x
+        mz += d.z
+      }
+      if (mx || mz) {
+        const oct = Math.round(Math.atan2(mz, mx) / (Math.PI / 4)) * (Math.PI / 4)
+        const gdir = { x: Math.round(Math.cos(oct)), z: Math.round(Math.sin(oct)) }
+        if (gdir.x || gdir.z) {
+          const raw = { x: this._fpCenter.x + gdir.x * size, y: this._fpCenter.y + gdir.z * size }
+          const dest = this._snapToGrid(raw, tok)
+          if (!this._moveBlocked(this._fpCenter, dest) && Math.hypot(dest.x - this._fpCenter.x, dest.y - this._fpCenter.y) > 1) {
+            this._fpGoal = dest // facing stays locked to the camera (set in _fpStep), not movement
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Snap a world-px point to the grid using the token's footprint (Foundry-native),
+   * so grid-mode moves stay grid-aligned for any token size. On a gridless scene
+   * `getSnappedPoint` returns the point unchanged → movement stays free.
+   */
+  _snapToGrid(point, tok) {
+    const grid = canvas?.grid
+    if (!grid?.getSnappedPoint) return point
+    try {
+      const { w, h } = this._tokenSizePx(tok.document)
+      const M = CONST.GRID_SNAPPING_MODES
+      const tl = grid.getSnappedPoint({ x: point.x - w / 2, y: point.y - h / 2 }, { mode: (M && M.TOP_LEFT_CORNER) || 0, resolution: 1 })
+      if (tl && Number.isFinite(tl.x) && Number.isFinite(tl.y)) return { x: tl.x + w / 2, y: tl.y + h / 2 }
+    } catch {
+      /* fall through to the raw point */
+    }
+    return point
   }
 
   /** Whether a move origin→dest crosses a movement-blocking wall. */
@@ -832,25 +1175,35 @@ export class Overlay3D {
   }
 
   /**
-   * Enable/disable first-person input: WASD (capture phase, preempting Foundry's
-   * keys) for movement — W/S forward/back, A/D strafe — and the mouse WHEEL for
-   * turning (Foundry's rotation snap: 15°, or 45° with Shift). Turning is a
-   * deliberate, separate action, so strafing never changes facing.
+   * Enable/disable character-view input: WASD (capture phase, preempting Foundry's
+   * keys) for camera-relative movement, press-and-drag MOUSE-LOOK to rotate the
+   * camera (MMO style — see `_applyCharLook`), and the WHEEL to zoom between 3rd and
+   * 1st person. A non-dragged press is a click that selects/targets the token under
+   * it. Arrow keys still nudge azimuth/pitch as a keyboard fallback.
    */
   _setFpInput(on) {
     if (on && !this._keyHandler) {
       this._keyHandler = (e) => this._onKeyDown(e)
       this._keyUpHandler = (e) => this._onKeyUp(e)
       this._wheelHandler = (e) => this._onWheel(e)
-      this._charMoveHandler = (e) => this._onPickMove(e)
-      this._charClickHandler = (e) => this._onPickClick(e)
+      this._charMoveHandler = (e) => this._onCharMove(e)
+      this._charClickHandler = (e) => this._onCharDown(e)
+      this._charUpHandler = (e) => this._onCharUp(e)
+      this._charCtxHandler = (e) => {
+        if (this._mode === 'firstperson') e.preventDefault() // don't pop the menu on right-drag-look
+      }
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
       this._container?.addEventListener('wheel', this._wheelHandler, { passive: false, capture: true })
       this._container?.addEventListener('mousemove', this._charMoveHandler)
       this._container?.addEventListener('mousedown', this._charClickHandler)
-      this._keys = { w: false, a: false, s: false, d: false }
+      this._container?.addEventListener('contextmenu', this._charCtxHandler)
+      window.addEventListener('mouseup', this._charUpHandler, true) // catch drag-release outside the canvas
+      this._charDrag = null
+      this._keys = { fwd: false, back: false, left: false, right: false }
+      this._controlMap = this._buildControlMap() // honor the user's Foundry keybindings
       this._fpCenter = null
+      this._fpGoal = null
       this._fpLastTick = 0
       this._fpPitch = 0
       this._charDist = (canvas?.dimensions?.size || 100) * 4 // 3rd-person by default
@@ -865,11 +1218,17 @@ export class Overlay3D {
       this._container?.removeEventListener('wheel', this._wheelHandler, { capture: true })
       this._container?.removeEventListener('mousemove', this._charMoveHandler)
       this._container?.removeEventListener('mousedown', this._charClickHandler)
+      this._container?.removeEventListener('contextmenu', this._charCtxHandler)
+      window.removeEventListener('mouseup', this._charUpHandler, true)
       this._keyHandler = null
       this._keyUpHandler = null
       this._wheelHandler = null
       this._charMoveHandler = null
       this._charClickHandler = null
+      this._charUpHandler = null
+      this._charCtxHandler = null
+      this._charDrag = null
+      this._marqueeClear() // drop any in-progress selection rectangle
       this._cursor = null
       // clear any 3D-pick hover mirrored onto Foundry
       try {
@@ -879,7 +1238,7 @@ export class Overlay3D {
         /* ignore */
       }
       this._pickHoverId = null
-      this._keys = { w: false, a: false, s: false, d: false }
+      this._keys = { fwd: false, back: false, left: false, right: false }
       if (this._container) this._container.style.cursor = ''
       // The subject model is hidden in 1st person — restore it for the other modes.
       try {
@@ -928,14 +1287,16 @@ export class Overlay3D {
     const stepPx = size * 0.75
     this._charDist = Math.max(0, Math.min(size * 10, this._charDist + (event.deltaY > 0 ? stepPx : -stepPx)))
     this._fpPositionCamera(tok)
+    this._maybeResliceOnFpZoom() // crossing the eye-height threshold flips the enclosed lens
   }
 
   /**
-   * First-person WASD keydown: track held keys (fine movement runs per frame),
-   * and step one grid on the initial press in grid mode — W/S forward/back, A/D
-   * move relative to the camera (the cursor aims the token). Walls block
-   * movement. Intercepted so Foundry's own keys don't also fire; ignored while
-   * typing in a field.
+   * Character-view / Top-Down keydown, routed through Foundry's OWN keybindings so
+   * user rebindings are honored (see `_buildControlMap`). Character view: the move
+   * bindings (WASD by default) drive camera-relative grid movement; the pan bindings
+   * (arrows) turn the camera; the zoom bindings change the 3rd↔1st distance. Modified
+   * chords (Ctrl/Meta/Alt) and unmapped keys stay native (target, ruler, E/Q, copy…).
+   * Ignored while typing in a field.
    */
   _onKeyDown(event) {
     if (!this._visible) return
@@ -944,56 +1305,91 @@ export class Overlay3D {
     const t = event.target
     const tag = (t?.tagName || '').toLowerCase()
     if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
-    const key = (event.key || '').toLowerCase()
-    const isArrow = key === 'arrowleft' || key === 'arrowright' || key === 'arrowup' || key === 'arrowdown'
-    // Top-Down: arrow keys PAN the camera focus across the board.
+    if (event.ctrlKey || event.metaKey || event.altKey) return // let Foundry handle chords
+    const sem = (this._controlMap || {})[event.code]
+    if (!sem) return // unmapped → native (target, ruler, elevation E/Q, …)
+
+    // Top-Down: the pan bindings shift the tracked-camera focus; token-move keys are native.
     if (m === 'tracked') {
-      if (!isArrow) return
+      if (sem !== 'yawLeft' && sem !== 'yawRight' && sem !== 'pitchUp' && sem !== 'pitchDown') return
       event.preventDefault()
       event.stopImmediatePropagation()
       if (!this._trackFocus) this._trackFocus = this._defaultTrackFocus()
       const step = (canvas?.dimensions?.size || 100) * 1.5
-      if (key === 'arrowleft') this._trackFocus.x -= step
-      else if (key === 'arrowright') this._trackFocus.x += step
-      else if (key === 'arrowup') this._trackFocus.z -= step
+      if (sem === 'yawLeft') this._trackFocus.x -= step
+      else if (sem === 'yawRight') this._trackFocus.x += step
+      else if (sem === 'pitchUp') this._trackFocus.z -= step
       else this._trackFocus.z += step
       this._syncTrackedCamera()
       this._render()
       return
     }
-    // First-person: WASD move + arrows orbit the camera.
-    const isWasd = key === 'w' || key === 'a' || key === 's' || key === 'd'
-    if (!isArrow && !isWasd) return // leave every other key native (targeting, etc.)
+
+    // Character view.
     const tok = this._firstPersonToken()
     if (!tok?.document) return
     event.preventDefault()
     event.stopImmediatePropagation()
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
-    if (isArrow) {
-      const yaw = (Math.PI / 180) * 6
-      if (key === 'arrowleft') this._charAzimuth -= yaw
-      else if (key === 'arrowright') this._charAzimuth += yaw
-      else if (key === 'arrowup') this._charPitch = Math.min(85, this._charPitch + 4)
-      else this._charPitch = Math.max(5, this._charPitch - 4)
-      this._charAzimuthInit = true // the user is steering the camera now
-      this._fpPositionCamera(tok)
+    if (sem === 'fwd' || sem === 'back' || sem === 'left' || sem === 'right') {
+      this._keys[sem] = true // integrated per frame (_fpGridWalk / fine path)
       return
     }
-    // WASD moves the token (camera-relative); it faces its movement direction.
-    this._keys[key] = true
-    if (event.repeat) return // grid steps fire once per press; fine movement is per-frame
-    if (!this._fineMovement()) this._fpGridStep(tok, this._fpMoveDir(key))
+    // Camera controls: pan bindings turn the camera, zoom bindings dolly 3rd↔1st.
+    const yaw = (Math.PI / 180) * 6
+    const size = canvas?.dimensions?.size || 100
+    if (sem === 'yawLeft') this._charAzimuth -= yaw
+    else if (sem === 'yawRight') this._charAzimuth += yaw
+    else if (sem === 'pitchUp') this._charPitch = Math.max(5, this._charPitch - 4) // arrow up → look up
+    else if (sem === 'pitchDown') this._charPitch = Math.min(85, this._charPitch + 4)
+    else if (sem === 'zoomIn') this._charDist = Math.max(0, this._charDist - size * 0.75)
+    else if (sem === 'zoomOut') this._charDist = Math.min(size * 10, this._charDist + size * 0.75)
+    this._charAzimuthInit = true // the user is steering the camera now
+    this._fpPositionCamera(tok)
+    if (sem === 'zoomIn' || sem === 'zoomOut') this._maybeResliceOnFpZoom()
   }
 
-  /** First-person WASD keyup: release the key; commit the final pose when idle. */
+  /** Release a held move key. Grid mode commits on each cell arrival, so no commit
+   * here (committing mid-glide would snap the token to an off-cell spot — the "re-
+   * move into the final square" jitter); only fine (off-grid) mode commits on release. */
   _onKeyUp(event) {
-    const key = (event.key || '').toLowerCase()
-    if (key !== 'w' && key !== 'a' && key !== 's' && key !== 'd') return
-    this._keys[key] = false
-    if (!this._keys.w && !this._keys.a && !this._keys.s && !this._keys.d && this._fpDirty) {
+    const sem = (this._controlMap || {})[event.code]
+    if (sem !== 'fwd' && sem !== 'back' && sem !== 'left' && sem !== 'right') return
+    this._keys[sem] = false
+    const idle = !this._keys.fwd && !this._keys.back && !this._keys.left && !this._keys.right
+    if (this._fineMovement() && idle && this._fpDirty) {
       const tok = this._firstPersonToken()
       if (tok?.document) this._fpCommitNow(tok)
     }
+  }
+
+  /**
+   * Build a { event.code → semantic } map from Foundry's LIVE keybindings, so
+   * character-view controls follow whatever the user has bound (not hardcoded WASD).
+   * Movement (moveUp/Down/Left/Right) → camera-relative fwd/back/left/right; camera
+   * pan (panUp/Down/Left/Right) → pitch/yaw; zoom (zoomIn/Out) → dolly. Anything not
+   * listed here (target, ruler, ascend/descend, selectAll, …) is left to Foundry.
+   */
+  _buildControlMap() {
+    const map = {}
+    const add = (action, sem) => {
+      try {
+        for (const b of game.keybindings.get('core', action) || []) if (b?.key) map[b.key] = sem
+      } catch {
+        /* action not registered in this Foundry build */
+      }
+    }
+    add('moveUp', 'fwd')
+    add('moveDown', 'back')
+    add('moveLeft', 'left')
+    add('moveRight', 'right')
+    add('panUp', 'pitchUp')
+    add('panDown', 'pitchDown')
+    add('panLeft', 'yawLeft')
+    add('panRight', 'yawRight')
+    add('zoomIn', 'zoomIn')
+    add('zoomOut', 'zoomOut')
+    return map
   }
 
   /**
@@ -1025,8 +1421,16 @@ export class Overlay3D {
     }
     this._setFpInput(this._visible) // keyboard + wheel + 3D-pick mouse for every 3D mode
     if (m === 'orbit') this.setView('default')
-    else if (m === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
-    else this._syncTrackedCamera() // TRUE top-down (directly overhead)
+    else if (m === 'firstperson') {
+      // Clear stale movement on every (re-)entry — switching 3D modes doesn't re-run
+      // _setFpInput (its handlers are already bound), so a leftover glide goal or a
+      // held key would otherwise replay a turn late. Re-anchor to the token's position.
+      this._fpGoal = null
+      this._keys = { fwd: false, back: false, left: false, right: false }
+      this._fpCenter = null
+      this._subjectElev = undefined
+      this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
+    } else this._syncTrackedCamera() // TRUE top-down (directly overhead)
     this._render()
   }
 
@@ -1126,7 +1530,7 @@ export class Overlay3D {
     this._controlBar.style.display = this._visible ? '' : 'none'
     this._controlBar.textContent =
       m === 'firstperson'
-        ? 'WASD move · arrows turn camera · click select/target · scroll zoom'
+        ? 'WASD move · right-drag look · left-drag target box · Q/E up-down · scroll zoom'
         : m === 'tracked'
           ? 'arrows pan · scroll zoom · click select/target'
           : 'drag rotate · scroll zoom · click select/target'
@@ -1152,48 +1556,213 @@ export class Overlay3D {
    * empty return lets the core's flat-color ground apply (blank-slate boot).
    */
   _buildLevelsJson() {
-    const out = []
-    const addQuad = (level, texData, which) => {
-      const src = texData?.src
-      if (!src) return
-      if (/\.(webm|mp4|m4v|ogv)$/i.test(src)) return // video src: image-only for now
-      const t = level?.textures || {}
-      const at = Number(texData.alphaThreshold)
-      const tint = Number(texData.tint)
-      const rot = Number(t.rotation)
-      out.push({
-        elevation: this._levelElevPx(level, which),
-        which,
-        src: this._assetUrl(src),
-        alphaTest: Number.isFinite(at) ? at : 0.75,
-        tint: Number.isFinite(tint) && tint !== 0xffffff ? tint : undefined, // Foundry Color is a Number subclass
-        rotation: Number.isFinite(rot) && rot !== 0 ? -(rot * Math.PI) / 180 : undefined,
-        offsetX: Number(t.offsetX) || 0,
-        offsetY: Number(t.offsetY) || 0,
-      })
-    }
     const scene = canvas?.scene
     const levels = scene?.levels?.contents ?? (Array.isArray(scene?.levels) ? scene.levels : [])
-    if (levels.length) {
-      // Sort by `sort` so equal-elevation floors keep a stable stacking order.
-      const sorted = [...levels].sort((a, b) => (Number(a.sort) || 0) - (Number(b.sort) || 0))
-      const cut = this._sliceCut()
-      const activeBase = this._levelBase(this._activeLevel() || sorted[sorted.length - 1])
-      for (const level of sorted) {
-        const lb = this._levelBase(level)
-        if (lb > cut + 0.01) continue // floor above the slice → hidden (cutaway)
-        if (!this._userCanSeeLevel(level)) continue // players: only floors they can access
-        addQuad(level, level.background, 'bottom')
-        // Roof/foreground only for floors strictly BELOW the active one, so a
-        // ceiling never blocks the view down into the current floor.
-        if (lb < activeBase - 0.01) addQuad(level, level.foreground, 'top')
+    return buildLevelsJson(levels, {
+      levelElevPx: (level, which) => this._levelElevPx(level, which),
+      assetUrl: (src) => this._assetUrl(src),
+      sliceCut: () => this._sliceCut(),
+      levelBase: (level) => this._levelBase(level),
+      activeLevel: () => this._activeLevel(),
+      userCanSeeLevel: (level) => this._userCanSeeLevel(level),
+      backgroundSrc: () => this._backgroundSrc(),
+      firstPerson: this._isTrueFirstPerson(),
+      levelVisibleFromActive: (level) => this._levelVisibleFromActive(level),
+    })
+  }
+
+  /**
+   * Native Foundry Regions → viewer terrain (flat-topped tiers). OPT-IN: a region renders
+   * as terrain only when it carries `flags['crit-fumble-core'].terrain === true` (so native
+   * scenes and non-terrain regions — lighting/darkness zones — are untouched). The standable
+   * SURFACE height defaults to the region's own `elevation.bottom` (native-first), overridable
+   * by an optional `surface` flag; the skirt drops to an optional `base` flag (else 0 = sea
+   * level). Geometry comes straight from Foundry's resolved `triangulation` + `polygonTree`.
+   */
+  _buildRegionsJson() {
+    const scene = canvas?.scene
+    const regions = scene?.regions?.contents ?? (Array.isArray(scene?.regions) ? scene.regions : [])
+    if (!regions.length) return []
+    const bg = this._backgroundSrc()
+    const mapUrl = bg ? this._assetUrl(bg) : undefined // draped over raised tops = the lifted map content
+    const resolved = []
+    for (const doc of regions) {
+      try {
+        if (!doc || doc.hidden) continue
+        const cfg = doc.flags?.['crit-fumble-core'] || {}
+        if (cfg.terrain !== true) continue // opt-in only
+        const surface = Number.isFinite(Number(cfg.surface))
+          ? Number(cfg.surface)
+          : Number.isFinite(doc.elevation?.bottom)
+            ? Number(doc.elevation.bottom)
+            : 0
+        const tri = doc.triangulation || doc.polygonTree?.triangulation
+        if (!tri?.vertices?.length || !tri?.indices?.length) continue
+        // Base (skirt bottom): explicit flag wins; else sit the tier on the heightmap surface
+        // beneath it (a cliff/mesa rises vertically from the ground), else sea level (0).
+        let base
+        if (Number.isFinite(Number(cfg.base))) base = Number(cfg.base)
+        else {
+          const c = this._regionCentroid(doc)
+          const t = c ? this._sampleTerrain(c.x, c.y) : null
+          base = t != null ? t : 0
+        }
+        resolved.push({
+          id: doc.id,
+          surface,
+          base,
+          vertices: Array.from(tri.vertices),
+          indices: Array.from(tri.indices),
+          rings: this._regionRings(doc),
+          // Default: drape the scene map over the raised top (lifted island content). An
+          // explicit colour flag overrides to a flat-coloured tier instead.
+          src: cfg.color ? undefined : mapUrl,
+          color: parseHexColor(cfg.color, null) ?? (Number.isFinite(Number(doc.color)) ? Number(doc.color) : undefined),
+        })
+      } catch {
+        /* skip a malformed region */
       }
     }
-    if (!out.length) {
-      const src = this._backgroundSrc()
-      if (src) out.push({ elevation: 0, which: 'bottom', src: this._assetUrl(src), alphaTest: 0 })
+    return buildRegionsJson(resolved, { pxPerUnit: this._pxPerUnit() })
+  }
+
+  /**
+   * Continuous heightmap terrain from the OPTIONAL scene flag
+   * `flags['crit-fumble-core'].heightfield = { cols, rows, heights (grid units, row-major) }`.
+   * Absent → null (the core keeps its flat map floor; native scenes are untouched). The map
+   * texture drapes over the displaced surface.
+   */
+  _buildTerrainJson() {
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    if (!field) return null
+    const bg = this._backgroundSrc()
+    return buildTerrainJson(field, {
+      pxPerUnit: this._pxPerUnit(),
+      src: bg ? this._assetUrl(bg) : undefined,
+    })
+  }
+
+  /**
+   * Bilinear height (grid units) of the terrain field at scene-canvas (x, y), or null when
+   * there is no field. Lets tokens/other placeables sit ON the terrain instead of the flat
+   * floor. The field spans the scene rect (canvas dimensions.sceneRect).
+   */
+  _sampleTerrain(x, y) {
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    const cols = Math.floor(Number(field?.cols))
+    const rows = Math.floor(Number(field?.rows))
+    const data = field?.heights
+    if (!(cols >= 2) || !(rows >= 2) || !Array.isArray(data) || data.length < cols * rows) return null
+    const rect = canvas?.dimensions?.sceneRect || { x: 0, y: 0, width: canvas?.dimensions?.width || 1, height: canvas?.dimensions?.height || 1 }
+    const u = Math.min(1, Math.max(0, (x - rect.x) / rect.width)) * (cols - 1)
+    const v = Math.min(1, Math.max(0, (y - rect.y) / rect.height)) * (rows - 1)
+    const i0 = Math.floor(u)
+    const j0 = Math.floor(v)
+    const i1 = Math.min(cols - 1, i0 + 1)
+    const j1 = Math.min(rows - 1, j0 + 1)
+    const fx = u - i0
+    const fy = v - j0
+    const at = (i, j) => Number(data[j * cols + i]) || 0
+    const top = at(i0, j0) * (1 - fx) + at(i1, j0) * fx
+    const bot = at(i0, j1) * (1 - fx) + at(i1, j1) * fx
+    return top * (1 - fy) + bot * fy
+  }
+
+  /** Approximate centroid (canvas px) of a region — the mean of its first outer ring's
+   * points — used to sample the terrain height the tier sits on. */
+  _regionCentroid(doc) {
+    const pts = doc?.polygonTree?.children?.[0]?.points
+    if (!pts || pts.length < 6) return null
+    let sx = 0
+    let sy = 0
+    const n = Math.floor(pts.length / 2)
+    for (let i = 0; i < n; i++) {
+      sx += pts[i * 2]
+      sy += pts[i * 2 + 1]
     }
-    return out
+    return { x: sx / n, y: sy / n }
+  }
+
+  /** Boundary loops (outer rings + holes) from Foundry's resolved polygon tree, flat
+   * [x,y,…] canvas px — the vertical skirt walls. */
+  _regionRings(doc) {
+    const rings = []
+    const walk = (node) => {
+      for (const child of node?.children || []) {
+        const pts = child.points
+        if (pts && pts.length >= 6) rings.push(Array.from(pts))
+        walk(child) // a hole (child of an outer ring) gets its own skirt too
+      }
+    }
+    walk(doc?.polygonTree)
+    return rings
+  }
+
+  /**
+   * TRUE first-person: the character-view camera zoomed all the way in to eye height
+   * (`_charDist` below half a grid — the same split the camera + subject-model visibility
+   * use). The pulled-back third-person sub-state (the DEFAULT on entry) is NOT true FP and
+   * keeps the top-down-style cutaway. Only true FP gets the enclosed lens: own ceiling, and
+   * only the character's floor + authored visible-through floors.
+   */
+  _isTrueFirstPerson() {
+    return this._mode === 'firstperson' && this._charDist < (canvas?.dimensions?.size || 100) * 0.5
+  }
+
+  /**
+   * Re-slice once when the camera crosses the eye-height threshold, since the enclosed
+   * lens (own ceiling + only visible-through floors) is baked at scene-build time. Only
+   * rebuilds on an actual state change, and only when the scene has levels (else the lens
+   * is a no-op). Lazily baselines so the first zoom after entering FP doesn't churn.
+   */
+  _maybeResliceOnFpZoom() {
+    const now = this._isTrueFirstPerson()
+    if (this._wasTrueFp === undefined) {
+      this._wasTrueFp = now
+      return
+    }
+    if (now !== this._wasTrueFp) {
+      this._wasTrueFp = now
+      if ((canvas?.scene?.levels?.size || 0) > 0) this._scheduleRebuild()
+    }
+  }
+
+  /**
+   * Whether a level is visible from the active one via Foundry's authored inter-level
+   * visibility (Level.visibility.levels — the `isVisible` mirror). The active level always
+   * sees itself. Consulted only in true first-person (openings looked through).
+   */
+  _levelVisibleFromActive(level) {
+    const active = this._activeLevel()
+    if (!active || active === level) return true
+    const set = active.visibility?.levels
+    return !!(set && typeof set.has === 'function' && set.has(level.id))
+  }
+
+  /**
+   * True-first-person doc visibility: a placeable shows when its floor is the active level
+   * or an authored visible-through floor AND the player may see that floor (availableLevels).
+   * Keeps walls/tiles/lights/tokens consistent with the level planes buildLevelsJson draws —
+   * so a floor whose plane is hidden never leaks its geometry. Empty per-doc levels-set = all floors.
+   */
+  _docOnVisibleLevel(doc) {
+    const active = this._activeLevel()
+    if (!active) return true
+    const lvls = canvas?.scene?.levels
+    const visible = (id) => {
+      const lvl = id && lvls?.get?.(id)
+      if (!lvl) return id === active.id
+      if (!this._userCanSeeLevel(lvl)) return false // player availableLevels gate — matches the plane gate
+      return lvl.id === active.id || this._levelVisibleFromActive(lvl)
+    }
+    const set = doc?.levels
+    if (set !== undefined) {
+      const ids = set && typeof set[Symbol.iterator] === 'function' ? [...set] : []
+      if (!ids.length) return true // all-floors doc
+      return ids.some(visible)
+    }
+    if (doc?.level !== undefined) return visible(doc.level)
+    return true
   }
 
   /**
@@ -1237,10 +1806,7 @@ export class Overlay3D {
 
   /** A Level's finite base elevation in grid units (0 if unknown/open). */
   _levelBase(level) {
-    const b = level?.elevation?.base
-    if (Number.isFinite(Number(b))) return Number(b)
-    const bottom = level?.elevation?.bottom
-    return Number.isFinite(Number(bottom)) ? Number(bottom) : 0
+    return levelBase(level) // pure, unit-tested; open (null) bottom = min(top,0) per the v14 schema
   }
 
   /** Base elevation of a level by id (0 if unknown). */
@@ -1252,9 +1818,7 @@ export class Overlay3D {
 
   /** A Level's top elevation in grid units; +Infinity for an open (null) top. */
   _levelTop(level) {
-    const t = level?.elevation?.top
-    if (t === null || t === undefined) return Infinity
-    return Number.isFinite(Number(t)) ? Number(t) : Infinity
+    return levelTop(level)
   }
 
   /** Default wall height in grid-distance units (~2 grid squares) when unknown. */
@@ -1305,17 +1869,38 @@ export class Overlay3D {
     const scene = canvas?.scene
     const lvls = scene?.levels
     if (!lvls || !lvls.size) return null
-    // Focus-follow (opt-in): a selected token's floor takes priority.
-    if (this._focusFollowEnabled()) {
-      const tid = canvas?.tokens?.controlled?.[0]?.document?.level
-      if (tid && lvls.get?.(tid)) return lvls.get(tid)
-    }
-    // Otherwise follow Foundry's navigated/viewed level (its own UI behavior).
-    if (canvas?.level) return canvas.level
-    if (scene._view && lvls.get?.(scene._view)) return lvls.get(scene._view)
-    let top = null
-    for (const l of lvls.contents || []) if (!top || this._levelBase(l) > this._levelBase(top)) top = l
-    return top
+    // Delegate the precedence to the pure resolver. In firstperson (character) view the
+    // SUBJECT's floor wins outright — regardless of the off-by-default focus-follow toggle
+    // or where the GM navigated (canvas.level) — because the camera is anchored on the
+    // character. Every other mode reproduces the legacy chain exactly.
+    return resolveActiveLevel({
+      mode: this._mode,
+      get: (id) => (id && lvls.get?.(id)) || null,
+      firstPersonLevelId: this._firstPersonLevelId(),
+      focusFollow: this._focusFollowEnabled(),
+      focusLevelId: canvas?.tokens?.controlled?.[0]?.document?.level,
+      canvasLevel: canvas?.level || null,
+      viewLevelId: scene._view,
+      allLevels: lvls.contents || [],
+      levelBase: (l) => this._levelBase(l),
+    })
+  }
+
+  /**
+   * The floor the first-person SUBJECT is on, for slicing the view. Derived from the
+   * character's ELEVATION first (so moving up/down with Q/E re-slices — elevation drives
+   * vision), falling back to the token's authored `level` membership. Undefined when there
+   * is no subject, so _activeLevel then falls through to the legacy chain.
+   */
+  _firstPersonLevelId() {
+    const doc = this._firstPersonToken()?.document
+    if (!doc) return undefined
+    const lvls = canvas?.scene?.levels
+    const byElev =
+      lvls && lvls.size
+        ? levelContainingElevation(lvls.contents || [], Number(doc.elevation), (l) => this._levelBase(l), (l) => this._levelTop(l))
+        : null
+    return byElev?.id ?? doc.level ?? undefined
   }
 
   /**
@@ -1334,6 +1919,9 @@ export class Overlay3D {
    * lights / notes carry a `levels` Set (empty = all floors → always shown).
    */
   _docInSlice(doc) {
+    // True first-person: enclosed lens — only the character's floor + authored visible-through
+    // floors (kept consistent with the level planes). Other modes use the top-down cutaway.
+    if (this._isTrueFirstPerson()) return this._docOnVisibleLevel(doc)
     const cut = this._sliceCut()
     if (!Number.isFinite(cut)) return true
     const set = doc?.levels
@@ -1371,13 +1959,7 @@ export class Overlay3D {
 
   /** The grid-helper config for the core (span/divisions are derived from `bounds` there). */
   _buildGridJson() {
-    const g = canvas?.scene?.grid
-    return {
-      size: canvas?.dimensions?.size || 100,
-      showHelper: !(g && g.type === 0), // gridless scene → no grid
-      color: g?.color != null ? Number(g.color) : 0x6688aa,
-      opacity: g?.alpha != null ? Math.max(0.05, Number(g.alpha)) : 0.35,
-    }
+    return buildGridJson(canvas?.scene?.grid, canvas?.dimensions?.size)
   }
 
   /**
@@ -1389,58 +1971,59 @@ export class Overlay3D {
   _buildWallsJson() {
     const placeables = canvas?.walls?.placeables || []
     if (!placeables.length) return []
-    const pxPerUnit = this._pxPerUnit()
-    const out = []
-    for (const w of placeables) {
-      try {
-        const doc = w.document
-        if (!this._docInSlice(doc)) continue // wall only on floors above the slice → hidden
-        const c = doc?.c
-        if (!Array.isArray(c) || c.length < 4) continue
-        const [x1, y1, x2, y2] = c
-        const band = this._wallBand(doc)
-        let wbottom = band.bottom
-        let wtop = band.top
-        // Cutaway: clip a tall, multi-floor wall to the active floor's ceiling so
-        // only its current-floor section shows and it can't block the view down.
-        if (this._sliceFloors !== false) {
-          const ceil = this._levelTop(this._activeLevel())
-          if (Number.isFinite(ceil)) wtop = Math.min(wtop, ceil)
-        }
-        if (wtop - wbottom < 0.01) continue // nothing left after the cut
-        const len = Math.hypot(x2 - x1, y2 - y1)
-        if (len < 1) continue
-        // Doors/windows (mirrors the shared adapter's stored-doc mapping):
-        // door 0/1/2 = none/door/SECRET, ds 0/1/2 = closed/open/locked. A
-        // secret door must be indistinguishable from a wall for players until
-        // the GM opens it (then it reads as an ordinary open door). Window
-        // signature: blocks movement, doesn't block sight (none/proximity).
-        const ds = doc.ds === 1 ? 'open' : doc.ds === 2 ? 'locked' : 'closed'
-        let kind = 'wall'
-        let doorState
-        if (doc.door === 1) {
-          kind = 'door'
-          doorState = ds
-        } else if (doc.door === 2) {
-          if (game.user?.isGM) {
-            kind = 'secretDoor'
-            doorState = ds
-          } else if (ds === 'open') {
-            kind = 'door'
-            doorState = 'open'
-          }
-        } else if ((doc.move ?? 0) > 0 && (doc.sight === 0 || doc.sight === 30)) {
-          kind = 'window'
-        }
-        const wall = { id: doc.id, x1, y1, x2, y2, bottom: wbottom * pxPerUnit, top: wtop * pxPerUnit, kind }
-        if (kind === 'wall') wall.opacity = 0.85 // door/window style opacity is the core's business
-        if (doorState) wall.doorState = doorState
-        out.push(wall)
-      } catch {
-        /* skip a malformed wall */
-      }
+    // Thin Foundry-host wrapper: gather live state + accessors, delegate the shaping to
+    // the pure, unit-tested producer in overlay3d/scene-json.js.
+    const ceil = this._sliceFloors !== false ? this._levelTop(this._activeLevel()) : null
+    return buildWallsJson(
+      placeables.map((w) => w.document),
+      {
+        pxPerUnit: this._pxPerUnit(),
+        gridSize: canvas?.dimensions?.size || 100,
+        ceilUnits: Number.isFinite(ceil) ? ceil : null,
+        docInSlice: (doc) => this._docInSlice(doc),
+        wallBand: (doc) => this._wallBand(doc),
+        assetUrl: (src) => this._assetUrl(src),
+        wall3dDefaults: (doc) => this._wall3dDefaults(doc),
+      },
+    )
+  }
+
+  /**
+   * The Level document a wall's per-level 3D defaults should come from. A wall
+   * EXPLICITLY assigned to one level → that level. Assigned to several → the one
+   * whose elevation range contains the wall's bottom band (else the lowest). A
+   * wall on ALL levels (no explicit assignment) → null: no single-level default
+   * applies, so the scene-wide default is used instead.
+   */
+  _wallLevel(doc) {
+    const lvls = canvas?.scene?.levels
+    if (!lvls || !lvls.size) return null
+    const ids = doc?.levels && typeof doc.levels[Symbol.iterator] === 'function' ? [...doc.levels] : []
+    if (!ids.length) return null
+    if (ids.length === 1) return lvls.get?.(ids[0]) || null
+    const band = this._wallBand(doc)
+    const pool = ids.map((id) => lvls.get?.(id)).filter(Boolean)
+    for (const l of pool) {
+      if (band.bottom >= this._levelBase(l) - 0.01 && band.bottom < this._levelTop(l) + 0.01) return l
     }
-    return out
+    return pool.sort((a, b) => this._levelBase(a) - this._levelBase(b))[0] || null
+  }
+
+  /**
+   * Resolved 3D wall defaults for a segment: the wall's own level default wins
+   * over the scene-wide default. buildWallsJson applies these only as fallbacks
+   * under the wall's OWN flag, so a GM sets a texture/colour once per level (or
+   * once per scene) instead of on every segment. Returns null-valued fields when
+   * no default is set (the producer then uses the core's default palette).
+   */
+  _wall3dDefaults(doc) {
+    const sflag = canvas?.scene?.flags?.['crit-fumble-core'] || {}
+    const lflag = this._wallLevel(doc)?.flags?.['crit-fumble-core'] || {}
+    return {
+      texture: lflag.wallTexture || sflag.wallTexture || null,
+      color: lflag.wallColor || sflag.wallColor || null,
+      tileScale: lflag.wallTileScale || sflag.wallTileScale || null, // `||`: blank level value inherits the scene default
+    }
   }
 
   /**
@@ -1452,73 +2035,26 @@ export class Overlay3D {
    * radius from its config).
    */
   _buildLightsJson() {
-    const env = canvas?.environment?.colors || {}
+    const envc = canvas?.environment?.colors || {}
     const num = (c, dflt) => (c != null ? Number(c) : dflt)
-    const daylight = num(env.ambientDaylight, 0xeeeeee)
-    const darkCol = num(env.ambientDarkness, 0x303030)
-    const brightest = num(env.ambientBrightest ?? env.bright, 0xffffff)
-    const darkness = Number(canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0)
-    const day = Math.max(0, Math.min(1, 1 - darkness))
-    const shadows = this._shadowsEnabled()
-
-    // Ambient dims with darkness so colored lights read and night looks like night.
-    // Sun is the main shadow caster (walls block it → dynamic shadows on the floor).
-    const size = canvas?.dimensions?.size || 100
-    const ambient = {
-      hemisphere: { sky: daylight, ground: darkCol, intensity: 0.1 + 0.6 * day },
-      sun: { color: brightest, intensity: 0.35 + 0.7 * day, castShadow: shadows, shadowNormalBias: size * 0.04 },
-    }
-
-    const pxPerUnit = this._pxPerUnit()
-    const lights = []
-    // Foundry LightData → a point light. decay 0 because the world is in pixel
-    // units (physical 1/d^2 falloff would make it invisible); `distance` is the
-    // cutoff radius. The first few cast shadows (walls block them) — capped for
-    // performance.
-    let shadowBudget = shadows ? 4 : 0
-    const addPointLight = (cfg, x, y, elevPx) => {
-      if (!cfg) return
-      const dim = Number(cfg.dim) || 0
-      const bright = Number(cfg.bright) || 0
-      if (dim <= 0 && bright <= 0) return
-      const color = cfg.color != null ? Number(cfg.color) : 0xffffff
-      const radius = Math.max(dim, bright) * pxPerUnit || size * 4
-      const castShadow = shadowBudget > 0
-      if (castShadow) shadowBudget--
-      lights.push({
-        x,
-        y,
-        elevation: elevPx + size * 0.6,
-        color,
-        radius,
-        intensity: 1.3 + (Number(cfg.luminosity) || 0),
-        castShadow,
-        shadowNear: size * 0.2,
-        shadowNormalBias: size * 0.05,
-      })
-    }
-    // AmbientLight placeables → point lights.
-    for (const light of canvas?.lighting?.placeables || []) {
-      try {
-        const d = light.document
-        if (d?.hidden || !this._docInSlice(d)) continue
-        addPointLight(d.config, Number(d.x) || 0, Number(d.y) || 0, (Number(d.elevation) || 0) * pxPerUnit)
-      } catch {
-        /* skip */
-      }
-    }
-    // Token-emitted light (token.light) → point lights at the token position.
-    for (const tok of canvas?.tokens?.placeables || []) {
-      try {
-        const d = tok.document
-        if (!this._docInSlice(d)) continue
-        const { w, h } = this._tokenSizePx(d)
-        addPointLight(d?.light, (Number(d.x) || 0) + w / 2, (Number(d.y) || 0) + h / 2, (Number(d.elevation) || 0) * pxPerUnit)
-      } catch {
-        /* skip */
-      }
-    }
-    return { ambient, lights }
+    return buildLightsJson(
+      (canvas?.lighting?.placeables || []).map((l) => l.document),
+      (canvas?.tokens?.placeables || []).map((t) => t.document),
+      {
+        env: {
+          daylight: num(envc.ambientDaylight, 0xeeeeee),
+          darkCol: num(envc.ambientDarkness, 0x303030),
+          brightest: num(envc.ambientBrightest ?? envc.bright, 0xffffff),
+          darkness: Number(canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0),
+          globalLightOn: !!(canvas?.scene?.environment?.globalLight?.enabled ?? canvas?.environment?.globalLight?.enabled),
+        },
+        size: canvas?.dimensions?.size || 100,
+        shadows: this._shadowsEnabled(),
+        pxPerUnit: this._pxPerUnit(),
+        docInSlice: (doc) => this._docInSlice(doc),
+        tokenSizePx: (doc) => this._tokenSizePx(doc),
+      },
+    )
   }
 
   /**
@@ -1537,76 +2073,17 @@ export class Overlay3D {
    * core places tiles directly at (x,y), no half-size shift needed.
    */
   _buildTilesJson() {
-    const tiles = canvas?.tiles?.placeables || []
-    if (!tiles.length) return []
-    const pxPerUnit = this._pxPerUnit()
-    const out = []
-    for (const tile of tiles) {
-      try {
-        const d = tile.document
-        if (d?.hidden || !this._docInSlice(d)) continue
-        const w = Number(d.width) || 0
-        const h = Number(d.height) || 0
-        if (w < 1 || h < 1) continue
-        const elev = this._levelsElevation(d)
-        const src = d.texture?.src
-        out.push({
-          id: d.id,
-          x: Number(d.x) || 0,
-          y: Number(d.y) || 0,
-          width: w,
-          height: h,
-          elevation: elev * pxPerUnit,
-          texture: src ? this._assetUrl(src) : null,
-          alpha: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1,
-          // No texture → tint by elevation so stacked floors read at a glance.
-          color: elev > 0 ? 0x7a6a52 : 0x515b6b,
-        })
-      } catch {
-        /* skip a malformed tile */
-      }
-    }
-    return out
+    return buildTilesJson((canvas?.tiles?.placeables || []).map((t) => t.document), {
+      pxPerUnit: this._pxPerUnit(),
+      docInSlice: (doc) => this._docInSlice(doc),
+      assetUrl: (src) => this._assetUrl(src),
+    })
   }
 
-  /**
-   * Effective floor elevation for a document: the Levels module's floor bottom
-   * (flags.levels.rangeBottom) when present, else the document's own elevation.
-   */
-  _levelsElevation(doc) {
-    const lv = doc?.flags?.levels
-    if (lv && Number.isFinite(Number(lv.rangeBottom))) return Number(lv.rangeBottom)
-    return Number(doc?.elevation) || 0
-  }
-
-  /**
-   * Render map note pins as flat billboard markers at their correct position.
-   * Pins are UI on the map, not 3D geometry — so rather than hiding them under
-   * the overlay, we float the pin icon just above the ground where the note
-   * sits. (Other canvas markers — sound/light icons, templates — could be added
-   * the same way.)
-   */
-  /**
-   * Map note pins as viewer-core `notes[]` entries — flat billboard markers
-   * floating just above the ground at their correct position. Pins are UI on
-   * the map, not 3D geometry — this is a spatial stand-in for them.
-   */
+  /** Map note pins as viewer-core `notes[]` entries — flat billboard markers floating
+   * just above the ground at their position. Pins are UI on the map, not 3D geometry. */
   _buildNotesJson() {
-    const notes = canvas?.notes?.placeables || []
-    if (!notes.length) return []
-    const out = []
-    for (const note of notes) {
-      try {
-        const doc = note.document
-        const x = note.center?.x ?? doc.x ?? 0
-        const y = note.center?.y ?? doc.y ?? 0
-        const src = doc.texture?.src
-        out.push({ id: doc.id, x, y, size: doc.iconSize || 50, texture: src ? this._assetUrl(src) : null })
-      } catch {
-        /* skip a malformed note */
-      }
-    }
-    return out
+    return buildNotesJson(canvas?.notes?.placeables || [], (src) => this._assetUrl(src))
   }
 
   /** Token footprint in pixels, derived from the document (valid mid-update). */
@@ -1659,28 +2136,23 @@ export class Overlay3D {
       const p = canvas?.tokens?.get?.(doc.id)
       if (!p?.visible) return null
     }
-    const { w, h } = this._tokenSizePx(doc)
-    // Flight-stand model: the BASE sits on the token's floor (its native v14
-    // Level's base elevation) and the mini floats at the token's own absolute
-    // `elevation`, with a post between — a tabletop "mini on a stand" always
-    // traceable down to a floor, resolving the level/elevation disjoint (floor =
-    // Level.base, height = token.elevation; both absolute).
-    const cfgFlags = doc.flags?.['crit-fumble-core'] || {}
-    const modelSrc = cfgFlags.modelSrc || cfgFlags.model3d
-    return {
-      id: doc.id,
-      x: doc.x || 0,
-      y: doc.y || 0,
-      width: w,
-      height: h,
-      elevation: Number(doc.elevation || 0) * this._pxPerUnit(),
-      floorElevation: this._tokenFloorBasePx(doc),
-      color: dispositionColor(doc.disposition),
-      texture: doc.texture?.src ? this._assetUrl(doc.texture.src) : null,
-      model: modelSrc ? this._assetUrl(modelSrc) : null,
-      modelScale: Number.isFinite(cfgFlags.modelScale) ? cfgFlags.modelScale : undefined,
-      modelRotation: Number.isFinite(cfgFlags.modelRotation) ? cfgFlags.modelRotation : undefined,
-    }
+    // Flight-stand model (BASE on the token's floor, mini floating at its own elevation,
+    // post between) is shaped in the pure producer; the gating above stays host-side.
+    const px = this._pxPerUnit()
+    const size = canvas?.dimensions?.size || 100
+    const cx = (doc?.x || 0) + ((Number(doc?.width) || 1) * size) / 2
+    const cy = (doc?.y || 0) + ((Number(doc?.height) || 1) * size) / 2
+    // On heightmap terrain the ground varies, so Foundry's (flat-scene) elevation is treated
+    // as height ABOVE the local surface: lift BOTH the token and its floor by the terrain
+    // height so a ground token sits ON the surface instead of being buried at sea level.
+    const terrainUnits = this._sampleTerrain(cx, cy)
+    return buildTokenJson(doc, {
+      pxPerUnit: px,
+      sizePx: this._tokenSizePx(doc),
+      floorElevation: terrainUnits != null ? terrainUnits * px : this._tokenFloorBasePx(doc),
+      groundOffsetUnits: terrainUnits != null ? terrainUnits : 0,
+      assetUrl: (src) => this._assetUrl(src),
+    })
   }
 
   /**
@@ -1698,7 +2170,7 @@ export class Overlay3D {
    * moves, via the idle-sync branch in `_fpStep`). Skipping here is what actually
    * fixes the jitter; every other token still rebuilds normally.
    */
-  _onUpdateToken(doc) {
+  _onUpdateToken(doc, change = {}) {
     if (!this._visible || !this._mounted) return
     try {
       const id = doc?.id
@@ -1706,7 +2178,17 @@ export class Overlay3D {
         this._scheduleRebuild()
         return
       }
-      if (this._mode === 'firstperson' && id === this._firstPersonToken()?.id) return
+      if (this._mode === 'firstperson' && id === this._firstPersonToken()?.id) {
+        // The subject's x/y is driven locally (`_fpSyncSubjectVisual`) so pure position
+        // moves skip the rebuild (that's the anti-jitter). But a VISUAL change — most
+        // notably elevation (Q/E), which reshapes the height stalk/base — must rebuild,
+        // or the pole stays stale until the next camera toggle.
+        // Elevation is handled per-frame in `_fpStep` (`_rebuildSubject`); here we only
+        // rebuild the subject for OTHER visual changes (size/texture/flags/visibility).
+        const c = change || {}
+        const visual = 'width' in c || 'height' in c || 'texture' in c || 'flags' in c || 'hidden' in c
+        if (!visual) return
+      }
       this._removeToken(id)
       // Re-read the live document (all floors) so x/y/elevation/level are current.
       const fresh = canvas?.scene?.tokens?.get?.(id) || doc
@@ -1920,6 +2402,20 @@ export class Overlay3D {
     return 'auto'
   }
 
+  /** Frame-rate cap (#166), fps number or null (uncapped). Default 15. Controlled
+   * by the "3D View — Frame rate cap" setting. */
+  _fpsCapPreference() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dFpsCap')
+      if (v === 'off') return null
+      const n = Number(v)
+      if (Number.isFinite(n) && n > 0) return n
+    } catch {
+      /* not registered yet */
+    }
+    return 15
+  }
+
   /**
    * Whether selecting a token should slice the 3D view to that token's floor.
    * Off by default: the slice then follows Foundry's navigated/viewed level
@@ -1987,6 +2483,23 @@ export class Overlay3D {
       choices: { auto: 'Auto (recommended)', high: 'High', medium: 'Medium', low: 'Low', potato: 'Potato (max speed)' },
       default: 'auto',
       onChange: notify,
+    })
+    reg('overlay3dFpsCap', {
+      name: '3D View — Frame rate cap',
+      hint: 'Limit the 3D view to this frame rate. A steady low cap (15 fps, default) is smoother and much lighter on older / integrated GPUs than an uncapped, stuttering higher rate. Applies live.',
+      scope: 'client',
+      config: true,
+      type: String,
+      choices: { '15': '15 fps (default)', '30': '30 fps', '60': '60 fps', off: 'Uncapped' },
+      default: '15',
+      onChange: (v) => {
+        const cap = v === 'off' ? null : Number.isFinite(Number(v)) ? Number(v) : 15
+        try {
+          this._viewer?.setFpsCap?.(cap)
+        } catch {
+          /* viewer not open — applies on next createViewer via _fpsCapPreference */
+        }
+      },
     })
     reg('overlay3dFocusFollow', {
       name: '3D View — Follow selected token’s floor',

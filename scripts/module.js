@@ -245,6 +245,155 @@ Hooks.once('init', () => {
 })
 
 /* -------------------------------------------- */
+/*  Wall Config — a "3D Rendering" texture section  */
+/* -------------------------------------------- */
+
+// A texture for the Crit-Fumble 3D view, on ANY wall segment (walls AND doors) —
+// independent of Foundry's door-animation (whose texture is tied to the animation type
+// and, for non-doors, is purged on save). Stored in our module FLAG. The 3D viewer uses
+// this as the base render texture, falling back to the native door `animation.texture`.
+Hooks.on('renderWallConfig', (app, element) => {
+  try {
+    const doc = app?.document
+    if (!doc) return
+    const root = element instanceof HTMLElement ? element : element?.[0]
+    const form = root?.querySelector?.('form') || root
+    if (!form || form.querySelector('.cfg-3d-render')) return // already injected
+    const cfg = doc.flags?.['crit-fumble-core'] || {}
+    const tex = cfg.texture || ''
+    const color = cfg.color || ''
+    const scale = cfg.tileScale != null && cfg.tileScale !== '' ? cfg.tileScale : ''
+
+    const fs = document.createElement('fieldset')
+    fs.className = 'cfg-3d-render'
+    fs.innerHTML =
+      '<legend>3D Rendering</legend>' +
+      '<div class="form-group"><label>Texture</label><div class="form-fields">' +
+      `<file-picker name="flags.crit-fumble-core.texture" type="imagevideo" value="${tex}"></file-picker>` +
+      '</div></div>' +
+      '<div class="form-group"><label>Flip Texture</label><div class="form-fields">' +
+      `<input type="checkbox" name="flags.crit-fumble-core.flip"${cfg.flip ? ' checked' : ''}>` +
+      '</div></div>' +
+      '<div class="form-group"><label>Tile Scale</label><div class="form-fields">' +
+      `<input type="number" name="flags.crit-fumble-core.tileScale" value="${scale}" step="0.25" min="0" placeholder="1">` +
+      '<p class="hint">Texture repeats per grid square. Blank = 1.</p>' +
+      '</div></div>' +
+      '<div class="form-group"><label>Wall Color</label><div class="form-fields">' +
+      `<color-picker name="flags.crit-fumble-core.color" value="${color}"></color-picker>` +
+      '<p class="hint">Used when no texture is set. Blank = default.</p>' +
+      '</div></div>'
+
+    // Insert INSIDE the scrollable content (after the last fieldset), not after the sticky
+    // footer — otherwise it falls below the scroll region and can't be reached.
+    const fieldsets = form.querySelectorAll('fieldset')
+    const last = fieldsets[fieldsets.length - 1]
+    if (last) last.after(fs)
+    else form.appendChild(fs)
+  } catch (e) {
+    console.warn('CFG Core | 3D-render section injection failed', e)
+  }
+})
+
+/* -------------------------------------------- */
+/*  Scene / Level 3D wall DEFAULTS              */
+/* -------------------------------------------- */
+
+// Scene-wide and per-level default wall texture/colour/tiling for the 3D view, so a GM
+// sets them once instead of on every segment. Stored in the same module flag namespace
+// on the Scene and Level documents (`wallTexture`/`wallColor`/`wallTileScale`); the 3D
+// producer resolves the cascade wall-flag → level default → scene default.
+function cfg3dDefaultsFieldset(cfg) {
+  const tex = cfg.wallTexture || ''
+  const color = cfg.wallColor || ''
+  const scale = cfg.wallTileScale != null && cfg.wallTileScale !== '' ? cfg.wallTileScale : ''
+  const fs = document.createElement('fieldset')
+  fs.className = 'cfg-3d-defaults'
+  fs.innerHTML =
+    '<legend>3D Wall Defaults</legend>' +
+    '<p class="hint">Applied to walls that have no 3D texture/colour of their own. A per-level default overrides the scene default.</p>' +
+    '<div class="form-group"><label>Wall Texture</label><div class="form-fields">' +
+    `<file-picker name="flags.crit-fumble-core.wallTexture" type="imagevideo" value="${tex}"></file-picker>` +
+    '</div></div>' +
+    '<div class="form-group"><label>Tile Scale</label><div class="form-fields">' +
+    `<input type="number" name="flags.crit-fumble-core.wallTileScale" value="${scale}" step="0.25" min="0" placeholder="1">` +
+    '<p class="hint">Texture repeats per grid square. Blank = 1.</p>' +
+    '</div></div>' +
+    '<div class="form-group"><label>Wall Color</label><div class="form-fields">' +
+    `<color-picker name="flags.crit-fumble-core.wallColor" value="${color}"></color-picker>` +
+    '<p class="hint">Used when no texture is set. Blank = default.</p>' +
+    '</div></div>'
+  return fs
+}
+
+// Per-level defaults — the Level edit dialog (Scene → Levels → edit a level).
+Hooks.on('renderLevelConfig', (app, element) => {
+  try {
+    const doc = app?.document
+    if (!doc) return
+    const root = element instanceof HTMLElement ? element : element?.[0]
+    const form = root?.querySelector?.('form') || root
+    if (!form || form.querySelector('.cfg-3d-defaults')) return
+    const fs = cfg3dDefaultsFieldset(doc.flags?.['crit-fumble-core'] || {})
+    const fieldsets = form.querySelectorAll('fieldset')
+    const last = fieldsets[fieldsets.length - 1]
+    if (last) last.after(fs)
+    else form.appendChild(fs)
+  } catch (e) {
+    console.warn('CFG Core | level 3D-defaults injection failed', e)
+  }
+})
+
+// Scene-wide defaults — appended to the Scene config Levels tab. That tab re-renders
+// on level add/remove, so this re-injects (guarded) each time.
+Hooks.on('renderSceneConfig', (app, element) => {
+  try {
+    const doc = app?.document
+    if (!doc) return
+    const root = element instanceof HTMLElement ? element : element?.[0]
+    const tab = root?.querySelector?.('.tab[data-tab="levels"]')
+    if (!tab || tab.querySelector('.cfg-3d-defaults')) return
+    tab.appendChild(cfg3dDefaultsFieldset(doc.flags?.['crit-fumble-core'] || {}))
+  } catch (e) {
+    console.warn('CFG Core | scene 3D-defaults injection failed', e)
+  }
+})
+
+// Region → 3D terrain. A region renders as a flat-topped terrain tier in the 3D view when
+// "Render as 3D terrain" is on. All fields are OPTIONAL: surface defaults to the region's
+// native Elevation → Bottom, base to sea level (0), colour to the region's own colour.
+// Injected into the Placement tab (which already holds Elevation).
+Hooks.on('renderRegionConfig', (app, element) => {
+  try {
+    const doc = app?.document
+    if (!doc) return
+    const root = element instanceof HTMLElement ? element : element?.[0]
+    const tab = root?.querySelector?.('.tab[data-tab="placement"]')
+    if (!tab || tab.querySelector('.cfg-3d-terrain')) return
+    const cfg = doc.flags?.['crit-fumble-core'] || {}
+    const num = (v) => (v != null && v !== '' ? v : '')
+    const fs = document.createElement('fieldset')
+    fs.className = 'cfg-3d-terrain'
+    fs.innerHTML =
+      '<legend>3D Terrain</legend>' +
+      '<div class="form-group"><label>Render as 3D terrain</label><div class="form-fields">' +
+      `<input type="checkbox" name="flags.crit-fumble-core.terrain"${cfg.terrain ? ' checked' : ''}>` +
+      '</div><p class="hint">Draw this region as a flat-topped terrain tier in the 3D view.</p></div>' +
+      '<div class="form-group"><label>Surface Elevation</label><div class="form-fields">' +
+      `<input type="number" name="flags.crit-fumble-core.surface" value="${num(cfg.surface)}" step="0.5" placeholder="Elevation → Bottom">` +
+      '</div><p class="hint">Standable top of the tier. Blank = the region\'s Bottom elevation.</p></div>' +
+      '<div class="form-group"><label>Base Elevation</label><div class="form-fields">' +
+      `<input type="number" name="flags.crit-fumble-core.base" value="${num(cfg.base)}" step="0.5" placeholder="0">` +
+      '</div><p class="hint">The skirt drops (or rises) to here. Blank = 0 (sea level).</p></div>' +
+      '<div class="form-group"><label>Terrain Color</label><div class="form-fields">' +
+      `<color-picker name="flags.crit-fumble-core.color" value="${cfg.color || ''}"></color-picker>` +
+      '</div><p class="hint">Blank = the region\'s own colour.</p></div>'
+    tab.appendChild(fs)
+  } catch (e) {
+    console.warn('CFG Core | region 3D-terrain injection failed', e)
+  }
+})
+
+/* -------------------------------------------- */
 /*  Ready Hook — Main Initialization            */
 /* -------------------------------------------- */
 
