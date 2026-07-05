@@ -105,21 +105,49 @@ export class CharacterPullSync {
 
   /** Pull this campaign's pending+core records and carry each across to Foundry. */
   async _syncCampaign(campaignId) {
-    const { syncs } = (await this._api.getSyncRecords(campaignId)) ?? {}
-    const pending = (Array.isArray(syncs) ? syncs : []).filter(
-      (s) => s.syncStatus === 'pending' && s.lastSyncFrom === 'core',
-    )
-    if (pending.length === 0) return
+    const syncList = (await this._api.getSyncRecords(campaignId)) ?? {}
+    const syncs = Array.isArray(syncList.syncs) ? syncList.syncs : []
 
     // One characters fetch per campaign per tick; index by id for O(1) lookup.
     const charById = await this._fetchCharacterMap(campaignId)
 
+    // Bootstrap the mapping the whole loop depends on. A FoundryActorSync record
+    // only ever gets created by an explicit register call; nothing in the live
+    // product made one, so a platform edit had no record to flip to pending and
+    // write-back could never start. Register the missing ones here, keyed on the
+    // character's own foundry.actor._id (an exact link, not a guess).
+    await this._ensureMappings(campaignId, syncs, charById)
+
+    const pending = syncs.filter((s) => s.syncStatus === 'pending' && s.lastSyncFrom === 'core')
     for (const record of pending) {
       try {
         await this._applyOne(campaignId, record, charById)
       } catch (err) {
         // One bad record must not stop the others; it stays pending for next tick.
         console.debug?.(`${LOG} record ${record?.id} skipped:`, err?.message || err)
+      }
+    }
+  }
+
+  /**
+   * Register a FoundryActorSync mapping for each linked character whose canonical
+   * foundry.actor is live in THIS world but has no record yet. Guarded on "no
+   * existing record" — re-registering resets a synced record to pending, so this
+   * must only ever create, never touch a character that already has one.
+   */
+  async _ensureMappings(campaignId, syncs, charById) {
+    const recorded = new Set((syncs || []).map((s) => s.characterId ?? s.character?.id).filter(Boolean))
+    for (const [characterId, character] of charById) {
+      if (recorded.has(characterId)) continue
+      const foundryActorId = this._foundryActorOf(character)?._id
+      if (!foundryActorId) continue // no canonical actor to map
+      if (!game.actors.get(foundryActorId)) continue // that actor isn't in this world
+      try {
+        await this._api.registerActorMapping(campaignId, characterId, foundryActorId)
+        console.log(`${LOG} registered mapping ${characterId} → ${foundryActorId}`)
+      } catch (err) {
+        // Non-fatal — a failed register just retries next tick.
+        console.debug?.(`${LOG} mapping ${characterId} skipped:`, err?.message || err)
       }
     }
   }

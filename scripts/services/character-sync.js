@@ -13,106 +13,6 @@ export class CharacterSyncManager {
   constructor(apiClient, vttConfigManager = null) {
     this.apiClient = apiClient
     this.vttConfigManager = vttConfigManager
-    this.syncedCharacters = new Map() // characterId -> Actor ID
-  }
-
-  /**
-   * Initialize on world ready
-   */
-  async initialize() {
-    const campaignId = game.settings.get('crit-fumble-core', 'linkedCampaignId')
-    const autoSync = game.settings.get('crit-fumble-core', 'characterSyncEnabled')
-
-    if (!campaignId) {
-      console.log('[Character Sync] No linked campaign - skipping character sync')
-      return
-    }
-
-    console.log('[Character Sync] Initialized', { campaignId, autoSync })
-
-    // Auto-sync if enabled
-    if (autoSync) {
-      await this.syncCharacters()
-    }
-  }
-
-  /**
-   * Fetch and sync all characters from Core API
-   */
-  async syncCharacters() {
-    const campaignId = game.settings.get('crit-fumble-core', 'linkedCampaignId')
-
-    if (!campaignId) {
-      ui.notifications.warn('No linked campaign. Please link a campaign first.')
-      return
-    }
-
-    try {
-      ui.notifications.info('Syncing characters from Core...')
-
-      // Fetch campaign-scoped characters (players + their PCs)
-      // This is the correct endpoint — universe-wide would return all NPCs too
-      const { playerCharacters, summary } = await this.apiClient.getCampaignCharacters(campaignId, { role: 'pc' })
-
-      console.log('[Character Sync] Fetched campaign characters:', {
-        total: playerCharacters?.length ?? 0,
-        unassigned: summary?.unassignedPlayers ?? 0,
-      })
-
-      if (!playerCharacters || playerCharacters.length === 0) {
-        ui.notifications.info(
-          summary?.unassignedPlayers > 0
-            ? `No characters assigned yet. ${summary.unassignedPlayers} player(s) need characters.`
-            : 'No player characters found in this campaign.',
-        )
-        return
-      }
-
-      let syncedCount = 0
-      let updatedCount = 0
-      let errorCount = 0
-
-      for (const { character, playerName } of playerCharacters) {
-        try {
-          // Check if already synced by Core character ID stored in actor flags
-          const existingActor = this.findExistingActor(character.id)
-
-          if (existingActor) {
-            await this.updateActorFromCharacter(existingActor, character)
-            console.log(`[Character Sync] Updated "${character.name}" (player: ${playerName})`)
-            updatedCount++
-          } else {
-            await this.createActorFromCharacter(character, campaignId)
-            console.log(`[Character Sync] Created "${character.name}" (player: ${playerName})`)
-            syncedCount++
-          }
-        } catch (error) {
-          console.error(`[Character Sync] Error syncing "${character.name}":`, error)
-          errorCount++
-        }
-      }
-
-      ui.notifications.info(
-        `Created ${syncedCount}, updated ${updatedCount} character(s). ${
-          errorCount > 0 ? `${errorCount} error(s).` : ''
-        }`,
-      )
-    } catch (error) {
-      console.error('[Character Sync] Error syncing characters:', error)
-      ui.notifications.error('Failed to sync characters from Core.')
-    }
-  }
-
-  /**
-   * Find existing Actor by character ID (via flags)
-   * @param {string} characterId - Character ID
-   * @returns {Actor|null}
-   */
-  findExistingActor(characterId) {
-    return game.actors.find((actor) => {
-      const flagCharacterId = actor.getFlag('crit-fumble-core', 'characterId')
-      return flagCharacterId === characterId
-    })
   }
 
   /**
@@ -140,136 +40,107 @@ export class CharacterSyncManager {
   }
 
   /**
-   * Create Foundry Actor from character data
-   * @param {object} character - Character data from API
-   * @param {string|null} campaignId - Campaign ID (used to register foundryActorId back to Core)
-   * @returns {Actor}
-   */
-  async createActorFromCharacter(character, campaignId = null) {
-    const { id, name, characterSheetData } = character
-
-    if (!characterSheetData) {
-      throw new Error('Character has no sheet data')
-    }
-
-    console.log('[Character Sync] Creating actor:', { name, characterId: id })
-
-    // Validate character (server-side rules enforcement)
-    const validation = await this.validateCharacter(character)
-
-    if (!validation.valid) {
-      console.warn('[Character Sync] Character validation failed:', validation.errors)
-      ui.notifications?.warn(`Character "${name}" has validation errors. Creating anyway, but please review.`)
-    }
-
-    if (validation.warnings?.length > 0) {
-      console.log('[Character Sync] Character has warnings:', validation.warnings)
-    }
-
-    // Map character sheet to Foundry actor data
-    const actorData = await this.mapCharacterToActorData(character)
-
-    // Create actor
-    const actor = await Actor.create({
-      ...actorData,
-      flags: {
-        'crit-fumble-core': {
-          characterId: id,
-          isSyncedCharacter: true,
-          lastSyncedAt: new Date().toISOString(),
-          validationErrors: validation.errors || [],
-          validationWarnings: validation.warnings || [],
-        },
-      },
-    })
-
-    console.log(`[Character Sync] Created actor: ${actor.id}`)
-
-    // Add items (features, equipment, spells)
-    await this.addCharacterItems(actor, characterSheetData)
-
-    // Track synced character
-    this.syncedCharacters.set(id, actor.id)
-
-    // Register this Foundry actor ID back to Core so future Foundry→Core pushes
-    // can match by foundryActorId. The response includes initial systemUpdate +
-    // itemUpdates to seed the actor with Core's current pool values.
-    if (campaignId) {
-      try {
-        const { systemUpdate, itemUpdates } = await this.apiClient.registerActorMapping(campaignId, id, actor.id)
-
-        // Apply Core's initial HP/slot/pool values to the Foundry actor
-        if (systemUpdate && Object.keys(systemUpdate).length > 0) {
-          const flatUpdate = {}
-          for (const [dotPath, value] of Object.entries(systemUpdate)) {
-            flatUpdate[`system.${dotPath}`] = value
-          }
-          await actor.update(flatUpdate)
-        }
-
-        // Sync Core inventory items to Foundry (equipment, consumables, etc.)
-        if (itemUpdates && itemUpdates.length > 0) {
-          const itemsToCreate = itemUpdates.filter((i) => i._id === '' || !actor.items.get(i._id))
-          if (itemsToCreate.length > 0) {
-            await actor.createEmbeddedDocuments('Item', itemsToCreate)
-          }
-        }
-
-        console.log(`[Character Sync] Registered foundryActorId "${actor.id}" on Core character "${id}"`)
-      } catch (err) {
-        // Non-fatal — sync will still work via characterId flag
-        console.warn('[Character Sync] Could not register foundryActorId on Core:', err)
-      }
-    }
-
-    return actor
-  }
-
-  /**
    * Update existing actor from character data
    * @param {Actor} actor - Foundry actor
    * @param {object} character - Character data from API
    */
   async updateActorFromCharacter(actor, character) {
-    const { characterSheetData } = character
+    // The sheet arrives either flat (`characterSheetData`, the single-character
+    // GET) or nested (`sheetData.characterSheetData`, the list GET the pull-loop
+    // uses). Accept both — the write-back loop feeds us the nested list shape, so
+    // destructuring only the flat field would throw and strand the record
+    // pending forever (cfs#17 #147).
+    const sheet = character?.characterSheetData ?? character?.sheetData?.characterSheetData
 
-    if (!characterSheetData) {
+    if (!sheet) {
       throw new Error('Character has no sheet data')
     }
 
+    // The canonical platform sheet IS a Foundry actor at foundry.actor; when it
+    // is present we pass its system + items through verbatim (no per-system
+    // mapping, no server-side validation — it is already a valid actor).
+    const foundryActor = sheet?.foundry?.actor
+    const isPassThrough = !!(foundryActor && foundryActor.system && typeof foundryActor.system === 'object')
+
     console.log('[Character Sync] Updating actor:', { name: actor.name, characterId: character.id })
 
-    // Validate character (server-side rules enforcement)
-    const validation = await this.validateCharacter(character)
-
-    if (!validation.valid) {
-      console.warn('[Character Sync] Character validation failed:', validation.errors)
-      ui.notifications?.warn(`Character "${character.name}" has validation errors. Updating anyway, but please review.`)
+    // Only the legacy normalized shape needs server-side rules validation.
+    if (!isPassThrough) {
+      const validation = await this.validateCharacter(character)
+      if (!validation.valid) {
+        console.warn('[Character Sync] Character validation failed:', validation.errors)
+        ui.notifications?.warn(`Character "${character.name}" has validation errors. Updating anyway, but please review.`)
+      }
     }
 
-    // Map character sheet to Foundry actor data
+    // Map character sheet to Foundry actor data (pass-through or legacy).
     const actorData = await this.mapCharacterToActorData(character)
 
-    // Update actor (exclude items, we'll handle those separately)
+    // Update actor scalars. `type` is immutable on an existing Actor document, so
+    // it is deliberately omitted from the patch (passing it errors on v13+ when
+    // the stored type ever differs from the live actor's).
     await actor.update({
       name: actorData.name,
-      type: actorData.type,
       system: actorData.system,
       flags: {
         'crit-fumble-core': {
           characterId: character.id,
           isSyncedCharacter: true,
           lastSyncedAt: new Date().toISOString(),
-          validationErrors: validation.errors || [],
-          validationWarnings: validation.warnings || [],
         },
       },
     })
 
-    // Update items
-    await this.updateCharacterItems(actor, characterSheetData)
+    // Item write-back. The pass-through path carries real Foundry items on
+    // foundry.actor.items — apply them as embedded documents. The legacy path
+    // rebuilds items from the normalized sheet via SRD compendium lookups.
+    if (isPassThrough) {
+      try {
+        await this._applyFoundryActorItems(actor, actorData.items)
+      } catch (err) {
+        // Best-effort: a bad item must not block the system (HP/field) write-back.
+        console.warn('[Character Sync] item write-back failed (non-fatal):', err?.message || err)
+      }
+    } else {
+      await this.updateCharacterItems(actor, sheet)
+    }
 
     console.log(`[Character Sync] Updated actor: ${actor.id}`)
+  }
+
+  /**
+   * Reconcile the actor's embedded Item documents with the canonical
+   * foundry.actor.items array (Core owns the sheet). Items are already in
+   * Foundry shape, so this creates the missing ones (keeping their _id so future
+   * syncs match), updates the changed ones by _id, and deletes previously-synced
+   * items the platform has dropped. Deletion is limited to items WE flagged as
+   * sync-managed, so GM-added items are never clobbered (cfs#17 #147).
+   * @param {Actor} actor
+   * @param {Array<object>} items - foundry.actor.items (may be empty)
+   */
+  async _applyFoundryActorItems(actor, items) {
+    const stored = Array.isArray(items) ? items : []
+    const storedIds = new Set(stored.filter((i) => i && i._id).map((i) => i._id))
+
+    const toCreate = []
+    const toUpdate = []
+    for (const item of stored) {
+      if (!item || typeof item !== 'object') continue
+      const cfgFlags = { ...((item.flags && item.flags['crit-fumble-core']) || {}), isSyncedItem: true }
+      const withFlag = { ...item, flags: { ...(item.flags || {}), 'crit-fumble-core': cfgFlags } }
+      if (item._id && actor.items.get(item._id)) toUpdate.push(withFlag)
+      else toCreate.push(withFlag)
+    }
+
+    // Delete only items we previously synced that are gone from the stored set —
+    // never GM-authored items (they carry no isSyncedItem flag).
+    const toDelete = actor.items
+      .filter((i) => i.getFlag('crit-fumble-core', 'isSyncedItem') && !storedIds.has(i.id))
+      .map((i) => i.id)
+
+    if (toDelete.length) await actor.deleteEmbeddedDocuments('Item', toDelete)
+    if (toCreate.length) await actor.createEmbeddedDocuments('Item', toCreate, { keepId: true })
+    if (toUpdate.length) await actor.updateEmbeddedDocuments('Item', toUpdate)
   }
 
   /**
@@ -633,98 +504,6 @@ export class CharacterSyncManager {
     }
 
     return null
-  }
-
-  /**
-   * Sync character changes back to Core API (bi-directional sync)
-   * @param {Actor} actor - Foundry actor to sync
-   */
-  async syncToCore(actor) {
-    const characterId = actor.getFlag('crit-fumble-core', 'characterId')
-    const campaignId = game.settings.get('crit-fumble-core', 'linkedCampaignId')
-
-    if (!characterId) {
-      ui.notifications.warn('This actor is not linked to a Core character.')
-      return
-    }
-
-    try {
-      ui.notifications.info(`Syncing ${actor.name} to Core...`)
-
-      if (campaignId) {
-        // Push actor data to Core — Core detects conflicts and applies clean changes.
-        // Conflicts are surfaced on the Core VTT page for the GM to resolve.
-        const result = await this.apiClient.pushActorSync(campaignId, [
-          {
-            _id: actor.id,
-            name: actor.name,
-            system: actor.system,
-            items: actor.items.map((i) => i.toObject()),
-          },
-        ])
-
-        if (result.conflict > 0) {
-          ui.notifications.warn(
-            `${actor.name}: ${result.conflict} sync conflict(s) detected. Resolve them on the Core VTT page.`,
-          )
-        }
-      } else {
-        // No campaign context — reverse sync requires a linked campaign
-        console.warn('[Character Sync] syncToCore requires a linked campaign; skipping reverse sync')
-        ui.notifications.warn('Link a campaign before pushing character data to Core.')
-        return
-      }
-
-      // Update sync timestamp flag
-      await actor.setFlag('crit-fumble-core', 'lastSyncedAt', new Date().toISOString())
-
-      ui.notifications.info(`Synced ${actor.name} to Core successfully.`)
-    } catch (error) {
-      console.error('[Character Sync] Error syncing to Core:', error)
-      ui.notifications.error(`Failed to sync ${actor.name} to Core.`)
-    }
-  }
-
-  /**
-   * Refresh characters (re-sync from API)
-   */
-  async refresh() {
-    console.log('[Character Sync] Refreshing characters...')
-    await this.syncCharacters()
-  }
-
-  /**
-   * Clear all synced characters
-   */
-  async clearSyncedCharacters() {
-    if (!game.user.isGM) {
-      ui.notifications.warn('Only GMs can clear synced characters.')
-      return
-    }
-
-    const confirmed = await Dialog.confirm({
-      title: 'Clear Synced Characters',
-      content: '<p>Delete all synced character actors?</p><p>This cannot be undone.</p>',
-    })
-
-    if (!confirmed) return
-
-    try {
-      const actorsToDelete = game.actors.filter((actor) => {
-        return actor.getFlag('crit-fumble-core', 'isSyncedCharacter')
-      })
-
-      for (const actor of actorsToDelete) {
-        await actor.delete()
-      }
-
-      this.syncedCharacters.clear()
-
-      ui.notifications.info(`Deleted ${actorsToDelete.length} synced character(s).`)
-    } catch (error) {
-      console.error('[Character Sync] Error clearing synced characters:', error)
-      ui.notifications.error('Failed to clear synced characters.')
-    }
   }
 
   /* -------------------------------------------- */

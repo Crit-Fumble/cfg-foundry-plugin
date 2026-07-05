@@ -33,7 +33,7 @@ import { Overlay3D } from './services/overlay-3d.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-const MODULE_VERSION = '2.9.0'
+const MODULE_VERSION = '2.10.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -623,8 +623,14 @@ async function _resolveLinkedCampaigns() {
     const campaigns = Array.isArray(data?.data) ? data.data : []
     const linked = []
     for (const c of campaigns) {
+      // `installId` comes from the URL segment, which post-#162 can be EITHER the
+      // installation cuid or its slug (the proxy resolves by id then slug). Match
+      // on either form so slug-hosted worlds still resolve their linked campaigns —
+      // otherwise the write-back pull-loop never fires (cfs#17 #147).
       const matches = (c.linkedWorlds ?? []).some(
-        (l) => l.installationId === installId && l.worldId === worldId,
+        (l) =>
+          (l.installationId === installId || (l.installationSlug && l.installationSlug === installId)) &&
+          l.worldId === worldId,
       )
       if (matches) linked.push(c.id)
     }

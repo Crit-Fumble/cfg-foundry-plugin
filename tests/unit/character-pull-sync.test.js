@@ -45,6 +45,16 @@ function api({ syncs = [], playerCharacters = [], npcCharacters = [] } = {}) {
     getSyncRecords: jest.fn(async () => ({ syncs })),
     getCampaignCharacters: jest.fn(async () => ({ playerCharacters, npcCharacters })),
     pushActorSync: jest.fn(async () => ({ synced: 1, conflict: 0, unmapped: 0, errors: 0, results: [] })),
+    registerActorMapping: jest.fn(async () => ({ syncId: 'new', systemUpdate: {}, itemUpdates: [] })),
+  }
+}
+
+/** A character whose canonical foundry.actor carries an explicit _id (the map key). */
+function characterWithActorId(id, foundryActorId) {
+  return {
+    id,
+    name: id,
+    characterSheetData: { foundry: { actor: { _id: foundryActorId, name: id, type: 'character', system: {}, items: [] } } },
   }
 }
 
@@ -290,5 +300,53 @@ describe('skips', () => {
     pull._busy = true
     await pull._tick()
     expect(a.getSyncRecords).not.toHaveBeenCalled()
+  })
+})
+
+// ── Bootstrap registration (the mapping the whole loop depends on) ─────────────────
+
+describe('mapping bootstrap', () => {
+  it('registers a mapping for an unrecorded character whose foundry.actor is live in this world', async () => {
+    game.actors = actorsCollection([actor('act-42')])
+    const a = api({
+      syncs: [], // no record yet
+      playerCharacters: [{ character: characterWithActorId('char-1', 'act-42') }],
+    })
+
+    await new CharacterPullSync(a, syncManager(), linked('camp-1'))._tick()
+
+    expect(a.registerActorMapping).toHaveBeenCalledWith('camp-1', 'char-1', 'act-42')
+  })
+
+  it('does NOT re-register a character that already has a record (would reset synced→pending)', async () => {
+    game.actors = actorsCollection([actor('act-42')])
+    const a = api({
+      syncs: [record('s1', 'act-42', 'char-1', { syncStatus: 'synced', lastSyncFrom: 'foundry' })],
+      playerCharacters: [{ character: characterWithActorId('char-1', 'act-42') }],
+    })
+
+    await new CharacterPullSync(a, syncManager(), linked('camp-1'))._tick()
+
+    expect(a.registerActorMapping).not.toHaveBeenCalled()
+  })
+
+  it('does NOT register when the character actor is not present in this world', async () => {
+    game.actors = actorsCollection([]) // actor not live here
+    const a = api({
+      syncs: [],
+      playerCharacters: [{ character: characterWithActorId('char-1', 'act-42') }],
+    })
+
+    await new CharacterPullSync(a, syncManager(), linked('camp-1'))._tick()
+
+    expect(a.registerActorMapping).not.toHaveBeenCalled()
+  })
+
+  it('registration failure is non-fatal (retries next tick)', async () => {
+    game.actors = actorsCollection([actor('act-42')])
+    const a = api({ syncs: [], playerCharacters: [{ character: characterWithActorId('char-1', 'act-42') }] })
+    a.registerActorMapping.mockRejectedValue(new Error('403'))
+
+    await expect(new CharacterPullSync(a, syncManager(), linked('camp-1'))._tick()).resolves.toBeUndefined()
   })
 })
