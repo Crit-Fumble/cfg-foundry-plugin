@@ -109,6 +109,8 @@ export class Overlay3D {
     this._sculptStrength = 1.5
     this._sculptDrag = false
     this._sculptHeights = null
+    /** Undo stack of height-field snapshots (units), one per stroke/generate; capped. */
+    this._sculptUndoStack = []
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
     this._frame = null
 
@@ -1345,6 +1347,14 @@ export class Overlay3D {
    */
   _onKeyDown(event) {
     if (!this._visible) return
+    // Undo a sculpt stroke / Generate with Cmd/Ctrl-Z while a sculpt tool is active — handled
+    // before the mode + chord guards so it works in any 3D view and preempts Foundry.
+    if (this._sculptActive() && (event.key === 'z' || event.key === 'Z') && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      this._sculptUndo()
+      return
+    }
     const m = this._mode
     if (m !== 'firstperson' && m !== 'tracked') return // Free/2D: leave keys native
     const t = event.target
@@ -2421,6 +2431,7 @@ export class Overlay3D {
         }
       }
       const HT = { 0: -4, 1: 0, 2: 6, 3: 30 } // shallow water · flat beach · raised grass · tall rock
+      this._sculptPushUndo(scene.flags?.['crit-fumble-core']?.heightfield?.heights) // undoable
       await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: T2.map((t) => HT[t]) })
       ui?.notifications?.info?.('Generated 3D terrain from the map — sculpt from here.')
     } catch (e) {
@@ -2443,6 +2454,7 @@ export class Overlay3D {
     }
     this._sculptCols = Math.floor(Number(field.cols))
     this._sculptRows = Math.floor(Number(field.rows))
+    this._sculptPushUndo(field.heights) // snapshot the pre-stroke state for undo
     this._sculptHeights = field.heights.slice()
     this._sculptDrag = true
     if (this._sculptMode === 'level') {
@@ -2480,6 +2492,33 @@ export class Overlay3D {
     if (!h) return
     try {
       canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols: this._sculptCols, rows: this._sculptRows, heights: h })
+    } catch {
+      /* not a GM / no scene */
+    }
+  }
+
+  /** Push a height-field snapshot (units) onto the undo stack, capped at 24 strokes. */
+  _sculptPushUndo(heights) {
+    if (!Array.isArray(heights)) return
+    this._sculptUndoStack.push(heights.slice())
+    if (this._sculptUndoStack.length > 24) this._sculptUndoStack.shift()
+  }
+
+  /** Undo the last sculpt stroke (or Generate): restore the previous height field. Bound to
+   *  Cmd/Ctrl-Z in a 3D view + the Undo tool. */
+  _sculptUndo() {
+    const heights = this._sculptUndoStack.pop()
+    if (!heights) {
+      ui?.notifications?.info?.('Nothing to undo')
+      return
+    }
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    const cols = Math.floor(Number(field?.cols)) || this._sculptCols
+    const rows = Math.floor(Number(field?.rows)) || this._sculptRows
+    const px = this._pxPerUnit()
+    this._viewer?.updateTerrainHeights?.(heights.map((v) => v * px)) // immediate in-place restore
+    try {
+      canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols, rows, heights }) // persist + sync
     } catch {
       /* not a GM / no scene */
     }
@@ -2544,6 +2583,14 @@ export class Overlay3D {
             icon: 'fa-solid fa-mountain-sun',
             button: true,
             onChange: () => this._generateTerrainFromMap(),
+          },
+          terrainUndo: {
+            name: 'terrainUndo',
+            order: 8,
+            title: 'Undo the last sculpt stroke (also Cmd/Ctrl-Z)',
+            icon: 'fa-solid fa-rotate-left',
+            button: true,
+            onChange: () => this._sculptUndo(),
           },
           sculptRaise: {
             name: 'sculptRaise',
