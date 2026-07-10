@@ -1511,6 +1511,12 @@ export class Overlay3D {
    * controlled token — Character view: 3rd/1st person, WASD move, mouse aims, wheel zooms).
    */
   async setViewMode(mode) {
+    if (mode === 'free' && !this._canBuild()) {
+      // Defence-in-depth: the toolbar hides Free Camera from players, but a macro/API
+      // call must not slip past the gate.
+      ui?.notifications?.warn?.('Free Camera is available to GMs and Assistant GMs only.')
+      return
+    }
     if (mode === '2d') {
       await this.setVisible(false)
       this._updateControlBar()
@@ -1994,6 +2000,15 @@ export class Overlay3D {
     return !!game?.user?.isGM
   }
 
+  /** GM OR Assistant GM — the gate for Free Camera + terrain sculpting/generation.
+   * Players get Top Down + Character views only. Uses an explicit role threshold
+   * (>= ASSISTANT) rather than game.user.isGM, whose GM-vs-Assistant semantics vary by
+   * Foundry version. Per-world config overrides are a planned follow-up. */
+  _canBuild() {
+    const ASSISTANT = globalThis.CONST?.USER_ROLES?.ASSISTANT ?? 3
+    return (game?.user?.role ?? 0) >= ASSISTANT
+  }
+
   /**
    * Whether the current user may see a given Level. GMs (and no-token-vision
    * scenes) see all floors; players are bound to Foundry's `availableLevels` —
@@ -2364,6 +2379,7 @@ export class Overlay3D {
   /** Select a sculpt brush (or null to stop). Sculpting needs an overhead/free 3D view to
    *  see + raycast the terrain, so switch to Top-Down if we're off or in Character view. */
   _setSculptMode(mode) {
+    if (mode && !this._canBuild()) return // terrain sculpting is GM / Assistant GM only
     this._sculptMode = mode
     if (mode && (this._mode === 'firstperson' || !this._visible)) this.setViewMode('topdown')
     if (!mode) this._viewer?.hideBrushCursor?.()
@@ -2380,6 +2396,7 @@ export class Overlay3D {
    * terrain + a one-click way to recover from over-sculpting; the GM then shapes it by hand.
    */
   async _generateTerrainFromMap() {
+    if (!this._canBuild()) return // terrain generation is GM / Assistant GM only
     const scene = canvas?.scene
     const src = scene?.background?.src
     if (!src) {
@@ -2628,6 +2645,11 @@ export class Overlay3D {
             active: this._sculptMode === 'smooth',
             onChange: (event, active) => this._setSculptMode(active ? 'smooth' : null),
           },
+        }
+        // Gate: Free Camera + terrain tools are GM / Assistant GM only. Players keep
+        // Top Down, Character, and Slice (slice only HIDES floors — no info leak).
+        if (!this._canBuild()) {
+          for (const t of ['free', 'terrainGenerate', 'terrainUndo', 'sculptRaise', 'sculptLower', 'sculptLevel', 'sculptSmooth']) delete tools[t]
         }
         const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-panorama', visible: true, tools }
         if (Array.isArray(controls)) {
