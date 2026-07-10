@@ -197,3 +197,7 @@ Both now exist: a proper Playwright spec (`specs/overlay-3d.spec.js`, screenshot
   model used to verify GLB loading.
 - `tests/integration/specs/overlay-3d.spec.js` — screenshot-review spec (`npm run test:foundry:3d`);
   `tests/integration/verify-3d.mjs` — standalone live-sync quick check.
+- `tests/integration/review-3d.mjs` — headed manual-review browser: logs in as GM, activates the
+  CFG 3D Test scene, controls a token, turns the overlay on in Character view, and stays open.
+- `tests/integration/dump-parity-scene.mjs` — dumps every scene's viewer-core JSON to the web demo's
+  `dev-vtt-viewer/parity-scenes.json` (in cfg-core-browser) for side-by-side native/web parity.

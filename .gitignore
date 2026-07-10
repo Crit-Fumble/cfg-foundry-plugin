@@ -37,3 +37,5 @@ tests/fixtures/worlds/README.txt
 tests/fixtures/worlds/*/data/
 tests/_*.mjs
 tests/_*.png
+tests/**/_*.mjs
+tests/**/_*.png
