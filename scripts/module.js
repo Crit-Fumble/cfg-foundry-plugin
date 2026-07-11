@@ -414,16 +414,28 @@ Hooks.on('renderTokenHUD', (hud, element, _data) => {
     if (!root) return
     const col = root.querySelector('.col.right') || root.querySelector('.col.left') || root.querySelector('.control-icons') || root
     if (col.querySelector('.cfg-3d-charview')) return
+    const BADGE = (t) => `<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">${t}</b>`
+    const api = window.CFGCore?.overlay3D
+    const inThreeD = (api?.getViewMode?.() ?? '2d') !== '2d'
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'control-icon cfg-3d-charview'
-    btn.dataset.tooltip = '3D View — see the scene in 3D through this token'
-    btn.setAttribute('aria-label', '3D View')
-    btn.innerHTML = '<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">3D</b>'
+    btn.dataset.tooltip = inThreeD ? 'Exit 3D View — back to the normal map' : '3D View — see the scene in 3D through this token'
+    btn.setAttribute('aria-label', inThreeD ? 'Exit 3D View' : '3D View')
+    btn.innerHTML = inThreeD ? BADGE('2D') : BADGE('3D') // shows the mode you'll switch TO
     btn.addEventListener('click', async (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
-      if (btn.classList.contains('cfg-3d-loading')) return // already entering
+      if (btn.classList.contains('cfg-3d-loading')) return // already switching
+      if (inThreeD) {
+        // Already in 3D → toggle back to the normal Foundry map.
+        try {
+          await api?.setViewMode?.('2d')
+        } catch (err) {
+          console.warn('CFG Core | exit 3D View failed', err)
+        }
+        return
+      }
       btn.classList.add('cfg-3d-loading')
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>' // loading state — not hung
       try {
@@ -432,12 +444,12 @@ Hooks.on('renderTokenHUD', (hud, element, _data) => {
         /* permission — ignore */
       }
       try {
-        await window.CFGCore?.overlay3D?.setViewMode?.('firstperson')
+        await api?.setViewMode?.('firstperson')
       } catch (err) {
         console.warn('CFG Core | 3D View from token HUD failed', err)
       } finally {
         btn.classList.remove('cfg-3d-loading')
-        btn.innerHTML = '<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">3D</b>'
+        btn.innerHTML = BADGE('3D')
       }
     })
     // Right column, just ABOVE the hide/vision (eye) button.

@@ -989,10 +989,11 @@ export class Overlay3D {
       this._sculptBegin(event)
       return
     }
-    // Top-Down: LEFT-drag pans the view (grab-the-map, like Foundry's canvas); a bare
-    // left-click (no drag) still selects. Defer the pick to mouseup so a drag doesn't select.
-    if (this._mode === 'tracked' && event.button === 0) {
-      this._charDrag = { mode: 'trackpan', x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
+    // Top-Down: either button drag pans (grab-the-map). Resolve a bare click on mouseup so
+    // a drag doesn't select: LEFT-click selects / moves, RIGHT-click opens the token HUD.
+    if (this._mode === 'tracked' && (event.button === 0 || event.button === 2)) {
+      this._charDrag = { mode: 'trackpan', button: event.button, x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
+      if (event.button === 2) event.preventDefault?.() // suppress the browser context menu
       return
     }
     if (this._mode !== 'firstperson') {
@@ -1060,7 +1061,8 @@ export class Overlay3D {
     if (d && d.mode === 'trackpan') {
       document.body.style.cursor = ''
       if (!d.moved) {
-        if (event.button === 2 || event.shiftKey) this._onPickClick(event) // right / shift → target
+        if (d.button === 2) this._showTokenHud(event) // bare right-click → the token's HUD menu (exit 3D, etc.)
+        else if (event.shiftKey) this._onPickClick(event) // shift+left → target (attack/spell/potion)
         else {
           // Forgiving pick (same tolerance as _onPickClick) so a near-miss selects the token
           // rather than silently moving the controlled one to empty ground.
@@ -1331,9 +1333,7 @@ export class Overlay3D {
       this._charMoveHandler = (e) => this._onCharMove(e)
       this._charClickHandler = (e) => this._onCharDown(e)
       this._charUpHandler = (e) => this._onCharUp(e)
-      this._charCtxHandler = (e) => {
-        if (this._mode === 'firstperson') e.preventDefault() // don't pop the menu on right-drag-look
-      }
+      this._charCtxHandler = (e) => e.preventDefault() // no browser menu over the 3D canvas (right-click = look / pan / token HUD)
       window.addEventListener('keydown', this._keyHandler, true)
       window.addEventListener('keyup', this._keyUpHandler, true)
       this._container?.addEventListener('wheel', this._wheelHandler, { passive: false, capture: true })
@@ -1736,7 +1736,8 @@ export class Overlay3D {
     if (this._compass || !this._container) return
     const wrap = document.createElement('div')
     wrap.id = 'cfg-3d-compass'
-    Object.assign(wrap.style, { position: 'fixed', right: '16px', bottom: '16px', width: '58px', height: '58px', zIndex: '26', pointerEvents: 'none' })
+    // Bottom-LEFT, just above the players (username/latency) pill so it clears the chat.
+    Object.assign(wrap.style, { position: 'fixed', left: '12px', bottom: '96px', width: '58px', height: '58px', zIndex: '26', pointerEvents: 'none' })
     const rose = document.createElement('div')
     Object.assign(rose.style, {
       width: '100%', height: '100%', borderRadius: '50%', position: 'relative',
@@ -1754,10 +1755,31 @@ export class Overlay3D {
     this._container.appendChild(wrap)
     this._compass = wrap
     this._compassRose = rose
+    this._positionCompass()
+  }
+
+  /** Sit the compass at bottom-left, just above the Foundry players (username/latency)
+   * pill so it never overlaps the chat. Falls back to a fixed bottom-left offset. */
+  _positionCompass() {
+    if (!this._compass) return
+    this._compass.style.right = 'auto'
+    const r = document.querySelector('#players')?.getBoundingClientRect?.()
+    if (r && r.height > 0) {
+      this._compass.style.left = `${Math.max(12, Math.round(r.left))}px`
+      this._compass.style.bottom = `${Math.round(window.innerHeight - r.top + 8)}px`
+    } else {
+      this._compass.style.left = '12px'
+      this._compass.style.bottom = '96px'
+    }
   }
 
   _updateCompass() {
     if (!this._compassRose || !this._orbitCamera) return
+    const now = typeof performance !== 'undefined' ? performance.now() : 0
+    if (now - (this._compassPosAt || 0) > 800) {
+      this._positionCompass() // re-anchor if the players pill grew/collapsed (throttled)
+      this._compassPosAt = now
+    }
     let deg = 0
     if (this._mode !== 'tracked') {
       const fwd = this._tmpFwd || (this._tmpFwd = new this._THREE.Vector3())
