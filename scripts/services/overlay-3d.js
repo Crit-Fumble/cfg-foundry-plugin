@@ -723,7 +723,7 @@ export class Overlay3D {
     const moving = k.fwd || k.back || k.left || k.right
     if (moving && this._fpCenter) {
       if (!this._wasMoving) {
-        this._moveOrigin = { x: this._fpCenter.x, y: this._fpCenter.y } // ruler starts here
+        this._moveOrigin = { x: this._fpCenter.x, y: this._fpCenter.y, elev: Number(mover.document.elevation || 0) } // ruler starts here
         this._moveTokenId = mover.id
       }
       this._moveLastAt = now
@@ -780,6 +780,13 @@ export class Overlay3D {
       this._elevMoverId = mover.id
       this._fpActiveLevelId = this._activeLevel()?.id ?? null // baseline the floor with the elevation
     } else if (elevNow !== this._subjectElev) {
+      // Native Q/E (ascend/descend) is movement too: start the ruler from the pre-change
+      // elevation if none is running, so a pure climb/dive still measures.
+      if (!this._moveOrigin && this._fpCenter) {
+        this._moveOrigin = { x: this._fpCenter.x, y: this._fpCenter.y, elev: this._subjectElev }
+        this._moveTokenId = mover.id
+        this._moveLastAt = now
+      }
       this._subjectElev = elevNow
       this._rebuildSubject(mover)
       // Vision follows the SUBJECT (the camera): only re-slice the scene when the moved token
@@ -890,19 +897,21 @@ export class Overlay3D {
     const cx = focus.x
     const cz = focus.y
     cam.up.set(0, 1, 0)
+    const rawPitch = Number.isFinite(this._charPitch) ? this._charPitch : 42 // NOT `||` — pitch 0 is valid
     if (this._charDist < size * 0.5) {
       // First person: at the eyes, looking along the CAMERA direction (mouse-look) —
       // never the token facing, so walking/strafing can't spin the view. Pitch tilts
-      // the look up/down (42° = level, matching the 3rd-person neutral).
+      // the look up/down (42° = level; full range = straight up ↔ straight down).
       const fx = -Math.cos(this._charAzimuth)
       const fz = -Math.sin(this._charAzimuth)
-      const pitchRad = (42 - (this._charPitch || 42)) * (Math.PI / 180)
+      const pitchRad = Math.max(-89.9, Math.min(89.9, 42 - rawPitch)) * (Math.PI / 180)
       const ch = Math.cos(pitchRad)
       cam.position.set(cx, eyeY, cz)
       cam.lookAt(cx + fx * ch * size, eyeY + Math.sin(pitchRad) * size, cz + fz * ch * size)
     } else {
-      // Third person: camera behind + above along the azimuth, looking at the token.
-      const pitch = (this._charPitch || 42) * (Math.PI / 180)
+      // Third person: camera behind + above along the azimuth, looking at the token. Clamp to
+      // stay above the ground plane even if pitch was set wider while in first person.
+      const pitch = Math.max(1, Math.min(89.5, rawPitch)) * (Math.PI / 180)
       const horiz = this._charDist * Math.cos(pitch)
       const vert = this._charDist * Math.sin(pitch)
       cam.position.set(cx + Math.cos(this._charAzimuth) * horiz, eyeY + vert, cz + Math.sin(this._charAzimuth) * horiz)
@@ -1273,9 +1282,19 @@ export class Overlay3D {
     this._charAzimuth += dx * 0.006
     this._charAzimuthInit = true // user is steering — stop auto-seeding from heading
     // Non-inverted vertical: mouse UP (dy<0) → lower pitch → look up; mouse DOWN → look down.
-    this._charPitch = Math.max(5, Math.min(85, this._charPitch + dy * 0.344))
+    const b = this._pitchBounds()
+    this._charPitch = Math.max(b.min, Math.min(b.max, this._charPitch + dy * 0.344))
     const tok = this._firstPersonToken()
     if (tok) this._fpPositionCamera(tok) // camera direction is the azimuth in both 3rd & 1st person
+  }
+
+  /** Vertical look bounds for Character view. FIRST person (camera at the eyes) allows looking
+   * all the way up / all the way down (pitchRad = 42 - pitch → ±89.9° of look). THIRD person
+   * orbits above the token, so it stays above the ground plane while still reaching near-flat
+   * through near-top-down. */
+  _pitchBounds() {
+    const size = canvas?.dimensions?.size || 100
+    return this._charDist < size * 0.5 ? { min: -47.9, max: 131.9 } : { min: 1, max: 89.5 }
   }
 
   /** Show the subject token's model in 3rd person; hide it in 1st (the camera is
@@ -1606,8 +1625,8 @@ export class Overlay3D {
     const size = canvas?.dimensions?.size || 100
     if (sem === 'yawLeft') this._charAzimuth -= yaw
     else if (sem === 'yawRight') this._charAzimuth += yaw
-    else if (sem === 'pitchUp') this._charPitch = Math.max(5, this._charPitch - 4) // arrow up → look up
-    else if (sem === 'pitchDown') this._charPitch = Math.min(85, this._charPitch + 4)
+    else if (sem === 'pitchUp') this._charPitch = Math.max(this._pitchBounds().min, this._charPitch - 4) // arrow up → look up
+    else if (sem === 'pitchDown') this._charPitch = Math.min(this._pitchBounds().max, this._charPitch + 4)
     else if (sem === 'zoomIn') this._charDist = Math.max(0, this._charDist - size * 0.75)
     else if (sem === 'zoomOut') this._charDist = Math.min(size * 10, this._charDist + size * 0.75)
     this._charAzimuthInit = true // the user is steering the camera now
@@ -1959,7 +1978,7 @@ export class Overlay3D {
     const origin = tok.center
     const center = this._snapToGrid(dest, tok) // footprint-aware: grid-aligns any token size (even 2x2/4x4), free on gridless
     if (this._moveBlocked(origin, center)) return void ui?.notifications?.warn?.('Blocked by a wall.')
-    this._moveOrigin = { x: origin.x, y: origin.y }
+    this._moveOrigin = { x: origin.x, y: origin.y, elev: Number(tok.document.elevation || 0) }
     this._moveTokenId = tok.id // bind the ruler to this token so a later selection doesn't hijack it
     this._moveLastAt = typeof performance !== 'undefined' ? performance.now() : 0
     const { w, h } = this._tokenSizePx(tok.document)
@@ -1980,11 +1999,12 @@ export class Overlay3D {
         ? this._fpCenter
         : movingTok.center
       : null
+    const elevNow = movingTok ? Number(movingTok.document?.elevation || 0) : 0
     if (this._moveOrigin && cur) {
-      const lp = this._moveLastPos // any real motion (incl. a still-animating Top-Down move) keeps the ruler alive
-      if (!lp || Math.hypot(cur.x - lp.x, cur.y - lp.y) > 0.5) {
+      const lp = this._moveLastPos // any real motion — XY or elevation — keeps the ruler alive
+      if (!lp || Math.hypot(cur.x - lp.x, cur.y - lp.y) > 0.5 || lp.elev !== elevNow) {
         this._moveLastAt = now
-        this._moveLastPos = { x: cur.x, y: cur.y }
+        this._moveLastPos = { x: cur.x, y: cur.y, elev: elevNow }
       }
     }
     if (!this._moveOrigin || !cur || now - (this._moveLastAt || 0) > 1200) return this._clearMoveRuler()
@@ -1997,21 +2017,31 @@ export class Overlay3D {
       this._moveLine.renderOrder = 900
       this._viewer?.scene?.add(this._moveLine)
     }
+    // The path follows the tokens' actual heights (terrain + elevation), so a climb/dive
+    // draws a rising/falling line instead of hugging the ground.
+    const px = this._pxPerUnit()
+    const oy = this._fpGroundPx(o) + (o.elev || 0) * px + 3
+    const cy = this._fpGroundPx(cur) + elevNow * px + 3
     const p = this._moveLine.geometry.attributes.position
-    p.setXYZ(0, o.x, 3, o.y)
-    p.setXYZ(1, cur.x, 3, cur.y)
+    p.setXYZ(0, o.x, oy, o.y)
+    p.setXYZ(1, cur.x, cy, cur.y)
     p.needsUpdate = true
-    let dist
+    let d2d
     try {
-      dist = canvas.grid.measurePath([{ x: o.x, y: o.y }, { x: cur.x, y: cur.y }]).distance
+      d2d = canvas.grid.measurePath([{ x: o.x, y: o.y }, { x: cur.x, y: cur.y }]).distance
     } catch {
       const size = canvas?.dimensions?.size || 100
-      dist = (Math.hypot(cur.x - o.x, cur.y - o.y) / size) * (canvas?.dimensions?.distance || 5)
+      d2d = (Math.hypot(cur.x - o.x, cur.y - o.y) / size) * (canvas?.dimensions?.distance || 5)
     }
-    this._showMoveLabel(`${Math.round(dist)} ${canvas?.scene?.grid?.units || ''}`.trim(), cur)
+    // Elevation counts: 3D distance = hypot of Foundry's 2D path distance and the climb.
+    const dEl = Math.abs(elevNow - (o.elev || 0))
+    const dist = Math.hypot(d2d, dEl)
+    const units = canvas?.scene?.grid?.units || ''
+    const arrow = Math.round(dEl) > 0 ? ` (${elevNow > (o.elev || 0) ? '↑' : '↓'}${Math.round(dEl)})` : ''
+    this._showMoveLabel(`${Math.round(dist)} ${units}${arrow}`.trim(), cur, cy + 30)
   }
 
-  _showMoveLabel(text, canvasPos) {
+  _showMoveLabel(text, canvasPos, worldY = 40) {
     let el = this._moveLabel
     if (!el) {
       el = document.createElement('div')
@@ -2026,7 +2056,7 @@ export class Overlay3D {
     el.textContent = text
     el.style.display = 'block'
     const wp = (this._tmpLabel || (this._tmpLabel = new this._THREE.Vector3()))
-    wp.set(canvasPos.x, 40, canvasPos.y).project(this._orbitCamera)
+    wp.set(canvasPos.x, worldY, canvasPos.y).project(this._orbitCamera)
     el.style.left = `${Math.round((wp.x * 0.5 + 0.5) * window.innerWidth)}px`
     el.style.top = `${Math.round((-wp.y * 0.5 + 0.5) * window.innerHeight)}px`
   }
@@ -2063,19 +2093,21 @@ export class Overlay3D {
       if (!g?.visible || !tok.document) continue // skip a hidden mini (e.g. your own body in 1st person)
       g.getWorldPosition(tmp) // smooth world XZ (rides _fpCenter for the mover)
       const fp = Math.max(tok.document.width || 1, tok.document.height || 1) * size
+      const elevPx = Number(tok.document.elevation || 0) * this._pxPerUnit() // glow follows the flight-stand pole
       let fx = this._selFx.get(tok.id)
       if (!fx) {
         fx = { grp: new THREE.Group() }
         this._viewer.scene.add(fx.grp)
         this._selFx.set(tok.id, fx)
       }
-      // Rebuild the terrain-draped geometry when the footprint changes or the token moved.
-      if (fx.fp !== fp || fx.x === undefined || Math.hypot(tmp.x - fx.x, tmp.z - fx.z) > 4) {
+      // Rebuild the terrain-draped geometry when the footprint/elevation changes or the token moved.
+      if (fx.fp !== fp || fx.x === undefined || Math.hypot(tmp.x - fx.x, tmp.z - fx.z) > 4 || Math.abs((fx.elev ?? 0) - elevPx) > 0.5) {
         this._clearGroup(fx.grp)
-        this._buildSelBox(fx.grp, tmp.x, tmp.z, fp, this._controlColorNum())
+        this._buildSelBox(fx.grp, tmp.x, tmp.z, fp, this._controlColorNum(), elevPx)
         fx.fp = fp
         fx.x = tmp.x
         fx.z = tmp.z
+        fx.elev = elevPx
       }
       seen.add(tok.id)
     }
@@ -2083,18 +2115,20 @@ export class Overlay3D {
   }
 
   /** Build a terrain-draped selection box outline + a fading glow prism, in WORLD coords
-   * centred on (cx,cz). Every vertex is dropped to the heightmap surface under it. */
-  _buildSelBox(grp, cx, cz, fp, colorNum) {
+   * centred on (cx,cz). Every vertex is dropped to the heightmap surface under it. The glow
+   * renders BEHIND the token (far walls only: inward-facing normals + FrontSide, plus depth
+   * test vs the opaque mini) and extends to the token's ± elevation, matching the base pole. */
+  _buildSelBox(grp, cx, cz, fp, colorNum, elevPx = 0) {
     const THREE = this._THREE
     const px = this._pxPerUnit()
     const half = fp / 2
     const N = 6 // segments per edge (drape resolution)
     const gy = (wx, wz) => {
       const t = this._sampleTerrain(wx, wz)
-      return (t != null ? t * px : 0) + 2 // terrain surface, lifted just clear of the ground
+      return (t != null ? t * px : 0) + 3 // terrain surface, lifted just clear of the ground
     }
     const corners = [[-half, -half], [half, -half], [half, half], [-half, half]]
-    // --- draped outline ---
+    // --- draped outline (depth-tested → the token and terrain occlude it naturally) ---
     const ring = []
     for (let s = 0; s < 4; s++) {
       const [ax, az] = corners[s]
@@ -2107,36 +2141,46 @@ export class Overlay3D {
       }
     }
     ring.push(ring[0].clone())
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: colorNum, transparent: true, opacity: 0.95, depthTest: false }))
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: colorNum, transparent: true, opacity: 0.95 }))
     line.renderOrder = 891
     grp.add(line)
-    // --- glow prism: 4 draped side walls, alpha fading base→top (RGBA vertex colours) ---
-    const H = fp * 0.85
+    // --- glow prism: draped side walls, alpha peaking at the ground and fading toward the
+    // extremities (RGBA vertex colours). Height follows the token's elevation: up to the mini
+    // when it flies (+elev), down to it when it's below the floor (-elev). Winding gives
+    // INWARD-facing normals; with FrontSide only the far (behind-token) walls render, so the
+    // glow never washes over the token art. ---
+    const upTop = Math.max(fp * 0.85, elevPx + fp * 0.6)
+    const downBottom = elevPx < 0 ? elevPx - fp * 0.35 : 0
     const col = new THREE.Color(colorNum)
     const A = 0.32
     const pos = []
     const rgba = []
     const pushV = (x, y, z, a) => (pos.push(x, y, z), rgba.push(col.r, col.g, col.b, a))
-    for (let s = 0; s < 4; s++) {
-      const [ax, az] = corners[s]
-      const [bx, bz] = corners[(s + 1) % 4]
-      for (let i = 0; i < N; i++) {
-        const t0 = i / N
-        const t1 = (i + 1) / N
-        const x0 = cx + ax + (bx - ax) * t0
-        const z0 = cz + az + (bz - az) * t0
-        const x1 = cx + ax + (bx - ax) * t1
-        const z1 = cz + az + (bz - az) * t1
-        const y0 = gy(x0, z0)
-        const y1 = gy(x1, z1)
-        pushV(x0, y0, z0, A); pushV(x1, y1, z1, A); pushV(x1, y1 + H, z1, 0) // tri 1
-        pushV(x0, y0, z0, A); pushV(x1, y1 + H, z1, 0); pushV(x0, y0 + H, z0, 0) // tri 2
+    // One vertical band of wall quads: yBot→yTop offsets from the draped ground, with alphas.
+    const band = (yBot, aBot, yTop, aTop) => {
+      for (let s = 0; s < 4; s++) {
+        const [ax, az] = corners[s]
+        const [bx, bz] = corners[(s + 1) % 4]
+        for (let i = 0; i < N; i++) {
+          const t0 = i / N
+          const t1 = (i + 1) / N
+          const x0 = cx + ax + (bx - ax) * t0
+          const z0 = cz + az + (bz - az) * t0
+          const x1 = cx + ax + (bx - ax) * t1
+          const z1 = cz + az + (bz - az) * t1
+          const y0 = gy(x0, z0)
+          const y1 = gy(x1, z1)
+          pushV(x0, y0 + yBot, z0, aBot); pushV(x1, y1 + yBot, z1, aBot); pushV(x1, y1 + yTop, z1, aTop) // tri 1
+          pushV(x0, y0 + yBot, z0, aBot); pushV(x1, y1 + yTop, z1, aTop); pushV(x0, y0 + yTop, z0, aTop) // tri 2
+        }
       }
     }
+    band(0, A, upTop, 0) // ground → up (to the flying mini's height when elevated)
+    if (downBottom < 0) band(downBottom, 0, 0, A) // below-floor mini: glow continues down the pole
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(rgba), 4))
-    const prism = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }))
+    const prism = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.FrontSide, blending: THREE.AdditiveBlending }))
     prism.renderOrder = 890
     grp.add(prism)
   }
