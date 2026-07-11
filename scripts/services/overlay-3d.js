@@ -270,7 +270,7 @@ export class Overlay3D {
         this._setFpInput(false)
         this._hideTokenHud()
         this._clearMoveRuler() // drop the movement path + distance label
-        this._clearSelectionBrackets() // drop the selection corner brackets
+        this._clearSelectionFx() // drop the selection box/glow + target reticle
         this._wasMoving = false
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
@@ -2045,27 +2045,121 @@ export class Overlay3D {
   }
 
   /**
-   * Foundry-style animated corner brackets around every CONTROLLED (selected) token — the 3D
-   * analogue of Foundry's 2D selection indicator, which reads far more clearly than the base
-   * ring in Character view. A DOM overlay (like Foundry's own HUD) so it matches the native
-   * look and always faces the screen. Box = the token's screen-space footprint + mini height.
+   * SELECTION FX (controlled tokens): an in-world grid box on the ground + a glowing prism
+   * that fades out upward. The box base is draped onto the heightmap (sampled per vertex) so
+   * it sits ON uneven terrain instead of clipping through it — the 3D analogue of Foundry's
+   * 2D selection box. Geometry is built in world coords and rebuilt only when the token moves
+   * (so a stationary selection costs nothing).
    */
-  _updateSelectionBrackets() {
+  _updateSelectionFx() {
+    const THREE = this._THREE
+    if (!THREE || !this._viewer?.tokens || !this._viewer.scene) return
+    if (!this._selFx) this._selFx = new Map()
+    const size = canvas?.dimensions?.size || 100
+    const tmp = this._tmpFx || (this._tmpFx = new THREE.Vector3())
+    const seen = new Set()
+    for (const tok of canvas?.tokens?.controlled || []) {
+      const g = this._viewer.tokens.get?.(tok.id)
+      if (!g?.visible || !tok.document) continue // skip a hidden mini (e.g. your own body in 1st person)
+      g.getWorldPosition(tmp) // smooth world XZ (rides _fpCenter for the mover)
+      const fp = Math.max(tok.document.width || 1, tok.document.height || 1) * size
+      let fx = this._selFx.get(tok.id)
+      if (!fx) {
+        fx = { grp: new THREE.Group() }
+        this._viewer.scene.add(fx.grp)
+        this._selFx.set(tok.id, fx)
+      }
+      // Rebuild the terrain-draped geometry when the footprint changes or the token moved.
+      if (fx.fp !== fp || fx.x === undefined || Math.hypot(tmp.x - fx.x, tmp.z - fx.z) > 4) {
+        this._clearGroup(fx.grp)
+        this._buildSelBox(fx.grp, tmp.x, tmp.z, fp, this._controlColorNum())
+        fx.fp = fp
+        fx.x = tmp.x
+        fx.z = tmp.z
+      }
+      seen.add(tok.id)
+    }
+    for (const [id, fx] of this._selFx) if (!seen.has(id)) (this._disposeFx(fx.grp), this._selFx.delete(id))
+  }
+
+  /** Build a terrain-draped selection box outline + a fading glow prism, in WORLD coords
+   * centred on (cx,cz). Every vertex is dropped to the heightmap surface under it. */
+  _buildSelBox(grp, cx, cz, fp, colorNum) {
+    const THREE = this._THREE
+    const px = this._pxPerUnit()
+    const half = fp / 2
+    const N = 6 // segments per edge (drape resolution)
+    const gy = (wx, wz) => {
+      const t = this._sampleTerrain(wx, wz)
+      return (t != null ? t * px : 0) + 2 // terrain surface, lifted just clear of the ground
+    }
+    const corners = [[-half, -half], [half, -half], [half, half], [-half, half]]
+    // --- draped outline ---
+    const ring = []
+    for (let s = 0; s < 4; s++) {
+      const [ax, az] = corners[s]
+      const [bx, bz] = corners[(s + 1) % 4]
+      for (let i = 0; i < N; i++) {
+        const t = i / N
+        const wx = cx + ax + (bx - ax) * t
+        const wz = cz + az + (bz - az) * t
+        ring.push(new THREE.Vector3(wx, gy(wx, wz), wz))
+      }
+    }
+    ring.push(ring[0].clone())
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: colorNum, transparent: true, opacity: 0.95, depthTest: false }))
+    line.renderOrder = 891
+    grp.add(line)
+    // --- glow prism: 4 draped side walls, alpha fading base→top (RGBA vertex colours) ---
+    const H = fp * 0.85
+    const col = new THREE.Color(colorNum)
+    const A = 0.32
+    const pos = []
+    const rgba = []
+    const pushV = (x, y, z, a) => (pos.push(x, y, z), rgba.push(col.r, col.g, col.b, a))
+    for (let s = 0; s < 4; s++) {
+      const [ax, az] = corners[s]
+      const [bx, bz] = corners[(s + 1) % 4]
+      for (let i = 0; i < N; i++) {
+        const t0 = i / N
+        const t1 = (i + 1) / N
+        const x0 = cx + ax + (bx - ax) * t0
+        const z0 = cz + az + (bz - az) * t0
+        const x1 = cx + ax + (bx - ax) * t1
+        const z1 = cz + az + (bz - az) * t1
+        const y0 = gy(x0, z0)
+        const y1 = gy(x1, z1)
+        pushV(x0, y0, z0, A); pushV(x1, y1, z1, A); pushV(x1, y1 + H, z1, 0) // tri 1
+        pushV(x0, y0, z0, A); pushV(x1, y1 + H, z1, 0); pushV(x0, y0 + H, z0, 0) // tri 2
+      }
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(rgba), 4))
+    const prism = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }))
+    prism.renderOrder = 890
+    grp.add(prism)
+  }
+
+  /**
+   * TARGET reticle (targeted tokens): a screen-space DOM overlay — four Foundry-style yellow
+   * corner arrows around the token, in camera/UI space (not on the ground), so it reads like
+   * Foundry's native target marker from any angle.
+   */
+  _updateTargetReticle() {
     const cam = this._orbitCamera
     const THREE = this._THREE
     if (!cam || !THREE || !this._viewer?.tokens) return
-    let cont = this._selEl
+    let cont = this._tgtEl
     if (!cont) {
       cont = document.createElement('div')
-      cont.id = 'cfg-3d-select'
+      cont.id = 'cfg-3d-target'
       Object.assign(cont.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: '27' })
       document.body.appendChild(cont)
-      this._selEl = cont
-      this._selMap = new Map()
-      this._injectSelectStyle()
+      this._tgtEl = cont
+      this._tgtMap = new Map()
+      this._injectTargetStyle()
     }
-    const controlled = canvas?.tokens?.controlled || []
-    const color = this._controlColorCss()
     cam.updateMatrixWorld()
     const w = window.innerWidth || 1
     const h = window.innerHeight || 1
@@ -2073,9 +2167,10 @@ export class Overlay3D {
     const v = new THREE.Vector3()
     const e = new THREE.Vector3()
     const seen = new Set()
-    for (const tok of controlled) {
+    for (const tok of canvas?.tokens?.placeables || []) {
+      if (!tok.isTargeted || !tok.document) continue
       const g = this._viewer.tokens.get?.(tok.id)
-      if (!g?.visible || !tok?.document) continue // skip a hidden mini (e.g. your own body in 1st person)
+      if (!g?.visible) continue
       g.getWorldPosition(v)
       const base = v.clone().project(cam)
       if (base.z > 1) continue // behind the camera
@@ -2083,63 +2178,80 @@ export class Overlay3D {
       const by = (-base.y * 0.5 + 0.5) * h
       const rWorld = Math.max(tok.document.width || 1, tok.document.height || 1) * size * 0.5
       e.set(v.x + rWorld, v.y, v.z).project(cam)
-      const rS = Math.max(10, Math.hypot((e.x * 0.5 + 0.5) * w - bx, (-e.y * 0.5 + 0.5) * h - by))
+      const rS = Math.max(12, Math.hypot((e.x * 0.5 + 0.5) * w - bx, (-e.y * 0.5 + 0.5) * h - by))
       e.set(v.x, v.y + size * 1.8, v.z).project(cam) // top of the billboarded mini
       const ty = (-e.y * 0.5 + 0.5) * h
-      const minX = bx - rS * 1.05
-      const maxX = bx + rS * 1.05
+      const minX = bx - rS
+      const maxX = bx + rS
       const minY = Math.min(ty, by - rS)
       const maxY = by + rS * 0.4
       seen.add(tok.id)
-      let el = this._selMap.get(tok.id)
+      let el = this._tgtMap.get(tok.id)
       if (!el) {
         el = document.createElement('div')
-        el.className = 'cfg-3d-bracket'
-        el.innerHTML = '<i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>'
+        el.className = 'cfg-3d-reticle'
+        el.innerHTML = '<i class="a tl"></i><i class="a tr"></i><i class="a bl"></i><i class="a br"></i>'
         cont.appendChild(el)
-        this._selMap.set(tok.id, el)
+        this._tgtMap.set(tok.id, el)
       }
       el.style.left = `${Math.round(minX)}px`
       el.style.top = `${Math.round(minY)}px`
       el.style.width = `${Math.round(maxX - minX)}px`
       el.style.height = `${Math.round(maxY - minY)}px`
-      el.style.setProperty('--cfg-sel', color)
     }
-    for (const [id, el] of this._selMap) {
+    for (const [id, el] of this._tgtMap) {
       if (!seen.has(id)) {
         el.remove()
-        this._selMap.delete(id)
+        this._tgtMap.delete(id)
       }
     }
   }
 
-  /** Foundry's canonical control color (gold) for the selection brackets; falls back if the
-   * config isn't populated. */
-  _controlColorCss() {
-    const c = globalThis.CONFIG?.Canvas?.dispositionColors?.CONTROLLED
-    if (typeof c === 'number') return `#${(c >>> 0).toString(16).padStart(6, '0').slice(-6)}`
-    return '#ff9829'
-  }
-
-  _injectSelectStyle() {
-    if (document.getElementById('cfg-3d-select-style')) return
+  _injectTargetStyle() {
+    if (document.getElementById('cfg-3d-target-style')) return
     const s = document.createElement('style')
-    s.id = 'cfg-3d-select-style'
+    s.id = 'cfg-3d-target-style'
     s.textContent =
-      '.cfg-3d-bracket{position:absolute;pointer-events:none;animation:cfg-sel-pulse 1.1s ease-in-out infinite}' +
-      '.cfg-3d-bracket .c{position:absolute;width:16px;height:16px;box-sizing:border-box;filter:drop-shadow(0 0 2px rgba(0,0,0,0.7))}' +
-      '.cfg-3d-bracket .c.tl{top:-2px;left:-2px;border-top:3px solid var(--cfg-sel);border-left:3px solid var(--cfg-sel)}' +
-      '.cfg-3d-bracket .c.tr{top:-2px;right:-2px;border-top:3px solid var(--cfg-sel);border-right:3px solid var(--cfg-sel)}' +
-      '.cfg-3d-bracket .c.bl{bottom:-2px;left:-2px;border-bottom:3px solid var(--cfg-sel);border-left:3px solid var(--cfg-sel)}' +
-      '.cfg-3d-bracket .c.br{bottom:-2px;right:-2px;border-bottom:3px solid var(--cfg-sel);border-right:3px solid var(--cfg-sel)}' +
-      '@keyframes cfg-sel-pulse{0%,100%{opacity:1}50%{opacity:0.5}}'
+      '.cfg-3d-reticle{position:absolute;pointer-events:none;animation:cfg-tgt-pulse 0.9s ease-in-out infinite}' +
+      '.cfg-3d-reticle .a{position:absolute;width:15px;height:15px;background:#ffd447;filter:drop-shadow(0 0 2px rgba(0,0,0,0.85))}' +
+      '.cfg-3d-reticle .a.tl{top:-3px;left:-3px;clip-path:polygon(0 0,100% 0,0 100%)}' +
+      '.cfg-3d-reticle .a.tr{top:-3px;right:-3px;clip-path:polygon(100% 0,0 0,100% 100%)}' +
+      '.cfg-3d-reticle .a.bl{bottom:-3px;left:-3px;clip-path:polygon(0 100%,0 0,100% 100%)}' +
+      '.cfg-3d-reticle .a.br{bottom:-3px;right:-3px;clip-path:polygon(100% 100%,100% 0,0 100%)}' +
+      '@keyframes cfg-tgt-pulse{0%,100%{opacity:1}50%{opacity:0.45}}'
     document.head.appendChild(s)
   }
 
-  _clearSelectionBrackets() {
-    if (this._selMap) {
-      for (const [, el] of this._selMap) el.remove()
-      this._selMap.clear()
+  /** Foundry's canonical control color (gold) as a number; falls back if config isn't loaded. */
+  _controlColorNum() {
+    const c = globalThis.CONFIG?.Canvas?.dispositionColors?.CONTROLLED
+    return typeof c === 'number' ? c : 0xff9829
+  }
+
+  /** Dispose every child of a group (geometry + materials) without removing the group itself. */
+  _clearGroup(grp) {
+    if (!grp) return
+    while (grp.children.length) {
+      const o = grp.children.pop()
+      o.geometry?.dispose?.()
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m?.dispose?.())
+    }
+  }
+
+  _disposeFx(grp) {
+    if (!grp) return
+    this._clearGroup(grp)
+    this._viewer?.scene?.remove(grp)
+  }
+
+  _clearSelectionFx() {
+    if (this._selFx) {
+      for (const [, fx] of this._selFx) this._disposeFx(fx.grp)
+      this._selFx.clear()
+    }
+    if (this._tgtMap) {
+      for (const [, el] of this._tgtMap) el.remove()
+      this._tgtMap.clear()
     }
   }
 
@@ -2811,8 +2923,11 @@ export class Overlay3D {
       floorElevation: terrainUnits != null ? terrainUnits * px : this._tokenFloorBasePx(doc),
       groundOffsetUnits: terrainUnits != null ? terrainUnits : 0,
       assetUrl: (src) => this._assetUrl(src),
-      selected: !!placeable?.controlled, // viewer controls it → selection ring
-      targeted: !!placeable?.isTargeted, // viewer targets it → reticle halo
+      // Selection + target visuals are drawn in 3D by the plugin (_updateSelectionFx): a
+      // grid-aligned ground box + upward glow for selection, Foundry-style yellow corner
+      // arrows for targets. The core's ring/halo are left off here to avoid doubling up.
+      selected: false,
+      targeted: false,
       targetColor: this._targetColor(),
     })
   }
@@ -2923,7 +3038,8 @@ export class Overlay3D {
     if (!this._visible || !this._renderer || !this._camera) return
     this._updateCompass()
     this._updateMoveRuler() // live movement path + distance (Top Down + Character)
-    this._updateSelectionBrackets() // Foundry-style corner brackets on controlled tokens
+    this._updateSelectionFx() // selection box + glow prism on the ground (controlled tokens)
+    this._updateTargetReticle() // screen-space yellow corner arrows on targeted tokens
     // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
     // render-on-change), so this ticker yields to it — no double update/render.
     if (this._mode === 'orbit' && this._sharedControls) return
