@@ -1748,7 +1748,7 @@ export class Overlay3D {
       this._subjectElev = undefined
       this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     } else this._syncTrackedCamera() // TRUE top-down (directly overhead)
-    this._syncSelfChip() // the self-token chip shows only in Character view
+    this._syncCompassSubject() // compass doubles as the self-token control in Character view
     this._render()
   }
 
@@ -1894,18 +1894,33 @@ export class Overlay3D {
 
   /** Bottom-right compass. The rose rotates so N always points to world-north on screen
    * (default = north-up). Top-Down is locked north-up; Free/Character track the camera. */
+  /** Compass dial, doubling as the self-token control in Character view: your token art
+   * fills the dial (a compact 2-in-1 camera UI) — click selects you, shift+click targets
+   * you (potions/self-buffs), right-click opens your token menu. The rose stays on top. */
   _buildCompass() {
     if (this._compass || !this._container) return
     const wrap = document.createElement('div')
     wrap.id = 'cfg-3d-compass'
     // Bottom-LEFT, just above the players (username/latency) pill so it clears the chat.
-    Object.assign(wrap.style, { position: 'fixed', left: '12px', bottom: '96px', width: '58px', height: '58px', zIndex: '26', pointerEvents: 'none' })
+    Object.assign(wrap.style, {
+      position: 'fixed', left: '12px', bottom: '96px', width: '58px', height: '58px', zIndex: '26',
+      pointerEvents: 'none', borderRadius: '50%', overflow: 'hidden',
+    })
+    wrap.dataset.tooltip = 'Your character — click: select · shift+click: target · right-click: menu'
+    // Token art UNDER the rose (Character view only — _syncCompassSubject drives it).
+    const art = document.createElement('img')
+    Object.assign(art.style, {
+      position: 'absolute', inset: '0', width: '100%', height: '100%', objectFit: 'cover',
+      borderRadius: '50%', display: 'none', pointerEvents: 'none',
+    })
+    art.addEventListener('error', () => (art.style.display = 'none'))
+    wrap.appendChild(art)
     const rose = document.createElement('div')
     Object.assign(rose.style, {
       width: '100%', height: '100%', borderRadius: '50%', position: 'relative',
-      background: 'rgba(10,14,19,0.66)', border: '1px solid rgba(255,255,255,0.28)',
+      background: 'rgba(10,14,19,0.45)', border: '1px solid rgba(255,255,255,0.28)',
       boxShadow: '0 1px 6px rgba(0,0,0,0.4)', transition: 'transform 0.08s linear',
-      font: '600 10px system-ui, sans-serif', color: '#cdd6e0',
+      font: '600 10px system-ui, sans-serif', color: '#e6edf5', textShadow: '0 1px 2px rgba(0,0,0,0.9)',
     })
     rose.innerHTML =
       '<div style="position:absolute;top:1px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:12px solid #ff5b5b"></div>' +
@@ -1914,10 +1929,55 @@ export class Overlay3D {
       '<div style="position:absolute;left:4px;top:50%;transform:translateY(-50%)">W</div>' +
       '<div style="position:absolute;right:4px;top:50%;transform:translateY(-50%)">E</div>'
     wrap.appendChild(rose)
+    // Self-token interactions (active only in Character view; input never leaks to the scene).
+    wrap.addEventListener('mousedown', (e) => {
+      e.stopPropagation()
+      if (e.button === 2) e.preventDefault()
+    })
+    wrap.addEventListener('mouseup', (e) => e.stopPropagation())
+    wrap.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this._mode !== 'firstperson') return
+      const tok = this._firstPersonToken()
+      if (!tok) return
+      try {
+        if (e.shiftKey) tok.setTarget(!tok.isTargeted, { releaseOthers: false }) // self-target
+        else tok.control({ releaseOthers: true }) // select yourself
+      } catch {
+        /* permission — ignore */
+      }
+    })
+    wrap.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (this._mode !== 'firstperson') return
+      const tok = this._firstPersonToken()
+      if (!tok) return
+      const r = wrap.getBoundingClientRect()
+      this._openTokenHudFor(tok, r.right + 120, Math.max(140, r.top - 20)) // menu pinned beside the dial
+    })
     this._container.appendChild(wrap)
     this._compass = wrap
     this._compassRose = rose
+    this._compassArt = art
     this._positionCompass()
+  }
+
+  /** Character view: show your token art in the dial + enable its self-token interactions;
+   * other modes: plain, click-through compass. */
+  _syncCompassSubject() {
+    if (!this._compass) return
+    const inChar = this._visible && this._mode === 'firstperson'
+    this._compass.style.pointerEvents = inChar ? 'auto' : 'none'
+    this._compass.style.cursor = inChar ? 'pointer' : ''
+    const art = this._compassArt
+    if (!art) return
+    const src = inChar ? this._firstPersonToken()?.document?.texture?.src || '' : ''
+    if (src && art.dataset.src !== src) {
+      art.dataset.src = src
+      art.src = src
+    }
+    art.style.display = inChar && src ? 'block' : 'none'
   }
 
   /** Sit the compass at bottom-left, just above the Foundry players (username/latency)
@@ -1934,78 +1994,6 @@ export class Overlay3D {
     }
     this._compass.style.left = `${left}px`
     this._compass.style.bottom = `${bottom}px`
-    if (this._selfChip) {
-      // Self-token chip rides just above the compass (the bottom-left camera-UI cluster).
-      this._selfChip.style.left = `${left + 6}px`
-      this._selfChip.style.bottom = `${bottom + 66}px`
-    }
-  }
-
-  /**
-   * Self-token chip (Character view): a small round portrait of YOUR character in the 2D
-   * camera UI. In first person your own mini is invisible (you ARE the camera), so this is
-   * the stand-in — right-click stays free for drag-look in the viewport:
-   *   left-click → select your token · shift+click → target yourself (potions, self-buffs)
-   *   right-click → your token's HUD menu (target, hide, exit 3D, …)
-   */
-  _buildSelfChip() {
-    if (this._selfChip || !this._container) return
-    const el = document.createElement('div')
-    el.id = 'cfg-3d-selfchip'
-    Object.assign(el.style, {
-      position: 'fixed', left: '18px', bottom: '162px', width: '46px', height: '46px', display: 'none',
-      borderRadius: '50%', overflow: 'hidden', zIndex: '26', cursor: 'pointer', pointerEvents: 'auto',
-      border: '2px solid rgba(255,255,255,0.55)', boxShadow: '0 1px 6px rgba(0,0,0,0.5)', background: 'rgba(10,14,19,0.75)',
-    })
-    el.dataset.tooltip = 'Your character — click: select · shift+click: target · right-click: menu'
-    const img = document.createElement('img')
-    Object.assign(img.style, { width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none', display: 'block' })
-    img.addEventListener('error', () => (img.style.display = 'none'))
-    el.appendChild(img)
-    // Chip input must never leak into the 3D scene handlers on the container below it.
-    el.addEventListener('mousedown', (e) => {
-      e.stopPropagation()
-      if (e.button === 2) e.preventDefault()
-    })
-    el.addEventListener('mouseup', (e) => e.stopPropagation())
-    el.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const tok = this._firstPersonToken()
-      if (!tok) return
-      try {
-        if (e.shiftKey) tok.setTarget(!tok.isTargeted, { releaseOthers: false }) // self-target
-        else tok.control({ releaseOthers: true }) // select yourself
-      } catch {
-        /* permission — ignore */
-      }
-    })
-    el.addEventListener('contextmenu', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const tok = this._firstPersonToken()
-      if (!tok) return
-      const r = el.getBoundingClientRect()
-      this._openTokenHudFor(tok, r.right + 120, Math.max(140, r.top - 40)) // menu pinned beside the chip
-    })
-    this._container.appendChild(el)
-    this._selfChip = el
-    this._selfChipImg = img
-  }
-
-  /** Show the chip only in Character view; keep its portrait synced to the subject. */
-  _syncSelfChip() {
-    if (!this._selfChip) this._buildSelfChip()
-    if (!this._selfChip) return
-    const show = this._visible && this._mode === 'firstperson'
-    this._selfChip.style.display = show ? 'block' : 'none'
-    if (!show) return
-    const tok = this._firstPersonToken()
-    const src = tok?.document?.texture?.src || ''
-    if (src && this._selfChipImg && this._selfChipImg.dataset.src !== src) {
-      this._selfChipImg.dataset.src = src
-      this._selfChipImg.src = src
-      this._selfChipImg.style.display = 'block'
-    }
   }
 
   _updateCompass() {
@@ -2013,7 +2001,7 @@ export class Overlay3D {
     const now = typeof performance !== 'undefined' ? performance.now() : 0
     if (now - (this._compassPosAt || 0) > 800) {
       this._positionCompass() // re-anchor if the players pill grew/collapsed (throttled)
-      this._syncSelfChip() // keep the self-token chip's visibility/portrait fresh
+      this._syncCompassSubject() // keep the dial art/interactivity fresh
       this._compassPosAt = now
     }
     let deg = 0
@@ -2420,17 +2408,26 @@ export class Overlay3D {
 
   /** Bind + show Foundry's native token HUD for `tok` over the 3D view, optionally pinned at
    * a screen point. Shared by the 3D right-click pick and the self-token chip. */
-  _openTokenHudFor(tok, x, y) {
+  async _openTokenHudFor(tok, x, y) {
     try {
       document.body.classList.add('cfg-3d-show-hud')
       canvas.hud.token.bind(tok)
-      canvas.hud.token.render(true)
+      // AppV2 render is async and applies Foundry's own (2D-canvas) position when it lands —
+      // await it, THEN pin ours, and re-pin next frame to beat any late reposition.
+      try {
+        await canvas.hud.token.render(true)
+      } catch {
+        /* render may reject mid-bind — the element check below covers it */
+      }
       this._hudShown = true
       const el = canvas.hud.token.element
-      if (el && Number.isFinite(x) && Number.isFinite(y)) {
-        requestAnimationFrame(() => {
-          Object.assign(el.style, { position: 'fixed', left: `${Math.round(x)}px`, top: `${Math.round(y)}px`, transform: 'translate(-50%,-50%)', zIndex: '31' })
-        })
+      if (el) {
+        // Pin via CSS vars — the injected !important rules position the HUD, so Foundry's
+        // late async setPosition (computed for the hidden 2D canvas) can never move it.
+        const cx = Number.isFinite(x) ? Math.max(90, Math.min((window.innerWidth || 1400) - 90, x)) : (window.innerWidth || 1400) / 2
+        const cy = Number.isFinite(y) ? Math.max(80, Math.min((window.innerHeight || 900) - 80, y)) : (window.innerHeight || 900) / 2
+        el.style.setProperty('--cfg3d-hud-x', `${Math.round(cx)}px`)
+        el.style.setProperty('--cfg3d-hud-y', `${Math.round(cy)}px`)
       }
     } catch {
       /* ignore */
@@ -3710,7 +3707,17 @@ export class Overlay3D {
       'body.cfg-3d-active #hud, body.cfg-3d-active #tooltip { display: none !important; }' +
       // Re-show the Token HUD over the 3D view when the user right-clicks a token (the
       // service positions it over the token's 3D screen position).
-      'body.cfg-3d-active.cfg-3d-show-hud #hud { display: block !important; }'
+      // #hud natively sits at z-index 1 — UNDER the opaque 3D overlay (z 25). Lift it above
+      // the 3D view (but below the sidebar/hotbar at z 30) while we're deliberately showing it.
+      // …and neutralize its canvas-space pan/zoom transform (a transformed ancestor would
+      // otherwise hijack the fixed-position child into scaled canvas coordinates).
+      'body.cfg-3d-active.cfg-3d-show-hud #hud { display: block !important; z-index: 28 !important; ' +
+      'transform: none !important; left: 0 !important; top: 0 !important; width: 100vw !important; height: 100vh !important; pointer-events: none; }' +
+      // Pin the token HUD at our projected 3D point. Foundry's async setPosition writes inline
+      // left/top computed from the HIDDEN 2D canvas (often off-screen); these !important rules
+      // beat inline styles no matter when that lands. The vars are set in _openTokenHudFor.
+      'body.cfg-3d-active.cfg-3d-show-hud #hud #token-hud { position: fixed !important; left: var(--cfg3d-hud-x, 50%) !important; ' +
+      'top: var(--cfg3d-hud-y, 50%) !important; transform: translate(-50%,-50%) !important; z-index: 31 !important; pointer-events: all; }'
     document.head.appendChild(style)
   }
 
