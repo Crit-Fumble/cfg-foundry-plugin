@@ -180,6 +180,9 @@ export function buildTokenJson(doc, ctx) {
     model: modelSrc ? ctx.assetUrl(modelSrc) : null,
     modelScale: Number.isFinite(cfgFlags.modelScale) ? cfgFlags.modelScale : undefined,
     modelRotation: Number.isFinite(cfgFlags.modelRotation) ? cfgFlags.modelRotation : undefined,
+    selected: !!ctx.selected,
+    targeted: !!ctx.targeted,
+    targetColor: ctx.targetColor,
   }
 }
 

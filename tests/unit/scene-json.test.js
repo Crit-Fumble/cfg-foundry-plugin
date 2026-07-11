@@ -292,6 +292,13 @@ describe('buildTokenJson', () => {
     expect(buildTokenJson(doc, kctx)).toEqual({
       id: 'k', x: 1, y: 2, width: 100, height: 100, elevation: 60, floorElevation: 40,
       color: 0xf44336, texture: 'ABS:k.png', model: 'ABS:k.glb', modelScale: 2, modelRotation: undefined,
+      selected: false, targeted: false, targetColor: undefined,
+    })
+  })
+  it('carries selection/target state from ctx', () => {
+    const doc = { id: 'k', x: 0, y: 0, flags: {} }
+    expect(buildTokenJson(doc, { ...kctx, selected: true, targeted: true, targetColor: 0x3366ff })).toMatchObject({
+      selected: true, targeted: true, targetColor: 0x3366ff,
     })
   })
   it('lifts elevation by the terrain ground offset so a ground token sits ON the surface', () => {

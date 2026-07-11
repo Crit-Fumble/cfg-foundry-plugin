@@ -173,8 +173,13 @@ export class Overlay3D {
           this._fpGoal = null
           this._subjectElev = undefined // re-baseline elevation for the new subject
         }
-        // Rebuild on focus-follow (slice) or in first-person (to hide the new subject).
-        if (this._focusFollowEnabled() || this._mode === 'firstperson') this._scheduleRebuild()
+        // Rebuild while visible so the selection ring (and, in first-person/focus-follow,
+        // the subject/slice) tracks the control change.
+        if (this._visible) this._scheduleRebuild()
+      })
+      // Target reticle: rebuild when the viewer targets/untargets a token.
+      this._on('targetToken', () => {
+        if (this._visible) this._scheduleRebuild()
       })
       this._on('updateToken', (doc, change) => this._onUpdateToken(doc, change))
       // v13+ routes x/y/elevation/size through the movement pipeline, which
@@ -187,6 +192,20 @@ export class Overlay3D {
         if (this._visible && this._mode === 'tracked') {
           this._syncTrackedCamera()
           this._render()
+        }
+      })
+      // Focus left the token → drop out of 3D back to 2D when a build/draw tool is picked
+      // (players: draw tools; GMs: any scene-editing layer). 3D is for playing through a
+      // token — tokens + measuring stay in 3D; editing the scene happens in 2D.
+      this._on('renderSceneControls', () => {
+        if (!this._visible || this._exitingBuild) return
+        const name = ui?.controls?.control?.name
+        const BUILD = ['regions', 'drawings', 'tiles', 'walls', 'sounds', 'lighting', 'notes']
+        if (BUILD.includes(name)) {
+          this._exitingBuild = true // guard against the control re-render our own exit triggers
+          Promise.resolve(this.setViewMode('2d')).finally(() => {
+            this._exitingBuild = false
+          })
         }
       })
 
@@ -238,20 +257,25 @@ export class Overlay3D {
     this._visible = visible
     try {
       if (visible) {
+        this._showLoading() // three.js bundle + first scene build can take a beat — don't look hung
         await this._mount()
         await this.rebuild()
         if (this._container) this._container.style.display = 'block'
         this._applyMode() // active camera + input routing + UI-hide (orbit only)
         this._updateControlBar()
         this._startLoop()
+        this._hideLoading()
       } else {
         this._stopLoop()
         this._setFpInput(false)
+        this._hideTokenHud()
+        this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
       }
       this._syncControlState()
     } catch (err) {
+      this._hideLoading()
       console.error('CFG Core | Overlay3D.setVisible failed:', err)
     }
   }
@@ -272,6 +296,7 @@ export class Overlay3D {
     this._OrbitControls = bundle.OrbitControls
     this._GLTFLoader = bundle.GLTFLoader
     this._createViewerFn = bundle.createViewer
+    this._createViewerControlsFn = bundle.createViewerControls
   }
 
   async _mount() {
@@ -342,6 +367,7 @@ export class Overlay3D {
 
     // Lighting is built from the scene's own settings in _buildLightsJson().
     this._buildControlBar()
+    this._buildCompass()
 
     this._onResize = () => this._resize()
     window.addEventListener('resize', this._onResize)
@@ -532,7 +558,47 @@ export class Overlay3D {
     this._orbitCamera.position.set(v.x, v.y, v.z)
     this._controls.target.set(cx, 0, cz)
     this._controls.update()
+    // Keep the shared controller's orbit pivot in sync with the framed centre (its
+    // right-drag focus-pivot refines this on the first orbit).
+    if (this._sharedControls) {
+      this._sharedControls.orbit3d.target.set(cx, 0, cz)
+      this._sharedControls.orbit3d.update()
+    }
     this._render()
+  }
+
+  /** Free Camera: attach the shared @crit-fumble/shared ViewerControls (left-select,
+   * right-drag orbit, arrows/WASD pan, Q/E elevation, wheel zoom, focus-pivot). One
+   * scheme shared with the platform viewer. Created on entry, disposed on leave. */
+  _ensureSharedControls() {
+    if (this._sharedControls || !this._viewer || !this._createViewerControlsFn) return
+    this._sharedControls = this._createViewerControlsFn(this._viewer, {
+      THREE: this._THREE,
+      OrbitControls: this._OrbitControls,
+      mode: 'free',
+      allowedModes: ['free'],
+      getBounds: () => {
+        const r = this._sceneRect()
+        return { width: r.width, height: r.height, x: r.x, y: r.y }
+      },
+      onSelect: (id) => {
+        if (!id) return
+        try {
+          canvas?.tokens?.get(id)?.control({ releaseOthers: true })
+        } catch {
+          /* permission — ignore */
+        }
+      },
+    })
+    // Foundry scenes can be enormous — don't clamp the zoom-out; keep orbit above ground.
+    const o = this._sharedControls.orbit3d
+    o.maxDistance = 5_000_000
+    o.maxPolarAngle = Math.PI * 0.495
+  }
+
+  _teardownSharedControls() {
+    this._sharedControls?.dispose()
+    this._sharedControls = null
   }
 
   /**
@@ -614,6 +680,15 @@ export class Overlay3D {
     if (!cam) return
     const tok = this._firstPersonToken()
     if (!tok?.document) return
+    // Movement gate: paused, or in combat and not this token's turn (GM/ref bypasses).
+    // The camera/look still works — only token movement is locked. Clear held move keys +
+    // any in-flight glide so nothing replays when movement re-opens.
+    const km = this._keys
+    if ((km.fwd || km.back || km.left || km.right) && !this._movementAllowed(tok)) {
+      this._keys = { fwd: false, back: false, left: false, right: false }
+      this._fpGoal = null
+      this._notifyMovementBlocked()
+    }
     if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
     if (!this._charAzimuthInit) {
       // Seed the camera behind the token's entry facing; it then stays put while the
@@ -896,6 +971,8 @@ export class Overlay3D {
    */
   _onCharDown(event) {
     if (!this._visible) return
+    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
+    this._hideTokenHud() // a new scene interaction dismisses an open token HUD
     // Sculpt: a left-drag paints the active terrain brush (raycast → height field).
     if (this._sculptActive() && event.button === 0) {
       event.preventDefault?.()
@@ -923,6 +1000,7 @@ export class Overlay3D {
 
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
+    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
     if (this._sculptActive()) {
       // Show the brush ring under the cursor; drag applies dabs. No pick/pan while sculpting.
       this._viewer?.showBrushCursor?.(event.clientX, event.clientY, this._sculptRadius)
@@ -962,6 +1040,7 @@ export class Overlay3D {
 
   /** Mouse up: finish the marquee (target the enclosed group) or resolve a bare click. */
   _onCharUp(event) {
+    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
     if (this._sculptDrag) {
       this._sculptEnd()
       return
@@ -980,7 +1059,7 @@ export class Overlay3D {
       else this._onPickClick(event) // bare left-click → select the single token (control)
       return
     }
-    if (d.mode === 'look' && !d.moved) this._onPickClick(event) // bare right-click → target single
+    if (d.mode === 'look' && !d.moved) this._showTokenHud(event) // bare right-click → the token's HUD menu
   }
 
   /** Draw/resize the on-screen selection marquee (viewport-fixed overlay). */
@@ -1463,7 +1542,14 @@ export class Overlay3D {
     // picking. cfg-3d-active hides only the canvas-anchored #hud/#tooltip; the hotbar +
     // sidebar + controls stay above the overlay (z-30).
     this._camera = this._orbitCamera
-    if (this._controls) this._controls.enabled = m === 'orbit' // drag-orbit only in Free Camera
+    // Free Camera routes through the SHARED ViewerControls (@crit-fumble/shared) so the
+    // control scheme lives in one place across the plugin + the platform viewer. The
+    // native OrbitControls no longer drives orbit; create the shared controller on entry
+    // and tear it down when leaving so its listeners don't fight the tracked/character/
+    // sculpt input in the other modes.
+    if (this._controls) this._controls.enabled = false
+    if (m === 'orbit') this._ensureSharedControls()
+    else this._teardownSharedControls()
     if (this._container) this._container.style.pointerEvents = 'auto'
     document.body.classList.toggle('cfg-3d-active', this._visible)
     if (this._orbitCamera) {
@@ -1594,7 +1680,134 @@ export class Overlay3D {
         ? 'WASD move · right-drag look · left-drag target box · Q/E up-down · scroll zoom'
         : m === 'tracked'
           ? 'arrows pan · scroll zoom · click select/target'
-          : 'drag rotate · scroll zoom · click select/target'
+          : 'left-click select · right-drag orbit · WASD/arrows move · Q/E up-down · scroll zoom'
+  }
+
+  /** Full-screen "Loading 3D view…" overlay while the three.js bundle + first scene build
+   * run, so entering 3D never looks like a hung tab. */
+  _showLoading() {
+    let el = this._loadingEl
+    if (!el) {
+      el = document.createElement('div')
+      el.id = 'cfg-3d-loading'
+      Object.assign(el.style, {
+        position: 'fixed', inset: '0', zIndex: '27', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: '12px', background: 'rgba(11,14,19,0.82)',
+        color: '#cdd6e0', font: '500 15px system-ui, sans-serif',
+      })
+      el.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="font-size:26px"></i><div>Loading 3D view…</div>'
+      document.body.appendChild(el)
+      this._loadingEl = el
+    }
+    el.style.display = 'flex'
+  }
+
+  _hideLoading() {
+    if (this._loadingEl) this._loadingEl.style.display = 'none'
+  }
+
+  /** Bottom-right compass. The rose rotates so N always points to world-north on screen
+   * (default = north-up). Top-Down is locked north-up; Free/Character track the camera. */
+  _buildCompass() {
+    if (this._compass || !this._container) return
+    const wrap = document.createElement('div')
+    wrap.id = 'cfg-3d-compass'
+    Object.assign(wrap.style, { position: 'fixed', right: '16px', bottom: '16px', width: '58px', height: '58px', zIndex: '26', pointerEvents: 'none' })
+    const rose = document.createElement('div')
+    Object.assign(rose.style, {
+      width: '100%', height: '100%', borderRadius: '50%', position: 'relative',
+      background: 'rgba(10,14,19,0.66)', border: '1px solid rgba(255,255,255,0.28)',
+      boxShadow: '0 1px 6px rgba(0,0,0,0.4)', transition: 'transform 0.08s linear',
+      font: '600 10px system-ui, sans-serif', color: '#cdd6e0',
+    })
+    rose.innerHTML =
+      '<div style="position:absolute;top:1px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:12px solid #ff5b5b"></div>' +
+      '<div style="position:absolute;top:13px;left:50%;transform:translateX(-50%);color:#ff7b7b;font-weight:700">N</div>' +
+      '<div style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%)">S</div>' +
+      '<div style="position:absolute;left:4px;top:50%;transform:translateY(-50%)">W</div>' +
+      '<div style="position:absolute;right:4px;top:50%;transform:translateY(-50%)">E</div>'
+    wrap.appendChild(rose)
+    this._container.appendChild(wrap)
+    this._compass = wrap
+    this._compassRose = rose
+  }
+
+  _updateCompass() {
+    if (!this._compassRose || !this._orbitCamera) return
+    let deg = 0
+    if (this._mode !== 'tracked') {
+      const fwd = this._tmpFwd || (this._tmpFwd = new this._THREE.Vector3())
+      this._orbitCamera.getWorldDirection(fwd)
+      // heading 0 = looking north (-Z); rotate the rose the opposite way so N stays north.
+      if (Math.abs(fwd.x) > 1e-4 || Math.abs(fwd.z) > 1e-4) deg = (-Math.atan2(fwd.x, -fwd.z) * 180) / Math.PI
+    }
+    this._compassRose.style.transform = `rotate(${deg.toFixed(1)}deg)`
+  }
+
+  /** May this token move right now? GMs (refs) always can. Otherwise: not while the game
+   * is paused, and not when the token is in the active combat but it isn't its turn. */
+  _movementAllowed(tok) {
+    if (this._isGM()) return true
+    if (game?.paused) return false
+    const combat = game?.combat
+    if (combat?.started) {
+      const isCombatant = combat.combatants?.some?.((c) => c.tokenId === tok?.id)
+      const isMyTurn = combat.combatant?.tokenId === tok?.id
+      if (isCombatant && !isMyTurn) return false
+    }
+    return true
+  }
+
+  /** Throttled "why can't I move" notice. */
+  _notifyMovementBlocked() {
+    const now = typeof performance !== 'undefined' ? performance.now() : 0
+    if (now - (this._moveBlockNotifyAt || 0) < 2500) return
+    this._moveBlockNotifyAt = now
+    ui?.notifications?.warn?.(game?.paused ? 'Game is paused — movement is locked.' : "Not your turn — you can't move yet.")
+  }
+
+  /** Bare right-click in Character view → the token's HUD menu, re-shown over the 3D view
+   * (the canvas HUD is hidden by cfg-3d-active) and positioned over the token's 3D screen
+   * position. Dismissed on the next scene click (see _onCharDown) or when 3D closes. */
+  _showTokenHud(event) {
+    const tok = this._pick(event.clientX, event.clientY) || this._pickNearest(event.clientX, event.clientY)
+    if (!tok) return
+    event.preventDefault?.()
+    event.stopImmediatePropagation?.()
+    try {
+      document.body.classList.add('cfg-3d-show-hud')
+      canvas.hud.token.bind(tok)
+      canvas.hud.token.render(true)
+      this._hudShown = true
+      const grp = this._viewer?.tokens?.get(tok.id)
+      const el = canvas.hud.token.element
+      if (grp && el && this._orbitCamera) {
+        const wp = (this._tmpHud || (this._tmpHud = new this._THREE.Vector3()))
+        grp.getWorldPosition(wp)
+        wp.y += 30
+        const p = wp.project(this._orbitCamera)
+        const x = (p.x * 0.5 + 0.5) * window.innerWidth
+        const y = (-p.y * 0.5 + 0.5) * window.innerHeight
+        requestAnimationFrame(() => {
+          Object.assign(el.style, { position: 'fixed', left: `${Math.round(x)}px`, top: `${Math.round(y)}px`, transform: 'translate(-50%,-50%)', zIndex: '31' })
+        })
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  _hideTokenHud() {
+    if (!this._hudShown) return
+    this._hudShown = false
+    document.body.classList.remove('cfg-3d-show-hud')
+    try {
+      const el = canvas?.hud?.token?.element
+      if (el) Object.assign(el.style, { position: '', left: '', top: '', transform: '', zIndex: '' })
+      canvas?.hud?.token?.clear?.()
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
@@ -2201,12 +2414,10 @@ export class Overlay3D {
   _tokenJson(doc) {
     if (!doc) return null
     if (!this._docInSlice(doc)) return null // token on a floor above the slice → hidden
-    if (!this._isGM()) {
-      // Players: only render tokens Foundry shows them — its placeable visibility
-      // already respects vision, fog of war, the hidden flag, and floor access.
-      const p = canvas?.tokens?.get?.(doc.id)
-      if (!p?.visible) return null
-    }
+    const placeable = canvas?.tokens?.get?.(doc.id)
+    // Players: only render tokens Foundry shows them — its placeable visibility already
+    // respects vision, fog of war, the hidden flag, and floor access.
+    if (!this._isGM() && !placeable?.visible) return null
     // Flight-stand model (BASE on the token's floor, mini floating at its own elevation,
     // post between) is shaped in the pure producer; the gating above stays host-side.
     const px = this._pxPerUnit()
@@ -2223,7 +2434,18 @@ export class Overlay3D {
       floorElevation: terrainUnits != null ? terrainUnits * px : this._tokenFloorBasePx(doc),
       groundOffsetUnits: terrainUnits != null ? terrainUnits : 0,
       assetUrl: (src) => this._assetUrl(src),
+      selected: !!placeable?.controlled, // viewer controls it → selection ring
+      targeted: !!placeable?.isTargeted, // viewer targets it → reticle halo
+      targetColor: this._targetColor(),
     })
+  }
+
+  /** The current user's colour as a 0xRRGGBB number (for the target reticle), or undefined. */
+  _targetColor() {
+    const c = game?.user?.color
+    if (c == null) return undefined
+    const n = typeof c === 'number' ? c : parseInt(String(c).replace('#', ''), 16)
+    return Number.isFinite(n) ? n : undefined
   }
 
   /**
@@ -2321,6 +2543,10 @@ export class Overlay3D {
   /** Per-frame: keep the tracked camera synced (or orbit damping), then render. */
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
+    this._updateCompass()
+    // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
+    // render-on-change), so this ticker yields to it — no double update/render.
+    if (this._mode === 'orbit' && this._sharedControls) return
     if (this._mode === 'tracked') this._syncTrackedCamera()
     else if (this._mode === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     else this._controls?.update()
@@ -2355,6 +2581,7 @@ export class Overlay3D {
     for (const [hook, fn] of this._hooks) Hooks.off(hook, fn)
     this._hooks = []
     if (this._onResize) window.removeEventListener('resize', this._onResize)
+    this._teardownSharedControls()
     this._controls?.dispose?.()
     this._viewer?.renderer?.forceContextLoss?.()
     this._viewer?.dispose()
@@ -2646,11 +2873,11 @@ export class Overlay3D {
             onChange: (event, active) => this._setSculptMode(active ? 'smooth' : null),
           },
         }
-        // Gate: Free Camera + terrain tools are GM / Assistant GM only. Players keep
-        // Top Down, Character, and Slice (slice only HIDES floors — no info leak).
-        if (!this._canBuild()) {
-          for (const t of ['free', 'terrainGenerate', 'terrainUndo', 'sculptRaise', 'sculptLower', 'sculptLevel', 'sculptSmooth']) delete tools[t]
-        }
+        // Gate: the whole 3D View toolbar (Top Down · Free Camera · Character · Slice ·
+        // terrain tools) is GM / Assistant GM only. Players get NO 3D toolbar — their one
+        // 3D entry is the Token-HUD "Character View" button (on a token they own + have
+        // vision through). Config overrides are a planned follow-up.
+        if (!this._canBuild()) return
         const group = { name: 'cfg-3d', order: 95, title: '3D View', icon: 'fa-solid fa-panorama', visible: true, tools }
         if (Array.isArray(controls)) {
           // Legacy (v12) array shape — tools as an array.
@@ -2832,7 +3059,11 @@ export class Overlay3D {
     if (document.getElementById('cfg-3d-ui-style')) return
     const style = document.createElement('style')
     style.id = 'cfg-3d-ui-style'
-    style.textContent = 'body.cfg-3d-active #hud, body.cfg-3d-active #tooltip { display: none !important; }'
+    style.textContent =
+      'body.cfg-3d-active #hud, body.cfg-3d-active #tooltip { display: none !important; }' +
+      // Re-show the Token HUD over the 3D view when the user right-clicks a token (the
+      // service positions it over the token's 3D screen position).
+      'body.cfg-3d-active.cfg-3d-show-hud #hud { display: block !important; }'
     document.head.appendChild(style)
   }
 

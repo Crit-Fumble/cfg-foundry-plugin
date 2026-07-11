@@ -349,6 +349,8 @@ Hooks.on('renderSceneConfig', (app, element) => {
   try {
     const doc = app?.document
     if (!doc) return
+    // GM / Assistant GM only (builders) — the 3D defaults menu, for now.
+    if ((game?.user?.role ?? 0) < (globalThis.CONST?.USER_ROLES?.ASSISTANT ?? 3)) return
     const root = element instanceof HTMLElement ? element : element?.[0]
     const tab = root?.querySelector?.('.tab[data-tab="levels"]')
     if (!tab || tab.querySelector('.cfg-3d-defaults')) return
@@ -366,6 +368,9 @@ Hooks.on('renderRegionConfig', (app, element) => {
   try {
     const doc = app?.document
     if (!doc) return
+    // GM / Assistant GM only. Region config is owner-gated by Foundry, but gate the 3D
+    // Terrain menu to builders explicitly (for now — config overrides are a follow-up).
+    if ((game?.user?.role ?? 0) < (globalThis.CONST?.USER_ROLES?.ASSISTANT ?? 3)) return
     const root = element instanceof HTMLElement ? element : element?.[0]
     const tab = root?.querySelector?.('.tab[data-tab="placement"]')
     if (!tab || tab.querySelector('.cfg-3d-terrain')) return
@@ -390,6 +395,57 @@ Hooks.on('renderRegionConfig', (app, element) => {
     tab.appendChild(fs)
   } catch (e) {
     console.warn('CFG Core | region 3D-terrain injection failed', e)
+  }
+})
+
+// Token HUD → "Character View": the player's (and everyone's) token-contextual entry to
+// the 3D view, looking THROUGH the selected token. Shown only on a token the user OWNS and
+// has vision through (GMs/asst-GMs bypass the vision requirement). This is the first 3D
+// option exposed to players — Free Camera + the toolbar stay builder-only.
+Hooks.on('renderTokenHUD', (hud, element, _data) => {
+  try {
+    const token = hud?.object
+    const doc = token?.document
+    if (!doc || !token.isOwner) return
+    const isBuilder = (game?.user?.role ?? 0) >= (globalThis.CONST?.USER_ROLES?.ASSISTANT ?? 3)
+    const hasVision = !!doc.sight?.enabled
+    if (!isBuilder && !hasVision) return // players need a token they can see through
+    const root = element instanceof HTMLElement ? element : element?.[0]
+    if (!root) return
+    const col = root.querySelector('.col.right') || root.querySelector('.col.left') || root.querySelector('.control-icons') || root
+    if (col.querySelector('.cfg-3d-charview')) return
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'control-icon cfg-3d-charview'
+    btn.dataset.tooltip = '3D View — see the scene in 3D through this token'
+    btn.setAttribute('aria-label', '3D View')
+    btn.innerHTML = '<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">3D</b>'
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      if (btn.classList.contains('cfg-3d-loading')) return // already entering
+      btn.classList.add('cfg-3d-loading')
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>' // loading state — not hung
+      try {
+        token.control({ releaseOthers: true })
+      } catch {
+        /* permission — ignore */
+      }
+      try {
+        await window.CFGCore?.overlay3D?.setViewMode?.('firstperson')
+      } catch (err) {
+        console.warn('CFG Core | 3D View from token HUD failed', err)
+      } finally {
+        btn.classList.remove('cfg-3d-loading')
+        btn.innerHTML = '<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">3D</b>'
+      }
+    })
+    // Right column, just ABOVE the hide/vision (eye) button.
+    const eye = col.querySelector('.fa-eye')?.closest('button, .control-icon')
+    if (eye) col.insertBefore(btn, eye)
+    else col.prepend(btn)
+  } catch (e) {
+    console.warn('CFG Core | token-HUD Character View injection failed', e)
   }
 })
 

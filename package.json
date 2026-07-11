@@ -5,6 +5,10 @@
   "scripts": {
     "build:zip": "node scripts/build-zip.js",
     "build:three": "esbuild scripts/lib/three-bundle.entry.mjs --bundle --format=esm --minify --legal-comments=none --outfile=scripts/lib/three.bundle.js",
+    "//dev:shared": "LOCAL DEV ONLY. Links the sibling cfg-shared repo so its edits flow into the bundle. NEVER release a bundle built while linked — it may contain UNPUBLISHED shared code. Run dev:shared:unlink + build:three from the published package before a plugin release.",
+    "dev:shared:link": "npm --prefix ../cfg-shared run build && npm link @crit-fumble/shared && npm run build:three",
+    "dev:shared:sync": "npm --prefix ../cfg-shared run build && npm run build:three",
+    "dev:shared:unlink": "npm unlink @crit-fumble/shared --no-save && npm install && npm run build:three",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config tests/jest.config.js --coverage",
@@ -25,7 +29,7 @@
     "js-yaml": "^4.2.0"
   },
   "devDependencies": {
-    "@crit-fumble/shared": "^1.14.0",
+    "@crit-fumble/shared": "^1.16.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
     "jest": "^29.7.0",
