@@ -65,6 +65,7 @@ export class Overlay3D {
     this._keyHandler = null
     /** @type {string|null} last token the user controlled (the first-person subject) */
     this._lastTokenId = null
+    this._fpSubjectId = null // character view is LOCKED to this token until an explicit switch/exit
     /** @type {{w:boolean,a:boolean,s:boolean,d:boolean}} held WASD keys (first-person) */
     this._keys = { fwd: false, back: false, left: false, right: false }
     /** @type {((e: KeyboardEvent) => void)|null} first-person key-up handler */
@@ -168,14 +169,10 @@ export class Overlay3D {
       // Remember the controlled token (the first-person subject) + focus-follow slice.
       this._on('controlToken', (token, controlled) => {
         if (controlled && token?.id) this._lastTokenId = token.id
-        if (this._mode === 'firstperson') {
-          this._fpCenter = null // re-anchor first-person to the new subject
-          this._fpGoal = null
-          this._subjectElev = undefined // re-baseline elevation for the new subject
-        }
-        // Rebuild while visible so the selection ring (and, in first-person/focus-follow,
-        // the subject/slice) tracks the control change.
-        if (this._visible) this._scheduleRebuild()
+        // Character view stays LOCKED on its pinned subject (_fpSubjectId) — selecting another
+        // token (to target/attack/cast) must NOT move the camera. The subject changes only via
+        // setViewMode('firstperson') (the Token-HUD "3D View" button on another token).
+        if (this._visible) this._scheduleRebuild() // rebuild so the selection ring tracks the control change
       })
       // Target reticle: rebuild when the viewer targets/untargets a token.
       this._on('targetToken', () => {
@@ -237,6 +234,7 @@ export class Overlay3D {
       getMode: () => this._mode,
       setViewMode: (m) => this.setViewMode(m),
       getViewMode: () => this._currentViewMode(),
+      getSubjectId: () => this._fpSubjectId,
       setSlice: (on) => this.setSlice(on),
       getActiveLevel: () => this._activeLevel()?.id ?? null,
       destroy: () => this.destroy(),
@@ -661,6 +659,12 @@ export class Overlay3D {
    * selection), else an owned token, else any.
    */
   _firstPersonToken() {
+    // Character view is LOCKED on its pinned subject — selecting another token (to target,
+    // cast, etc.) must not move the camera. The subject changes only via setViewMode('firstperson').
+    if (this._fpSubjectId) {
+      const s = canvas?.tokens?.get?.(this._fpSubjectId)
+      if (s?.document) return s
+    }
     const controlled = canvas?.tokens?.controlled?.[0]
     if (controlled?.document) return controlled
     if (this._lastTokenId) {
@@ -1634,6 +1638,15 @@ export class Overlay3D {
       return
     }
     const cam = mode === 'topdown' ? 'tracked' : mode === 'firstperson' ? 'firstperson' : 'orbit'
+    if (cam === 'firstperson') {
+      // Pin the character-view subject = the controlled token, and re-anchor the FP camera
+      // to it. This is the ONLY place the subject changes (Token-HUD "3D View" button).
+      const subj = canvas?.tokens?.controlled?.[0]?.id || this._lastTokenId || this._fpSubjectId
+      if (subj) this._fpSubjectId = subj
+      this._fpCenter = null
+      this._fpGoal = null
+      this._subjectElev = undefined
+    }
     if (!this._visible) {
       this._mode = cam
       await this.setVisible(true)

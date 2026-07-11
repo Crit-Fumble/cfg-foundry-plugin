@@ -416,19 +416,21 @@ Hooks.on('renderTokenHUD', (hud, element, _data) => {
     if (col.querySelector('.cfg-3d-charview')) return
     const BADGE = (t) => `<b class="cfg-3d-badge" style="font-weight:700;font-size:0.85em;letter-spacing:-0.5px">${t}</b>`
     const api = window.CFGCore?.overlay3D
-    const inThreeD = (api?.getViewMode?.() ?? '2d') !== '2d'
+    // Character view LOCKS on its subject; this token's HUD button either EXITS (if this IS
+    // the subject) or ENTERS/switches character view onto this token.
+    const isSubject = (api?.getViewMode?.() ?? '2d') === 'firstperson' && api?.getSubjectId?.() === doc.id
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.className = 'control-icon cfg-3d-charview'
-    btn.dataset.tooltip = inThreeD ? 'Exit 3D View — back to the normal map' : '3D View — see the scene in 3D through this token'
-    btn.setAttribute('aria-label', inThreeD ? 'Exit 3D View' : '3D View')
-    btn.innerHTML = inThreeD ? BADGE('2D') : BADGE('3D') // shows the mode you'll switch TO
+    btn.dataset.tooltip = isSubject ? 'Exit 3D View — back to the normal map' : '3D View — see the scene in 3D through this token'
+    btn.setAttribute('aria-label', isSubject ? 'Exit 3D View' : '3D View')
+    btn.innerHTML = isSubject ? BADGE('2D') : BADGE('3D') // shows the mode you'll switch TO
     btn.addEventListener('click', async (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
       if (btn.classList.contains('cfg-3d-loading')) return // already switching
-      if (inThreeD) {
-        // Already in 3D → toggle back to the normal Foundry map.
+      if (isSubject) {
+        // Right-clicked the focused character → toggle 3D off, back to the normal Foundry map.
         try {
           await api?.setViewMode?.('2d')
         } catch (err) {
