@@ -66,6 +66,8 @@ export class Overlay3D {
     /** @type {string|null} last token the user controlled (the first-person subject) */
     this._lastTokenId = null
     this._fpSubjectId = null // character view is LOCKED to this token until an explicit switch/exit
+    this._fpMoverId = null // the token _fpCenter currently drives (the SELECTED token; may differ from the subject)
+    this._elevMoverId = null // mover whose elevation _subjectElev is baselined against
     /** @type {{w:boolean,a:boolean,s:boolean,d:boolean}} held WASD keys (first-person) */
     this._keys = { fwd: false, back: false, left: false, right: false }
     /** @type {((e: KeyboardEvent) => void)|null} first-person key-up handler */
@@ -268,6 +270,7 @@ export class Overlay3D {
         this._setFpInput(false)
         this._hideTokenHud()
         this._clearMoveRuler() // drop the movement path + distance label
+        this._clearSelectionBrackets() // drop the selection corner brackets
         this._wasMoving = false
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
@@ -684,20 +687,32 @@ export class Overlay3D {
   _fpStep(now) {
     const cam = this._orbitCamera
     if (!cam) return
-    const tok = this._firstPersonToken()
-    if (!tok?.document) return
-    // Movement gate: paused, or in combat and not this token's turn (GM/ref bypasses).
-    // The camera/look still works — only token movement is locked. Clear held move keys +
-    // any in-flight glide so nothing replays when movement re-opens.
+    // The camera rides the SUBJECT (the character you're viewing through, pinned by the lock).
+    // Movement drives the SELECTED token — Foundry's move bindings (WASD) + native Q/E
+    // elevation. Usually the same token, but selecting e.g. a familiar lets you move it
+    // without leaving your character's view. _fpCenter tracks whichever is being moved.
+    const subject = this._firstPersonToken()
+    if (!subject?.document) return
+    const controlled = canvas?.tokens?.controlled?.[0]
+    const mover = controlled?.document ? controlled : subject
+    const sameSubject = mover.id === subject.id
+    // Movement gate: paused, or in combat and not the mover's turn (GM/ref bypasses). The
+    // camera/look still works — only token movement is locked. Clear held keys + any glide.
     const km = this._keys
-    if ((km.fwd || km.back || km.left || km.right) && !this._movementAllowed(tok)) {
+    if ((km.fwd || km.back || km.left || km.right) && !this._movementAllowed(mover)) {
       this._keys = { fwd: false, back: false, left: false, right: false }
       this._fpGoal = null
       this._notifyMovementBlocked()
     }
-    if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+    // _fpCenter is the moved token's smooth position; re-anchor when the selection changes.
+    if (this._fpCenter == null || this._fpMoverId !== mover.id) {
+      this._fpSyncLocalFromToken(mover)
+      this._fpMoverId = mover.id
+      this._fpGoal = null
+      this._fpDirty = false
+    }
     if (!this._charAzimuthInit) {
-      // Seed the camera behind the token's entry facing; it then stays put while the
+      // Seed the camera behind the subject's entry facing; it then stays put while the
       // token turns to the cursor independently (left-drag orbit can adjust it later).
       this._charAzimuth = (((this._fpHeading + 270) % 360) * Math.PI) / 180
       this._charAzimuthInit = true
@@ -709,7 +724,7 @@ export class Overlay3D {
     if (moving && this._fpCenter) {
       if (!this._wasMoving) {
         this._moveOrigin = { x: this._fpCenter.x, y: this._fpCenter.y } // ruler starts here
-        this._moveTokenId = this._firstPersonToken()?.id || null
+        this._moveTokenId = mover.id
       }
       this._moveLastAt = now
     }
@@ -737,36 +752,39 @@ export class Overlay3D {
         }
       }
       if (this._fpDirty) {
-        if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(tok) // throttle writes
+        if (now - (this._fpCommitAt || 0) > 90) this._fpCommitNow(mover) // throttle writes
       } else if (!moving) {
-        this._syncExternalMove(tok) // idle → follow genuine external moves only
+        this._syncExternalMove(mover) // idle → follow genuine external moves only
       }
     } else {
       // Grid-locked movement (Foundry default on a gridded scene): glide smoothly
       // cell-to-cell, each destination snapped to the grid. Hold to walk cell-by-
       // cell, tap for one cell — the token never lands off-grid.
-      this._fpGridWalk(tok, dt)
-      if (!this._fpGoal && !moving) this._syncExternalMove(tok) // idle → genuine external moves only
+      this._fpGridWalk(mover, dt)
+      if (!this._fpGoal && !moving) this._syncExternalMove(mover) // idle → genuine external moves only
     }
-    // Facing is LOCKED to the camera (mouse/arrows), not to movement: the character
-    // looks where you look. Camera-forward = -(cos az, sin az); persisted on commit.
-    this._fpHeading = (((Math.atan2(-Math.sin(this._charAzimuth), -Math.cos(this._charAzimuth)) * 180) / Math.PI - 90) % 360 + 360) % 360
-    // Elevation (Q/E) changed → rebuild the subject so its height stalk/base match the
-    // new floor gap THIS frame. `_fpSyncSubjectVisual` sets the mini's Y per frame, but
-    // the stalk length is baked at build time — a bare Y move leaves the pole the wrong
-    // length until an unrelated rebuild (the "one-move pole lag"). Detected locally so
-    // it's immune to when/whether Foundry's movement pipeline fires the update hook.
-    const elevNow = Number(tok.document.elevation || 0)
-    if (this._subjectElev === undefined) {
+    // Facing: the moved token looks where the camera looks ONLY when it IS the subject (your
+    // character faces the camera). A separately-selected token (familiar) keeps its own
+    // facing — _fpCommitNow persists _fpHeading, so freeze it to the mover's rotation.
+    if (sameSubject) {
+      this._fpHeading = (((Math.atan2(-Math.sin(this._charAzimuth), -Math.cos(this._charAzimuth)) * 180) / Math.PI - 90) % 360 + 360) % 360
+    } else {
+      this._fpHeading = Number(mover.document.rotation) || 0
+    }
+    // Elevation (native Q/E on the selected token) changed → rebuild the moved token so its
+    // height stalk/base match the new floor gap THIS frame (the pole length is baked at build
+    // time). Tracked per-mover so switching selection re-baselines.
+    const elevNow = Number(mover.document.elevation || 0)
+    if (this._subjectElev === undefined || this._elevMoverId !== mover.id) {
       this._subjectElev = elevNow
+      this._elevMoverId = mover.id
       this._fpActiveLevelId = this._activeLevel()?.id ?? null // baseline the floor with the elevation
     } else if (elevNow !== this._subjectElev) {
       this._subjectElev = elevNow
-      this._rebuildSubject(tok)
-      // Elevation drives vision: if rising/falling across a floor band changes the active
-      // level, re-slice the whole scene (walls/levels/backgrounds follow the character).
-      // Guarded to multi-level scenes so single-level scenes never pay a rebuild here.
-      if ((canvas?.scene?.levels?.size || 0) > 1) {
+      this._rebuildSubject(mover)
+      // Vision follows the SUBJECT (the camera): only re-slice the scene when the moved token
+      // IS the subject and it crosses a floor band. Guarded to multi-level scenes.
+      if (sameSubject && (canvas?.scene?.levels?.size || 0) > 1) {
         const lvlNow = this._activeLevel()?.id ?? null
         if (lvlNow !== this._fpActiveLevelId) {
           this._fpActiveLevelId = lvlNow
@@ -774,9 +792,25 @@ export class Overlay3D {
         }
       }
     }
-    this._charUpdateSubjectVisibility(tok)
-    this._fpSyncSubjectVisual(tok)
-    this._fpPositionCamera(tok)
+    this._charUpdateSubjectVisibility(subject) // fade the camera SUBJECT's own mini in 1st person
+    this._fpSyncSubjectVisual(mover) // the MOVED token's mini rides _fpCenter
+    if (!sameSubject) {
+      const mg = this._viewer?.tokens?.get?.(mover.id) // a separately-moved token stays visible
+      if (mg) mg.visible = true
+      this._syncTokenVisualToDoc(subject) // keep the (non-mover) subject's mini pinned to its own doc position
+    }
+    this._fpPositionCamera(subject) // camera stays on the subject
+  }
+
+  /** Position a token's 3D mini at its committed document centre — for a token that is the
+   * camera subject but NOT the active mover (rides its own doc position, not the mover's
+   * _fpCenter), so it never freezes mid-glide or strands on an external move. */
+  _syncTokenVisualToDoc(tok) {
+    const g = this._viewer?.tokens?.get?.(tok.id)
+    const c = tok?.center
+    if (!g || !c) return
+    const elevPx = this._fpGroundPx(c) + Number(tok.document.elevation || 0) * this._pxPerUnit()
+    g.position.set(c.x, elevPx, c.y)
   }
 
   /** Rebuild the subject's 3D group (remove + re-add) so its height stalk/base reflect
@@ -815,8 +849,8 @@ export class Overlay3D {
 
   /** Heightmap surface height (px) under the first-person character (at `_fpCenter`); 0 when
    * there is no terrain field — so flat-floor scenes behave exactly as before. */
-  _fpGroundPx() {
-    const c = this._fpCenter
+  _fpGroundPx(pos) {
+    const c = pos || this._fpCenter
     if (!c) return 0
     const t = this._sampleTerrain(c.x, c.y)
     return t != null ? t * this._pxPerUnit() : 0
@@ -846,11 +880,15 @@ export class Overlay3D {
     const cam = this._orbitCamera
     if (!cam || !this._fpCenter) return
     const size = canvas?.dimensions?.size || 100
-    // Eye height sits on the terrain surface under the character (+ any above-ground elevation),
+    // Focus: if this token is the actively-driven mover, ride the smooth _fpCenter; otherwise
+    // (the camera subject differs from the moved token) use its committed centre so the camera
+    // stays put on the character while a separately-selected token moves.
+    const focus = tok?.id === this._fpMoverId ? this._fpCenter : tok?.center || this._fpCenter
+    // Eye height sits on the terrain surface under the subject (+ any above-ground elevation),
     // so entering Character view no longer starts below the heightmap / clips through it.
-    const eyeY = this._fpGroundPx() + (Number(tok.document.elevation) || 0) * this._pxPerUnit() + size * 0.9
-    const cx = this._fpCenter.x
-    const cz = this._fpCenter.y
+    const eyeY = this._fpGroundPx(focus) + (Number(tok.document.elevation) || 0) * this._pxPerUnit() + size * 0.9
+    const cx = focus.x
+    const cz = focus.y
     cam.up.set(0, 1, 0)
     if (this._charDist < size * 0.5) {
       // First person: at the eyes, looking along the CAMERA direction (mouse-look) —
@@ -1586,8 +1624,11 @@ export class Overlay3D {
     this._keys[sem] = false
     const idle = !this._keys.fwd && !this._keys.back && !this._keys.left && !this._keys.right
     if (this._fineMovement() && idle && this._fpDirty) {
-      const tok = this._firstPersonToken()
-      if (tok?.document) this._fpCommitNow(tok)
+      // Commit to the token _fpCenter actually belongs to (the active mover), NOT the live
+      // selection — if the selection changed since the last _fpStep, committing to the current
+      // controlled token would write THIS token's smooth position onto the wrong one (teleport).
+      const mover = canvas?.tokens?.get?.(this._fpMoverId) || this._firstPersonToken()
+      if (mover?.document) this._fpCommitNow(mover)
     }
   }
 
@@ -1930,10 +1971,15 @@ export class Overlay3D {
    * idle for a beat. */
   _updateMoveRuler() {
     const now = typeof performance !== 'undefined' ? performance.now() : 0
-    const inFp = this._mode === 'firstperson'
-    const tok = inFp ? this._firstPersonToken() : canvas?.tokens?.controlled?.[0]
-    const cur = inFp ? this._fpCenter : tok?.center
-    if (this._moveOrigin && this._moveTokenId && tok?.id !== this._moveTokenId) return this._clearMoveRuler() // selection switched away
+    // The ruler tracks the token that STARTED this move (_moveTokenId): its smooth _fpCenter
+    // while it's the active first-person mover, else its committed centre. Once it stops
+    // moving (e.g. selection switched away) the idle timeout below clears it.
+    const movingTok = this._moveTokenId ? canvas?.tokens?.get?.(this._moveTokenId) : null
+    const cur = movingTok
+      ? this._mode === 'firstperson' && movingTok.id === this._fpMoverId && this._fpCenter
+        ? this._fpCenter
+        : movingTok.center
+      : null
     if (this._moveOrigin && cur) {
       const lp = this._moveLastPos // any real motion (incl. a still-animating Top-Down move) keeps the ruler alive
       if (!lp || Math.hypot(cur.x - lp.x, cur.y - lp.y) > 0.5) {
@@ -1996,6 +2042,105 @@ export class Overlay3D {
       this._moveLine = null
     }
     if (this._moveLabel) this._moveLabel.style.display = 'none'
+  }
+
+  /**
+   * Foundry-style animated corner brackets around every CONTROLLED (selected) token — the 3D
+   * analogue of Foundry's 2D selection indicator, which reads far more clearly than the base
+   * ring in Character view. A DOM overlay (like Foundry's own HUD) so it matches the native
+   * look and always faces the screen. Box = the token's screen-space footprint + mini height.
+   */
+  _updateSelectionBrackets() {
+    const cam = this._orbitCamera
+    const THREE = this._THREE
+    if (!cam || !THREE || !this._viewer?.tokens) return
+    let cont = this._selEl
+    if (!cont) {
+      cont = document.createElement('div')
+      cont.id = 'cfg-3d-select'
+      Object.assign(cont.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: '27' })
+      document.body.appendChild(cont)
+      this._selEl = cont
+      this._selMap = new Map()
+      this._injectSelectStyle()
+    }
+    const controlled = canvas?.tokens?.controlled || []
+    const color = this._controlColorCss()
+    cam.updateMatrixWorld()
+    const w = window.innerWidth || 1
+    const h = window.innerHeight || 1
+    const size = canvas?.dimensions?.size || 100
+    const v = new THREE.Vector3()
+    const e = new THREE.Vector3()
+    const seen = new Set()
+    for (const tok of controlled) {
+      const g = this._viewer.tokens.get?.(tok.id)
+      if (!g?.visible || !tok?.document) continue // skip a hidden mini (e.g. your own body in 1st person)
+      g.getWorldPosition(v)
+      const base = v.clone().project(cam)
+      if (base.z > 1) continue // behind the camera
+      const bx = (base.x * 0.5 + 0.5) * w
+      const by = (-base.y * 0.5 + 0.5) * h
+      const rWorld = Math.max(tok.document.width || 1, tok.document.height || 1) * size * 0.5
+      e.set(v.x + rWorld, v.y, v.z).project(cam)
+      const rS = Math.max(10, Math.hypot((e.x * 0.5 + 0.5) * w - bx, (-e.y * 0.5 + 0.5) * h - by))
+      e.set(v.x, v.y + size * 1.8, v.z).project(cam) // top of the billboarded mini
+      const ty = (-e.y * 0.5 + 0.5) * h
+      const minX = bx - rS * 1.05
+      const maxX = bx + rS * 1.05
+      const minY = Math.min(ty, by - rS)
+      const maxY = by + rS * 0.4
+      seen.add(tok.id)
+      let el = this._selMap.get(tok.id)
+      if (!el) {
+        el = document.createElement('div')
+        el.className = 'cfg-3d-bracket'
+        el.innerHTML = '<i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>'
+        cont.appendChild(el)
+        this._selMap.set(tok.id, el)
+      }
+      el.style.left = `${Math.round(minX)}px`
+      el.style.top = `${Math.round(minY)}px`
+      el.style.width = `${Math.round(maxX - minX)}px`
+      el.style.height = `${Math.round(maxY - minY)}px`
+      el.style.setProperty('--cfg-sel', color)
+    }
+    for (const [id, el] of this._selMap) {
+      if (!seen.has(id)) {
+        el.remove()
+        this._selMap.delete(id)
+      }
+    }
+  }
+
+  /** Foundry's canonical control color (gold) for the selection brackets; falls back if the
+   * config isn't populated. */
+  _controlColorCss() {
+    const c = globalThis.CONFIG?.Canvas?.dispositionColors?.CONTROLLED
+    if (typeof c === 'number') return `#${(c >>> 0).toString(16).padStart(6, '0').slice(-6)}`
+    return '#ff9829'
+  }
+
+  _injectSelectStyle() {
+    if (document.getElementById('cfg-3d-select-style')) return
+    const s = document.createElement('style')
+    s.id = 'cfg-3d-select-style'
+    s.textContent =
+      '.cfg-3d-bracket{position:absolute;pointer-events:none;animation:cfg-sel-pulse 1.1s ease-in-out infinite}' +
+      '.cfg-3d-bracket .c{position:absolute;width:16px;height:16px;box-sizing:border-box;filter:drop-shadow(0 0 2px rgba(0,0,0,0.7))}' +
+      '.cfg-3d-bracket .c.tl{top:-2px;left:-2px;border-top:3px solid var(--cfg-sel);border-left:3px solid var(--cfg-sel)}' +
+      '.cfg-3d-bracket .c.tr{top:-2px;right:-2px;border-top:3px solid var(--cfg-sel);border-right:3px solid var(--cfg-sel)}' +
+      '.cfg-3d-bracket .c.bl{bottom:-2px;left:-2px;border-bottom:3px solid var(--cfg-sel);border-left:3px solid var(--cfg-sel)}' +
+      '.cfg-3d-bracket .c.br{bottom:-2px;right:-2px;border-bottom:3px solid var(--cfg-sel);border-right:3px solid var(--cfg-sel)}' +
+      '@keyframes cfg-sel-pulse{0%,100%{opacity:1}50%{opacity:0.5}}'
+    document.head.appendChild(s)
+  }
+
+  _clearSelectionBrackets() {
+    if (this._selMap) {
+      for (const [, el] of this._selMap) el.remove()
+      this._selMap.clear()
+    }
   }
 
   /** Bare right-click in Character view → the token's HUD menu, re-shown over the 3D view
@@ -2703,13 +2848,14 @@ export class Overlay3D {
         this._scheduleRebuild()
         return
       }
-      if (this._mode === 'firstperson' && id === this._firstPersonToken()?.id) {
-        // The subject's x/y is driven locally (`_fpSyncSubjectVisual`) so pure position
-        // moves skip the rebuild (that's the anti-jitter). But a VISUAL change — most
-        // notably elevation (Q/E), which reshapes the height stalk/base — must rebuild,
-        // or the pole stays stale until the next camera toggle.
-        // Elevation is handled per-frame in `_fpStep` (`_rebuildSubject`); here we only
-        // rebuild the subject for OTHER visual changes (size/texture/flags/visibility).
+      if (this._mode === 'firstperson' && id === this._fpMoverId) {
+        // The MOVER's x/y is driven locally (`_fpSyncSubjectVisual` + `_fpCenter`) so pure
+        // position moves skip the rebuild (that's the anti-jitter). But a VISUAL change — most
+        // notably elevation (Q/E), which reshapes the height stalk/base — must rebuild, or the
+        // pole stays stale until the next camera toggle. Elevation is handled per-frame in
+        // `_fpStep` (`_rebuildSubject`); here we only rebuild for OTHER visual changes. A token
+        // that is the subject but NOT the mover falls through and rebuilds normally on an
+        // external move so its mini/stalk stay synced with the camera.
         const c = change || {}
         const visual = 'width' in c || 'height' in c || 'texture' in c || 'flags' in c || 'hidden' in c
         if (!visual) return
@@ -2777,6 +2923,7 @@ export class Overlay3D {
     if (!this._visible || !this._renderer || !this._camera) return
     this._updateCompass()
     this._updateMoveRuler() // live movement path + distance (Top Down + Character)
+    this._updateSelectionBrackets() // Foundry-style corner brackets on controlled tokens
     // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
     // render-on-change), so this ticker yields to it — no double update/render.
     if (this._mode === 'orbit' && this._sharedControls) return
