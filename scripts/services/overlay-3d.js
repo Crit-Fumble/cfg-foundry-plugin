@@ -1094,15 +1094,17 @@ export class Overlay3D {
       const dy = event.clientY - d.y
       d.x = event.clientX
       d.y = event.clientY
-      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 3) {
-        d.moved = true
+      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 5) {
+        d.moved = true // 5px dead zone so a right-click twitch still opens the token HUD
         document.body.style.cursor = 'grabbing'
       }
       if (d.moved) this._trackPan(dx, dy)
       return
     }
     if (d && d.mode === 'look') {
-      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 4) d.moved = true
+      // 6px dead zone: a natural right-click twitch still counts as a BARE click (token HUD),
+      // matching how forgiving Foundry's own right-click is on the 2D canvas.
+      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 6) d.moved = true
       const dx = event.clientX - d.x
       const dy = event.clientY - d.y
       d.x = event.clientX
@@ -1585,6 +1587,26 @@ export class Overlay3D {
       this._sculptUndo()
       return
     }
+    // Esc mirrors Foundry's dismiss precedence: an open token HUD / context menu / window
+    // closes first (natively). Only when Esc is about to RELEASE the token selection do we
+    // exit the 3D view along with it — not swallowed, so Foundry still does its release.
+    if (event.key === 'Escape') {
+      const t0 = event.target
+      const tag0 = (t0?.tagName || '').toLowerCase()
+      if (tag0 === 'input' || tag0 === 'textarea' || t0?.isContentEditable) return // defocus fields natively
+      if (this._hudShown) return this._hideTokenHud() // layer 1: our re-shown token HUD
+      if (ui?.context?.menu?.length) return // layer 2: context menu (native close)
+      if (Object.keys(ui?.windows || {}).length) return // layer 3: open V1 windows (native close)
+      try {
+        for (const app of globalThis.foundry?.applications?.instances?.values?.() || []) {
+          if (app?.hasFrame && app.rendered) return // layer 3: open V2 windows (native close)
+        }
+      } catch {
+        /* best-effort enumeration */
+      }
+      if (canvas?.tokens?.controlled?.length) this.setViewMode('2d') // release + leave 3D together
+      return
+    }
     const m = this._mode
     if (m !== 'firstperson' && m !== 'tracked') return // Free/2D: leave keys native
     const t = event.target
@@ -1726,6 +1748,7 @@ export class Overlay3D {
       this._subjectElev = undefined
       this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     } else this._syncTrackedCamera() // TRUE top-down (directly overhead)
+    this._syncSelfChip() // the self-token chip shows only in Character view
     this._render()
   }
 
@@ -1903,12 +1926,85 @@ export class Overlay3D {
     if (!this._compass) return
     this._compass.style.right = 'auto'
     const r = document.querySelector('#players')?.getBoundingClientRect?.()
+    let left = 12
+    let bottom = 96
     if (r && r.height > 0) {
-      this._compass.style.left = `${Math.max(12, Math.round(r.left))}px`
-      this._compass.style.bottom = `${Math.round(window.innerHeight - r.top + 8)}px`
-    } else {
-      this._compass.style.left = '12px'
-      this._compass.style.bottom = '96px'
+      left = Math.max(12, Math.round(r.left))
+      bottom = Math.round(window.innerHeight - r.top + 8)
+    }
+    this._compass.style.left = `${left}px`
+    this._compass.style.bottom = `${bottom}px`
+    if (this._selfChip) {
+      // Self-token chip rides just above the compass (the bottom-left camera-UI cluster).
+      this._selfChip.style.left = `${left + 6}px`
+      this._selfChip.style.bottom = `${bottom + 66}px`
+    }
+  }
+
+  /**
+   * Self-token chip (Character view): a small round portrait of YOUR character in the 2D
+   * camera UI. In first person your own mini is invisible (you ARE the camera), so this is
+   * the stand-in — right-click stays free for drag-look in the viewport:
+   *   left-click → select your token · shift+click → target yourself (potions, self-buffs)
+   *   right-click → your token's HUD menu (target, hide, exit 3D, …)
+   */
+  _buildSelfChip() {
+    if (this._selfChip || !this._container) return
+    const el = document.createElement('div')
+    el.id = 'cfg-3d-selfchip'
+    Object.assign(el.style, {
+      position: 'fixed', left: '18px', bottom: '162px', width: '46px', height: '46px', display: 'none',
+      borderRadius: '50%', overflow: 'hidden', zIndex: '26', cursor: 'pointer', pointerEvents: 'auto',
+      border: '2px solid rgba(255,255,255,0.55)', boxShadow: '0 1px 6px rgba(0,0,0,0.5)', background: 'rgba(10,14,19,0.75)',
+    })
+    el.dataset.tooltip = 'Your character — click: select · shift+click: target · right-click: menu'
+    const img = document.createElement('img')
+    Object.assign(img.style, { width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none', display: 'block' })
+    img.addEventListener('error', () => (img.style.display = 'none'))
+    el.appendChild(img)
+    // Chip input must never leak into the 3D scene handlers on the container below it.
+    el.addEventListener('mousedown', (e) => {
+      e.stopPropagation()
+      if (e.button === 2) e.preventDefault()
+    })
+    el.addEventListener('mouseup', (e) => e.stopPropagation())
+    el.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const tok = this._firstPersonToken()
+      if (!tok) return
+      try {
+        if (e.shiftKey) tok.setTarget(!tok.isTargeted, { releaseOthers: false }) // self-target
+        else tok.control({ releaseOthers: true }) // select yourself
+      } catch {
+        /* permission — ignore */
+      }
+    })
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const tok = this._firstPersonToken()
+      if (!tok) return
+      const r = el.getBoundingClientRect()
+      this._openTokenHudFor(tok, r.right + 120, Math.max(140, r.top - 40)) // menu pinned beside the chip
+    })
+    this._container.appendChild(el)
+    this._selfChip = el
+    this._selfChipImg = img
+  }
+
+  /** Show the chip only in Character view; keep its portrait synced to the subject. */
+  _syncSelfChip() {
+    if (!this._selfChip) this._buildSelfChip()
+    if (!this._selfChip) return
+    const show = this._visible && this._mode === 'firstperson'
+    this._selfChip.style.display = show ? 'block' : 'none'
+    if (!show) return
+    const tok = this._firstPersonToken()
+    const src = tok?.document?.texture?.src || ''
+    if (src && this._selfChipImg && this._selfChipImg.dataset.src !== src) {
+      this._selfChipImg.dataset.src = src
+      this._selfChipImg.src = src
+      this._selfChipImg.style.display = 'block'
     }
   }
 
@@ -1917,6 +2013,7 @@ export class Overlay3D {
     const now = typeof performance !== 'undefined' ? performance.now() : 0
     if (now - (this._compassPosAt || 0) > 800) {
       this._positionCompass() // re-anchor if the players pill grew/collapsed (throttled)
+      this._syncSelfChip() // keep the self-token chip's visibility/portrait fresh
       this._compassPosAt = now
     }
     let deg = 0
@@ -2307,20 +2404,30 @@ export class Overlay3D {
     if (!tok) return
     event.preventDefault?.()
     event.stopImmediatePropagation?.()
+    let x
+    let y
+    const grp = this._viewer?.tokens?.get(tok.id)
+    if (grp && this._orbitCamera) {
+      const wp = (this._tmpHud || (this._tmpHud = new this._THREE.Vector3()))
+      grp.getWorldPosition(wp)
+      wp.y += 30
+      const p = wp.project(this._orbitCamera)
+      x = (p.x * 0.5 + 0.5) * window.innerWidth
+      y = (-p.y * 0.5 + 0.5) * window.innerHeight
+    }
+    this._openTokenHudFor(tok, x, y)
+  }
+
+  /** Bind + show Foundry's native token HUD for `tok` over the 3D view, optionally pinned at
+   * a screen point. Shared by the 3D right-click pick and the self-token chip. */
+  _openTokenHudFor(tok, x, y) {
     try {
       document.body.classList.add('cfg-3d-show-hud')
       canvas.hud.token.bind(tok)
       canvas.hud.token.render(true)
       this._hudShown = true
-      const grp = this._viewer?.tokens?.get(tok.id)
       const el = canvas.hud.token.element
-      if (grp && el && this._orbitCamera) {
-        const wp = (this._tmpHud || (this._tmpHud = new this._THREE.Vector3()))
-        grp.getWorldPosition(wp)
-        wp.y += 30
-        const p = wp.project(this._orbitCamera)
-        const x = (p.x * 0.5 + 0.5) * window.innerWidth
-        const y = (-p.y * 0.5 + 0.5) * window.innerHeight
+      if (el && Number.isFinite(x) && Number.isFinite(y)) {
         requestAnimationFrame(() => {
           Object.assign(el.style, { position: 'fixed', left: `${Math.round(x)}px`, top: `${Math.round(y)}px`, transform: 'translate(-50%,-50%)', zIndex: '31' })
         })
