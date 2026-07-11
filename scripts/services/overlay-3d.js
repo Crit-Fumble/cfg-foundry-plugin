@@ -908,16 +908,30 @@ export class Overlay3D {
     cam.updateMatrixWorld()
     const w = window.innerWidth || 1
     const h = window.innerHeight || 1
+    const size = canvas?.dimensions?.size || 100
     const v = new THREE.Vector3()
+    const e = new THREE.Vector3()
     let bestId = null
-    let bestD = 44 // px tolerance
+    let bestScore = Infinity // normalized d/tolerance — fair across token sizes
     for (const [id, g] of this._viewer.tokens.entries()) {
       if (!g?.visible) continue
-      g.getWorldPosition(v).project(cam)
+      g.getWorldPosition(v)
+      // Tolerance = the token's screen-space footprint radius (min 44px). A big creature's
+      // footprint ring is far larger than its 3D mesh, so a center-only 44px test misses it;
+      // this lets a click anywhere inside the ring select it.
+      const doc = canvas?.tokens?.get?.(id)?.document
+      const rWorld = Math.max(doc?.width || 1, doc?.height || 1) * size * 0.5
+      e.set(v.x + rWorld, v.y, v.z).project(cam)
+      v.project(cam)
       if (v.z > 1) continue // behind the camera
-      const d = Math.hypot((v.x * 0.5 + 0.5) * w - clientX, (-v.y * 0.5 + 0.5) * h - clientY)
-      if (d < bestD) {
-        bestD = d
+      const cx = (v.x * 0.5 + 0.5) * w
+      const cy = (-v.y * 0.5 + 0.5) * h
+      const rScreen = Math.max(44, Math.hypot((e.x * 0.5 + 0.5) * w - cx, (-e.y * 0.5 + 0.5) * h - cy))
+      const d = Math.hypot(cx - clientX, cy - clientY)
+      if (d > rScreen) continue // click is outside this token's footprint
+      const score = d / rScreen
+      if (score < bestScore) {
+        bestScore = score
         bestId = id
       }
     }
@@ -993,11 +1007,16 @@ export class Overlay3D {
       this._sculptBegin(event)
       return
     }
-    // Top-Down: either button drag pans (grab-the-map). Resolve a bare click on mouseup so
-    // a drag doesn't select: LEFT-click selects / moves, RIGHT-click opens the token HUD.
-    if (this._mode === 'tracked' && (event.button === 0 || event.button === 2)) {
-      this._charDrag = { mode: 'trackpan', button: event.button, x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
-      if (event.button === 2) event.preventDefault?.() // suppress the browser context menu
+    // Top-Down (Foundry-like): LEFT-drag = marquee multi-select (bare left-click selects /
+    // moves); RIGHT-drag = pan the map (bare right-click = token HUD). Resolve bare clicks on
+    // mouseup so a drag doesn't fire the click.
+    if (this._mode === 'tracked') {
+      if (event.button === 0) {
+        this._charDrag = { mode: 'marquee', button: 0, x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
+      } else if (event.button === 2) {
+        this._charDrag = { mode: 'trackpan', button: 2, x: event.clientX, y: event.clientY, sx: event.clientX, sy: event.clientY, moved: false }
+        event.preventDefault?.() // suppress the browser context menu
+      }
       return
     }
     if (this._mode !== 'firstperson') {
@@ -1035,20 +1054,19 @@ export class Overlay3D {
       if (d.moved) this._trackPan(dx, dy)
       return
     }
-    if (d && this._mode === 'firstperson') {
+    if (d && d.mode === 'look') {
       if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 4) d.moved = true
-      if (d.mode === 'look') {
-        const dx = event.clientX - d.x
-        const dy = event.clientY - d.y
-        d.x = event.clientX
-        d.y = event.clientY
-        if (d.moved) this._applyCharLook(dx, dy)
-        return
-      }
-      if (d.mode === 'marquee') {
-        if (d.moved) this._marqueeUpdate(d.sx, d.sy, event.clientX, event.clientY)
-        return
-      }
+      const dx = event.clientX - d.x
+      const dy = event.clientY - d.y
+      d.x = event.clientX
+      d.y = event.clientY
+      if (d.moved) this._applyCharLook(dx, dy)
+      return
+    }
+    if (d && d.mode === 'marquee') {
+      if (!d.moved && Math.hypot(event.clientX - d.sx, event.clientY - d.sy) > 4) d.moved = true
+      if (d.moved) this._marqueeUpdate(d.sx, d.sy, event.clientX, event.clientY)
+      return
     }
     this._onPickMove(event)
   }
@@ -1063,13 +1081,18 @@ export class Overlay3D {
     const d = this._charDrag
     this._charDrag = null
     if (d && d.mode === 'trackpan') {
+      // Top-Down right button: drag pans; a bare right-click opens the token HUD.
       document.body.style.cursor = ''
-      if (!d.moved) {
-        if (d.button === 2) this._showTokenHud(event) // bare right-click → the token's HUD menu (exit 3D, etc.)
-        else if (event.shiftKey) this._onPickClick(event) // shift+left → target (attack/spell/potion)
+      if (!d.moved && d.button === 2) this._showTokenHud(event)
+      return
+    }
+    if (d && d.mode === 'marquee') {
+      this._marqueeClear()
+      if (this._mode === 'tracked') {
+        // Top-Down: a drag box multi-SELECTS the group; a bare left-click selects / moves.
+        if (d.moved) this._marqueeSelect(d.sx, d.sy, event.clientX, event.clientY)
+        else if (event.shiftKey) this._onPickClick(event) // shift+left → target
         else {
-          // Forgiving pick (same tolerance as _onPickClick) so a near-miss selects the token
-          // rather than silently moving the controlled one to empty ground.
           const tok = this._pick(event.clientX, event.clientY) || this._pickNearest(event.clientX, event.clientY)
           if (tok) {
             try {
@@ -1079,17 +1102,14 @@ export class Overlay3D {
             }
           } else this._moveControlledTo(this._pickGround(event.clientX, event.clientY)) // clearly-empty ground → move
         }
+      } else {
+        // Character view: a drag box TARGETS the group (AoE); a bare left-click selects one.
+        if (d.moved) this._marqueeTarget(d.sx, d.sy, event.clientX, event.clientY)
+        else this._onPickClick(event)
       }
       return
     }
-    if (!d || this._mode !== 'firstperson') return
-    if (d.mode === 'marquee') {
-      this._marqueeClear()
-      if (d.moved) this._marqueeTarget(d.sx, d.sy, event.clientX, event.clientY) // box → target group
-      else this._onPickClick(event) // bare left-click → select the single token (control)
-      return
-    }
-    if (d.mode === 'look' && !d.moved) this._showTokenHud(event) // bare right-click → the token's HUD menu
+    if (d && d.mode === 'look' && !d.moved) this._showTokenHud(event) // firstperson bare right-click → token HUD
   }
 
   /** Draw/resize the on-screen selection marquee (viewport-fixed overlay). */
@@ -1152,6 +1172,50 @@ export class Overlay3D {
       if (!tok) continue
       try {
         tok.setTarget(true, { releaseOthers: first })
+        first = false
+      } catch {
+        /* permission — ignore */
+      }
+    }
+  }
+
+  /** Control (multi-select) every visible token whose 3D position projects inside the drag
+   * box; an empty box releases the selection — Foundry's marquee, for Top-Down selection. */
+  _marqueeSelect(sx, sy, cx, cy) {
+    const THREE = this._THREE
+    const cam = this._orbitCamera
+    if (!THREE || !cam || !this._viewer?.tokens?.size) return
+    cam.updateMatrixWorld()
+    const w = window.innerWidth || 1
+    const h = window.innerHeight || 1
+    const minX = Math.min(sx, cx)
+    const maxX = Math.max(sx, cx)
+    const minY = Math.min(sy, cy)
+    const maxY = Math.max(sy, cy)
+    const v = new THREE.Vector3()
+    const ids = []
+    for (const [id, g] of this._viewer.tokens.entries()) {
+      if (!g?.visible) continue
+      g.getWorldPosition(v).project(cam)
+      if (v.z > 1) continue // behind the camera
+      const px = (v.x * 0.5 + 0.5) * w
+      const py = (-v.y * 0.5 + 0.5) * h
+      if (px >= minX && px <= maxX && py >= minY && py <= maxY) ids.push(id)
+    }
+    if (!ids.length) {
+      try {
+        canvas?.tokens?.releaseAll?.()
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+    let first = true
+    for (const id of ids) {
+      const tok = canvas?.tokens?.get?.(id)
+      if (!tok) continue
+      try {
+        tok.control({ releaseOthers: first }) // controllable = owned (GM: all); non-owned no-ops
         first = false
       } catch {
         /* permission — ignore */
