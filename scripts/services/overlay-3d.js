@@ -1089,9 +1089,12 @@ export class Overlay3D {
     if (d && d.mode === 'marquee') {
       this._marqueeClear()
       if (this._mode === 'tracked') {
-        // Top-Down: a drag box multi-SELECTS the group; a bare left-click selects / moves.
-        if (d.moved) this._marqueeSelect(d.sx, d.sy, event.clientX, event.clientY)
-        else if (event.shiftKey) this._onPickClick(event) // shift+left → target
+        // Top-Down: drag box multi-SELECTS (saves / applying damage); SHIFT+drag TARGETS the
+        // group (attacks / AoE); a bare left-click selects / moves; shift+click targets one.
+        if (d.moved) {
+          if (event.shiftKey) this._marqueeTarget(d.sx, d.sy, event.clientX, event.clientY)
+          else this._marqueeSelect(d.sx, d.sy, event.clientX, event.clientY)
+        } else if (event.shiftKey) this._onPickClick(event) // shift+left → target one
         else {
           const tok = this._pick(event.clientX, event.clientY) || this._pickNearest(event.clientX, event.clientY)
           if (tok) {
@@ -1135,29 +1138,47 @@ export class Overlay3D {
     }
   }
 
-  /** Target every visible token whose 3D position projects inside the drag box (releasing
-   * prior targets); an empty box clears all targets — like Foundry's marquee, but targeting. */
-  _marqueeTarget(sx, sy, cx, cy) {
+  /** Every visible token whose screen-space FOOTPRINT (its ring — center projection + a
+   * footprint-radius) intersects the drag box. Footprint-vs-box, not center-in-box, so any
+   * token the box visibly touches counts (matches what the user sees). */
+  _tokensInBox(sx, sy, cx, cy) {
+    const out = []
     const THREE = this._THREE
     const cam = this._orbitCamera
-    if (!THREE || !cam || !this._viewer?.tokens?.size) return
+    if (!THREE || !cam || !this._viewer?.tokens?.size) return out
     cam.updateMatrixWorld()
     const w = window.innerWidth || 1
     const h = window.innerHeight || 1
+    const size = canvas?.dimensions?.size || 100
     const minX = Math.min(sx, cx)
     const maxX = Math.max(sx, cx)
     const minY = Math.min(sy, cy)
     const maxY = Math.max(sy, cy)
     const v = new THREE.Vector3()
-    const ids = []
+    const e = new THREE.Vector3()
     for (const [id, g] of this._viewer.tokens.entries()) {
       if (!g?.visible) continue
-      g.getWorldPosition(v).project(cam)
+      g.getWorldPosition(v)
+      const doc = canvas?.tokens?.get?.(id)?.document
+      const rWorld = Math.max(doc?.width || 1, doc?.height || 1) * size * 0.5
+      e.set(v.x + rWorld, v.y, v.z).project(cam)
+      v.project(cam)
       if (v.z > 1) continue // behind the camera
       const px = (v.x * 0.5 + 0.5) * w
       const py = (-v.y * 0.5 + 0.5) * h
-      if (px >= minX && px <= maxX && py >= minY && py <= maxY) ids.push(id)
+      const r = Math.hypot((e.x * 0.5 + 0.5) * w - px, (-e.y * 0.5 + 0.5) * h - py)
+      // circle (token footprint) vs box (marquee): nearest box point within r → intersects
+      const nx = Math.max(minX, Math.min(px, maxX))
+      const ny = Math.max(minY, Math.min(py, maxY))
+      if (Math.hypot(px - nx, py - ny) <= r) out.push(id)
     }
+    return out
+  }
+
+  /** Target every token the drag box touches (releasing prior targets); an empty box clears
+   * all targets — like Foundry's marquee, but targeting (AoE / group attacks). */
+  _marqueeTarget(sx, sy, cx, cy) {
+    const ids = this._tokensInBox(sx, sy, cx, cy)
     if (!ids.length) {
       try {
         for (const t of Array.from(game.user?.targets || [])) t.setTarget(false, { releaseOthers: false })
@@ -1179,29 +1200,10 @@ export class Overlay3D {
     }
   }
 
-  /** Control (multi-select) every visible token whose 3D position projects inside the drag
-   * box; an empty box releases the selection — Foundry's marquee, for Top-Down selection. */
+  /** Control (multi-select) every token the drag box touches; an empty box releases the
+   * selection — Foundry's marquee, for Top-Down group selection (saves, applying damage). */
   _marqueeSelect(sx, sy, cx, cy) {
-    const THREE = this._THREE
-    const cam = this._orbitCamera
-    if (!THREE || !cam || !this._viewer?.tokens?.size) return
-    cam.updateMatrixWorld()
-    const w = window.innerWidth || 1
-    const h = window.innerHeight || 1
-    const minX = Math.min(sx, cx)
-    const maxX = Math.max(sx, cx)
-    const minY = Math.min(sy, cy)
-    const maxY = Math.max(sy, cy)
-    const v = new THREE.Vector3()
-    const ids = []
-    for (const [id, g] of this._viewer.tokens.entries()) {
-      if (!g?.visible) continue
-      g.getWorldPosition(v).project(cam)
-      if (v.z > 1) continue // behind the camera
-      const px = (v.x * 0.5 + 0.5) * w
-      const py = (-v.y * 0.5 + 0.5) * h
-      if (px >= minX && px <= maxX && py >= minY && py <= maxY) ids.push(id)
-    }
+    const ids = this._tokensInBox(sx, sy, cx, cy)
     if (!ids.length) {
       try {
         canvas?.tokens?.releaseAll?.()
