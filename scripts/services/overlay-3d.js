@@ -269,6 +269,8 @@ export class Overlay3D {
         this._stopLoop()
         this._setFpInput(false)
         this._hideTokenHud()
+        this._clearMoveRuler() // drop the movement path + distance label
+        this._wasMoving = false
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
@@ -700,6 +702,14 @@ export class Overlay3D {
     this._fpLastTick = now
     const k = this._keys
     const moving = k.fwd || k.back || k.left || k.right
+    if (moving && this._fpCenter) {
+      if (!this._wasMoving) {
+        this._moveOrigin = { x: this._fpCenter.x, y: this._fpCenter.y } // ruler starts here
+        this._moveTokenId = this._firstPersonToken()?.id || null
+      }
+      this._moveLastAt = now
+    }
+    this._wasMoving = moving
     if (this._fineMovement()) {
       // Fine (off-grid) movement — smooth, camera-relative, integrated per frame.
       if (dt > 0 && moving) {
@@ -1049,7 +1059,21 @@ export class Overlay3D {
     this._charDrag = null
     if (d && d.mode === 'trackpan') {
       document.body.style.cursor = ''
-      if (!d.moved) this._onPickClick(event) // bare left-click → select the token under it
+      if (!d.moved) {
+        if (event.button === 2 || event.shiftKey) this._onPickClick(event) // right / shift → target
+        else {
+          // Forgiving pick (same tolerance as _onPickClick) so a near-miss selects the token
+          // rather than silently moving the controlled one to empty ground.
+          const tok = this._pick(event.clientX, event.clientY) || this._pickNearest(event.clientX, event.clientY)
+          if (tok) {
+            try {
+              tok.control({ releaseOthers: true }) // click on/near a token → select it
+            } catch {
+              /* permission — ignore */
+            }
+          } else this._moveControlledTo(this._pickGround(event.clientX, event.clientY)) // clearly-empty ground → move
+        }
+      }
       return
     }
     if (!d || this._mode !== 'firstperson') return
@@ -1764,6 +1788,113 @@ export class Overlay3D {
     if (now - (this._moveBlockNotifyAt || 0) < 2500) return
     this._moveBlockNotifyAt = now
     ui?.notifications?.warn?.(game?.paused ? 'Game is paused — movement is locked.' : "Not your turn — you can't move yet.")
+  }
+
+  /** Screen point → the ground point in CANVAS coords (world x,z map to canvas x,y).
+   * Uses the y=0 plane; in Top-Down (straight down) that's exact. */
+  _pickGround(clientX, clientY) {
+    const cam = this._orbitCamera
+    const dom = this._renderer?.domElement
+    if (!cam || !dom) return null
+    const THREE = this._THREE
+    const r = dom.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+    const ray = new THREE.Raycaster()
+    ray.setFromCamera(ndc, cam)
+    const hit = new THREE.Vector3()
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null
+    return { x: hit.x, y: hit.z }
+  }
+
+  /** Top-Down: move the controlled token to a ground destination (grid-snapped, wall +
+   * turn checked). Foundry's own movement pipeline animates + measures it; we show the
+   * distance in 3D via the move ruler. */
+  _moveControlledTo(dest) {
+    if (!dest) return
+    const tok = canvas?.tokens?.controlled?.[0]
+    if (!tok?.document) return
+    if (!this._movementAllowed(tok)) return this._notifyMovementBlocked()
+    const origin = tok.center
+    const center = this._snapToGrid(dest, tok) // footprint-aware: grid-aligns any token size (even 2x2/4x4), free on gridless
+    if (this._moveBlocked(origin, center)) return void ui?.notifications?.warn?.('Blocked by a wall.')
+    this._moveOrigin = { x: origin.x, y: origin.y }
+    this._moveTokenId = tok.id // bind the ruler to this token so a later selection doesn't hijack it
+    this._moveLastAt = typeof performance !== 'undefined' ? performance.now() : 0
+    const { w, h } = this._tokenSizePx(tok.document)
+    tok.document.update({ x: Math.round(center.x - w / 2), y: Math.round(center.y - h / 2) })
+  }
+
+  /** Live movement ruler: a 3D path from where the current movement started to the
+   * moving token, plus the Foundry-measured distance. Shows while moving, clears when
+   * idle for a beat. */
+  _updateMoveRuler() {
+    const now = typeof performance !== 'undefined' ? performance.now() : 0
+    const inFp = this._mode === 'firstperson'
+    const tok = inFp ? this._firstPersonToken() : canvas?.tokens?.controlled?.[0]
+    const cur = inFp ? this._fpCenter : tok?.center
+    if (this._moveOrigin && this._moveTokenId && tok?.id !== this._moveTokenId) return this._clearMoveRuler() // selection switched away
+    if (this._moveOrigin && cur) {
+      const lp = this._moveLastPos // any real motion (incl. a still-animating Top-Down move) keeps the ruler alive
+      if (!lp || Math.hypot(cur.x - lp.x, cur.y - lp.y) > 0.5) {
+        this._moveLastAt = now
+        this._moveLastPos = { x: cur.x, y: cur.y }
+      }
+    }
+    if (!this._moveOrigin || !cur || now - (this._moveLastAt || 0) > 1200) return this._clearMoveRuler()
+    const THREE = this._THREE
+    const o = this._moveOrigin
+    if (!this._moveLine) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3))
+      this._moveLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffd447, transparent: true, opacity: 0.95, depthTest: false }))
+      this._moveLine.renderOrder = 900
+      this._viewer?.scene?.add(this._moveLine)
+    }
+    const p = this._moveLine.geometry.attributes.position
+    p.setXYZ(0, o.x, 3, o.y)
+    p.setXYZ(1, cur.x, 3, cur.y)
+    p.needsUpdate = true
+    let dist
+    try {
+      dist = canvas.grid.measurePath([{ x: o.x, y: o.y }, { x: cur.x, y: cur.y }]).distance
+    } catch {
+      const size = canvas?.dimensions?.size || 100
+      dist = (Math.hypot(cur.x - o.x, cur.y - o.y) / size) * (canvas?.dimensions?.distance || 5)
+    }
+    this._showMoveLabel(`${Math.round(dist)} ${canvas?.scene?.grid?.units || ''}`.trim(), cur)
+  }
+
+  _showMoveLabel(text, canvasPos) {
+    let el = this._moveLabel
+    if (!el) {
+      el = document.createElement('div')
+      Object.assign(el.style, {
+        position: 'fixed', zIndex: '28', pointerEvents: 'none', padding: '2px 8px', borderRadius: '10px',
+        background: 'rgba(20,24,30,0.85)', color: '#ffd447', font: '600 13px system-ui, sans-serif',
+        transform: 'translate(-50%,-150%)', whiteSpace: 'nowrap',
+      })
+      document.body.appendChild(el)
+      this._moveLabel = el
+    }
+    el.textContent = text
+    el.style.display = 'block'
+    const wp = (this._tmpLabel || (this._tmpLabel = new this._THREE.Vector3()))
+    wp.set(canvasPos.x, 40, canvasPos.y).project(this._orbitCamera)
+    el.style.left = `${Math.round((wp.x * 0.5 + 0.5) * window.innerWidth)}px`
+    el.style.top = `${Math.round((-wp.y * 0.5 + 0.5) * window.innerHeight)}px`
+  }
+
+  _clearMoveRuler() {
+    this._moveOrigin = null
+    this._moveTokenId = null
+    this._moveLastPos = null
+    if (this._moveLine) {
+      this._viewer?.scene?.remove(this._moveLine)
+      this._moveLine.geometry.dispose()
+      this._moveLine.material.dispose()
+      this._moveLine = null
+    }
+    if (this._moveLabel) this._moveLabel.style.display = 'none'
   }
 
   /** Bare right-click in Character view → the token's HUD menu, re-shown over the 3D view
@@ -2544,6 +2675,7 @@ export class Overlay3D {
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
     this._updateCompass()
+    this._updateMoveRuler() // live movement path + distance (Top Down + Character)
     // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
     // render-on-change), so this ticker yields to it — no double update/render.
     if (this._mode === 'orbit' && this._sharedControls) return
