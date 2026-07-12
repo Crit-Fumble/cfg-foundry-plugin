@@ -2052,26 +2052,9 @@ export class Overlay3D {
       })
       g.add(sg)
     }
-    // --- GM hidden-dim: the whole stand goes translucent, like the 2D 50% alpha ---
+    // --- GM hidden-dim: the whole stand goes translucent, like the 2D ~50% alpha ---
     const dim = !!tok.document.hidden
-    g.traverse((o) => {
-      if (!o.isMesh && !o.isSprite) return
-      const mats = Array.isArray(o.material) ? o.material : [o.material]
-      for (const m of mats) {
-        if (!m) continue
-        if (dim && m.userData.cfgHidden !== true) {
-          m.userData.cfgHidden = true
-          m.userData.cfgPrevOpacity = m.opacity ?? 1
-          m.userData.cfgPrevTransparent = m.transparent
-          m.transparent = true
-          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.5) // native's subtle ~50% hidden-token alpha
-        } else if (!dim && m.userData.cfgHidden) {
-          m.userData.cfgHidden = false
-          m.opacity = m.userData.cfgPrevOpacity ?? 1
-          m.transparent = m.userData.cfgPrevTransparent ?? false
-        }
-      }
-    })
+    this._setGroupDim(g, dim)
     // --- GM hidden cue: the dimmed token art (above) carries the state like the native 2D
     // canvas; a single SOFT ground ring adds a passive "this is hidden" hint from any angle
     // (3D has no persistent dashed border when nothing is selected). No vertical glow column
@@ -2104,6 +2087,58 @@ export class Overlay3D {
       ring.renderOrder = 888
       glowGrp.add(ring)
       g.add(glowGrp)
+    }
+  }
+
+  /** Translucency for a hidden token's whole 3D group — idempotent (per-material state is
+   * tracked in userData, so re-calling only touches materials not already in the target
+   * state). Extracted + idempotent because the token body (billboard sprite / GLB model)
+   * loads ASYNCHRONOUSLY: it can arrive AFTER _applyTokenVisuals first runs, so the tick
+   * sweep (_reassertHiddenDims) re-asserts this to catch a late-arriving body. */
+  _setGroupDim(g, dim) {
+    if (!g) return
+    g.traverse((o) => {
+      if (!o.isMesh && !o.isSprite) return
+      if (o.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-status-icons') return // our own overlays keep their look
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      for (const m of mats) {
+        if (!m) continue
+        if (dim && m.userData.cfgHidden !== true) {
+          m.userData.cfgHidden = true
+          m.userData.cfgPrevOpacity = m.opacity ?? 1
+          m.userData.cfgPrevTransparent = m.transparent
+          m.userData.cfgPrevAlphaTest = m.alphaTest
+          m.transparent = true
+          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.5) // native's subtle ~50% hidden-token alpha
+          // The token art is normally an alpha-TESTED opaque cutout (alphaTest 0.5, the #166
+          // no-holes-in-walls guard). three.js tests the POST-opacity alpha against alphaTest,
+          // so at 0.5 opacity a 0.5 cutoff discards all but the fully-solid core (which then
+          // sits right at the threshold) — reading as "rough but opaque", not see-through.
+          // Drop alphaTest while hidden so the token blends properly (genuinely translucent);
+          // the wall-hole concern is moot here — a hidden token is DELIBERATELY see-through and
+          // GM-only. alphaTest crossing 0 needs a shader recompile → needsUpdate.
+          if (m.map && m.alphaTest > 0) m.alphaTest = 0
+          m.needsUpdate = true
+        } else if (!dim && m.userData.cfgHidden) {
+          m.userData.cfgHidden = false
+          m.opacity = m.userData.cfgPrevOpacity ?? 1
+          m.transparent = m.userData.cfgPrevTransparent ?? false
+          if (m.userData.cfgPrevAlphaTest !== undefined) m.alphaTest = m.userData.cfgPrevAlphaTest
+          m.needsUpdate = true
+        }
+      }
+    })
+  }
+
+  /** Re-assert hidden-token translucency each (throttled) tick. The token body loads async,
+   * so the initial dim in _applyTokenVisuals can miss a not-yet-arrived sprite/model; this
+   * catches it within a frame or two. Idempotent + cheap (hidden tokens are few; _setGroupDim
+   * no-ops on already-correct materials). GM-only: a hidden token has no group for a player. */
+  _reassertHiddenDims() {
+    if (!this._viewer?.tokens) return
+    for (const [id, g] of this._viewer.tokens.entries()) {
+      const doc = canvas?.tokens?.get?.(id)?.document
+      if (doc?.hidden) this._setGroupDim(g, true)
     }
   }
 
@@ -3407,10 +3442,15 @@ export class Overlay3D {
   /** Per-frame: keep the tracked camera synced (or orbit damping), then render. */
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
+    const nowT = typeof performance !== 'undefined' ? performance.now() : 0
     this._updateCompass()
     this._updateMoveRuler() // live movement path + distance (Top Down + Character)
     this._updateSelectionFx() // selection box + glow prism on the ground (controlled tokens)
     this._updateTargetReticle() // screen-space yellow corner arrows on targeted tokens
+    if (nowT - (this._hiddenDimAt || 0) > 300) {
+      this._reassertHiddenDims() // catch async-loaded bodies of hidden tokens (throttled)
+      this._hiddenDimAt = nowT
+    }
     // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
     // render-on-change), so this ticker yields to it — no double update/render.
     if (this._mode === 'orbit' && this._sharedControls) return
