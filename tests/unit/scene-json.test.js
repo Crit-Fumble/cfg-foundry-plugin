@@ -22,6 +22,7 @@ import {
   levelBase,
   levelTop,
   levelContainingElevation,
+  levelForElevation,
   resolveActiveLevel,
 } from '../../scripts/services/overlay3d/scene-json.js'
 
@@ -214,6 +215,41 @@ describe('levelContainingElevation', () => {
     expect(levelContainingElevation(levels, -5)?.id).toBe('b')
     expect(levelContainingElevation(levels, 99)).toBeNull() // above every band
     expect(levelContainingElevation(levels, NaN)).toBeNull()
+  })
+})
+
+describe('levelForElevation', () => {
+  const B = { id: 'b', elevation: { bottom: -10, top: 0 } }
+  const G = { id: 'g', elevation: { bottom: 0, top: 10 } }
+  const U = { id: 'u', elevation: { bottom: 10, top: 20 } }
+  const levels = [B, G, U]
+  it('inside a band, behaves like levelContainingElevation', () => {
+    expect(levelForElevation(levels, 0)?.id).toBe('g')
+    expect(levelForElevation(levels, 5)?.id).toBe('g')
+    expect(levelForElevation(levels, 10)?.id).toBe('u') // shared boundary → upper
+    expect(levelForElevation(levels, -5)?.id).toBe('b')
+  })
+  it('ABOVE every band, snaps to the highest floor (not null) so lower floors stay in the cutaway', () => {
+    // The bug: flying above the top floor used to fall back to the authored home floor,
+    // collapsing the slice and hiding upper floors. Now it snaps to the topmost floor.
+    expect(levelForElevation(levels, 20)?.id).toBe('u') // top-of-upper boundary (open at 20)
+    expect(levelForElevation(levels, 80)?.id).toBe('u')
+    expect(levelForElevation(levels, 9999)?.id).toBe('u')
+  })
+  it('in a GAP between non-contiguous floors, snaps to the floor just below', () => {
+    const low = { id: 'low', elevation: { bottom: 0, top: 10 } }
+    const high = { id: 'high', elevation: { bottom: 40, top: 50 } }
+    expect(levelForElevation([low, high], 25)?.id).toBe('low') // hovering between → floor below
+    expect(levelForElevation([low, high], 45)?.id).toBe('high') // inside the upper band
+  })
+  it('BELOW every floor, snaps to the LOWEST floor (mirror of the above-all case, not the authored home)', () => {
+    expect(levelForElevation(levels, -50)?.id).toBe('b') // 'b' is the lowest floor (base -10)
+    // even when a HIGHER floor would be the authored home, below-all never re-shows it
+    expect(levelForElevation([G, U], -50)?.id).toBe('g') // lowest of the two, not U
+  })
+  it('non-finite elevation or no levels → null (caller falls back to authored level)', () => {
+    expect(levelForElevation(levels, NaN)).toBeNull()
+    expect(levelForElevation([], 5)).toBeNull()
   })
 })
 

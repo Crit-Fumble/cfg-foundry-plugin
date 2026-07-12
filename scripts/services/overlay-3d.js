@@ -22,7 +22,7 @@
 
 // Pure, Foundry-free scene-JSON producers (decomposition phase 1) — no THREE, so this
 // static import adds nothing to load-time cost. See overlay3d/scene-json.js.
-import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTokenJson, buildLightsJson, buildLevelsJson, buildRegionsJson, buildTerrainJson, levelBase, levelTop, levelContainingElevation, resolveActiveLevel, parseHexColor } from './overlay3d/scene-json.js'
+import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTokenJson, buildLightsJson, buildLevelsJson, buildRegionsJson, buildTerrainJson, levelBase, levelTop, levelForElevation, resolveActiveLevel, parseHexColor } from './overlay3d/scene-json.js'
 import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
@@ -3020,11 +3020,14 @@ export class Overlay3D {
     const doc = this._firstPersonToken()?.document
     if (!doc) return undefined
     const lvls = canvas?.scene?.levels
-    const byElev =
-      lvls && lvls.size
-        ? levelContainingElevation(lvls.contents || [], Number(doc.elevation), (l) => this._levelBase(l), (l) => this._levelTop(l))
-        : null
-    return byElev?.id ?? doc.level ?? undefined
+    if (lvls && lvls.size) {
+      // Elevation-driven floor: the band containing the elevation, else the highest floor at
+      // or below it (flying above the top floor / hovering in a gap keeps the lower floors in
+      // the cutaway rather than collapsing to the authored home level). Pure + unit-tested.
+      const lvl = levelForElevation(lvls.contents || [], Number(doc.elevation), (l) => this._levelBase(l), (l) => this._levelTop(l))
+      if (lvl) return lvl.id
+    }
+    return doc.level ?? undefined
   }
 
   /**

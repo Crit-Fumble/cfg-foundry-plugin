@@ -82,6 +82,50 @@ export function levelContainingElevation(levels, elev, base = levelBase, top = l
 }
 
 /**
+ * The Level a first-person viewer at `elev` treats as its floor for slicing. First the band
+ * that CONTAINS the elevation; else — when the viewer has flown ABOVE the top floor, or is
+ * hovering in a GAP between non-contiguous floors — the HIGHEST floor at or below the viewer,
+ * so the top-down cutaway keeps every lower floor visible instead of collapsing to the
+ * authored home level (which snapped the slice cut down and hid the upper floors). Symmetric
+ * in the other direction: BELOW every floor (burrowing under the bottom floor) snaps to the
+ * LOWEST floor, so descending never re-shows an upper floor the viewer is beneath. Returns
+ * null only when there are no levels, or `elev` is non-finite — the caller then falls back to
+ * the token's authored `level` membership.
+ * @param {object[]} levels  Level docs
+ * @param {number} elev  grid units
+ * @param {(l)=>number} base  base resolver (default levelBase)
+ * @param {(l)=>number} top   top resolver (default levelTop)
+ */
+export function levelForElevation(levels, elev, base = levelBase, top = levelTop) {
+  const contained = levelContainingElevation(levels, elev, base, top)
+  if (contained) return contained
+  if (!Number.isFinite(elev)) return null
+  let best = null
+  let bestBase = -Infinity
+  for (const l of levels || []) {
+    const b = base(l)
+    if (b <= elev + 0.01 && b > bestBase) {
+      best = l // highest floor at or below the viewer; ties keep the FIRST in doc order,
+      bestBase = b // matching levelContainingElevation's `base(l) > base(match)` convention
+    }
+  }
+  if (best) return best
+  // Below every floor: snap to the LOWEST floor (mirror of the above-top-floor snap) so the
+  // cutaway keeps the bottom slice rather than re-showing an upper floor via the caller's
+  // authored-home fallback. null only when there are genuinely no levels.
+  let lowest = null
+  let lowestBase = Infinity
+  for (const l of levels || []) {
+    const b = base(l)
+    if (b < lowestBase) {
+      lowest = l
+      lowestBase = b
+    }
+  }
+  return lowest
+}
+
+/**
  * Pick the "active" (viewed) Level by camera mode. In firstperson (character) view the
  * SUBJECT's floor wins outright — regardless of the off-by-default focus-follow toggle or
  * where the GM navigated (canvas.level) — because the camera is anchored on the character.
