@@ -362,6 +362,11 @@ describe('buildTokenJson', () => {
     expect(off.ringBackground).toBeUndefined()
     expect(off.artScale).toBeUndefined()
   })
+  it('emits token facing (rotation), or 0 when lockRotation', () => {
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, rotation: 90, flags: {} }, kctx).rotation).toBe(90)
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, rotation: 90, lockRotation: true, flags: {} }, kctx).rotation).toBe(0)
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, flags: {} }, kctx).rotation).toBeUndefined()
+  })
   it('emits the PARTY colour for a player-owned friendly token via ctx.hasPlayerOwner', () => {
     const doc = { id: 'k', x: 0, y: 0, disposition: 1, flags: {} }
     expect(buildTokenJson(doc, { ...kctx, hasPlayerOwner: true }).color).toBe(0x33bc4e) // PARTY

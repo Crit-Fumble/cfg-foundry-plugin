@@ -254,6 +254,8 @@ export function buildTokenJson(doc, ctx) {
     artScale: ring && Number.isFinite(Number(ring.subject?.scale)) ? Number(ring.subject.scale) : undefined,
     ringColor: ring ? parseHexColor(ring.colors?.ring, undefined) : undefined,
     ringBackground: ring ? parseHexColor(ring.colors?.background, undefined) : undefined,
+    // Token facing (0 when the token locks rotation) — 2D flat-art quad + GLB yaw in the core.
+    rotation: doc.lockRotation ? 0 : Number.isFinite(Number(doc.rotation)) ? Number(doc.rotation) : undefined,
     selected: !!ctx.selected,
     targeted: !!ctx.targeted,
     targetColor: ctx.targetColor,
