@@ -318,6 +318,19 @@ describe('buildTokenJson', () => {
     const noRing = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: false, subject: { texture: 'subject.png' } }, flags: {} }
     expect(buildTokenJson(noRing, kctx).texture).toBe('ABS:raw.png')
   })
+  it('Dynamic Token Ring: carries ring/background colours + subject scale (off → all undefined)', () => {
+    const doc = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: true, colors: { ring: '#ff0000', background: 0x00ff00 }, subject: { texture: 'subject.png', scale: 1.5 } }, flags: {} }
+    expect(buildTokenJson(doc, kctx)).toMatchObject({ ringColor: 0xff0000, ringBackground: 0x00ff00, artScale: 1.5 })
+    const off = buildTokenJson({ id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: false }, flags: {} }, kctx)
+    expect(off.ringColor).toBeUndefined()
+    expect(off.ringBackground).toBeUndefined()
+    expect(off.artScale).toBeUndefined()
+  })
+  it('emits the PARTY colour for a player-owned friendly token via ctx.hasPlayerOwner', () => {
+    const doc = { id: 'k', x: 0, y: 0, disposition: 1, flags: {} }
+    expect(buildTokenJson(doc, { ...kctx, hasPlayerOwner: true }).color).toBe(0x33bc4e) // PARTY
+    expect(buildTokenJson(doc, { ...kctx, hasPlayerOwner: false }).color).toBe(0x43dfdf) // FRIENDLY
+  })
   it('carries selection/target state from ctx', () => {
     const doc = { id: 'k', x: 0, y: 0, flags: {} }
     expect(buildTokenJson(doc, { ...kctx, selected: true, targeted: true, targetColor: 0x3366ff })).toMatchObject({

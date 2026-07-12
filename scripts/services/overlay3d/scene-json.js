@@ -183,8 +183,10 @@ export function buildTokenJson(doc, ctx) {
     : dispositionColor(doc.disposition, ctx.hasPlayerOwner, ctx.dispositionColors)
   // Dynamic Token Ring: when enabled, Foundry draws the ring's SUBJECT texture (a
   // transparent-background portrait, often system-remapped) instead of the raw token art —
-  // the live document has already run prepareDerivedData, so this is correct as-is.
-  const artSrc = (doc.ring?.enabled && doc.ring.subject?.texture) || doc.texture?.src
+  // the live document has already run prepareDerivedData, so this is correct as-is. Its own
+  // colours (ring/background) and subject scale carry through too so the ring looks right.
+  const ring = doc.ring?.enabled ? doc.ring : null
+  const artSrc = (ring && ring.subject?.texture) || doc.texture?.src
   return {
     id: doc.id,
     x: doc.x || 0,
@@ -204,6 +206,10 @@ export function buildTokenJson(doc, ctx) {
     alpha: ctx.alpha,
     textureScaleX: ctx.textureScaleX,
     textureScaleY: ctx.textureScaleY,
+    // Dynamic Token Ring appearance (undefined when the ring is off → core defaults).
+    artScale: ring && Number.isFinite(Number(ring.subject?.scale)) ? Number(ring.subject.scale) : undefined,
+    ringColor: ring ? parseHexColor(ring.colors?.ring, undefined) : undefined,
+    ringBackground: ring ? parseHexColor(ring.colors?.background, undefined) : undefined,
     selected: !!ctx.selected,
     targeted: !!ctx.targeted,
     targetColor: ctx.targetColor,

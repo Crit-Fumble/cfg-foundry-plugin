@@ -3373,7 +3373,7 @@ export class Overlay3D {
         // that is the subject but NOT the mover falls through and rebuilds normally on an
         // external move so its mini/stalk stay synced with the camera.
         const c = change || {}
-        const visual = 'width' in c || 'height' in c || 'texture' in c || 'flags' in c || 'hidden' in c
+        const visual = 'width' in c || 'height' in c || 'texture' in c || 'flags' in c || 'hidden' in c || 'ring' in c || 'disposition' in c
         if (!visual) return
       }
       this._removeToken(id)
