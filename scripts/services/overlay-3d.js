@@ -2100,6 +2100,19 @@ export class Overlay3D {
     g.traverse((o) => {
       if (!o.isMesh && !o.isSprite) return
       if (o.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-status-icons') return // our own overlays keep their look
+      // Object-level: the token art must always draw AFTER the walls. The walls are also
+      // transparent (0.85), so with equal render order the two get sorted by distance — and
+      // that sort FLIPS as the camera orbits, which is why the token looked more/less
+      // see-through by angle. A render order above the walls (0) pins the draw order so the
+      // blend is consistent; walls still WRITE depth, so depthTest keeps occlusion correct
+      // (a wall genuinely in front still hides the token).
+      if (dim && o.userData.cfgPrevRenderOrder === undefined) {
+        o.userData.cfgPrevRenderOrder = o.renderOrder
+        o.renderOrder = 20
+      } else if (!dim && o.userData.cfgPrevRenderOrder !== undefined) {
+        o.renderOrder = o.userData.cfgPrevRenderOrder
+        delete o.userData.cfgPrevRenderOrder
+      }
       const mats = Array.isArray(o.material) ? o.material : [o.material]
       for (const m of mats) {
         if (!m) continue
@@ -2108,22 +2121,16 @@ export class Overlay3D {
           m.userData.cfgPrevOpacity = m.opacity ?? 1
           m.userData.cfgPrevTransparent = m.transparent
           m.userData.cfgPrevAlphaTest = m.alphaTest
+          m.userData.cfgPrevDepthWrite = m.depthWrite
           m.transparent = true
           m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.5) // native's subtle ~50% hidden-token alpha
-          // The token art is normally an alpha-TESTED opaque cutout (alphaTest 0.5, the #166
-          // no-holes-in-walls guard). three.js tests the POST-opacity alpha against alphaTest,
-          // so at 0.5 opacity a 0.5 cutoff discards all but the fully-solid core (which then
-          // sits right at the threshold) — reading as "rough but opaque", not see-through.
-          // Drop alphaTest while hidden so the token blends properly (genuinely translucent);
-          // the wall-hole concern is moot here — a hidden token is DELIBERATELY see-through and
-          // GM-only. alphaTest crossing 0 needs a shader recompile → needsUpdate.
-          if (m.map && m.alphaTest > 0) {
+          if (m.map) {
+            // Drop the alpha-TEST cutout (alphaTest 0.5): three.js tests POST-opacity alpha, so
+            // at 0.5 opacity a 0.5 cutoff eats all but the fully-solid core → "rough but opaque".
+            // At 0, the art blends smoothly. And a now-blended quad must NOT write depth, or its
+            // transparent corners punch holes in the wall + selection glow behind it (depthTest
+            // stays on so a wall in front still hides it — we only stop it WRITING depth).
             m.alphaTest = 0
-            // ...and a now-transparent quad (no alphaTest to discard its corners) must NOT write
-            // depth, or its transparent corners occlude everything behind them — the wall AND the
-            // selection glow prism — leaving a dark rectangle / bitten-out glow. depthTest stays
-            // on (a wall IN FRONT still hides it); we only stop it WRITING depth so it blends over.
-            m.userData.cfgPrevDepthWrite = m.depthWrite
             m.depthWrite = false
           }
           m.needsUpdate = true
