@@ -2117,13 +2117,22 @@ export class Overlay3D {
           // Drop alphaTest while hidden so the token blends properly (genuinely translucent);
           // the wall-hole concern is moot here — a hidden token is DELIBERATELY see-through and
           // GM-only. alphaTest crossing 0 needs a shader recompile → needsUpdate.
-          if (m.map && m.alphaTest > 0) m.alphaTest = 0
+          if (m.map && m.alphaTest > 0) {
+            m.alphaTest = 0
+            // ...and a now-transparent quad (no alphaTest to discard its corners) must NOT write
+            // depth, or its transparent corners occlude everything behind them — the wall AND the
+            // selection glow prism — leaving a dark rectangle / bitten-out glow. depthTest stays
+            // on (a wall IN FRONT still hides it); we only stop it WRITING depth so it blends over.
+            m.userData.cfgPrevDepthWrite = m.depthWrite
+            m.depthWrite = false
+          }
           m.needsUpdate = true
         } else if (!dim && m.userData.cfgHidden) {
           m.userData.cfgHidden = false
           m.opacity = m.userData.cfgPrevOpacity ?? 1
           m.transparent = m.userData.cfgPrevTransparent ?? false
           if (m.userData.cfgPrevAlphaTest !== undefined) m.alphaTest = m.userData.cfgPrevAlphaTest
+          if (m.userData.cfgPrevDepthWrite !== undefined) m.depthWrite = m.userData.cfgPrevDepthWrite
           m.needsUpdate = true
         }
       }
