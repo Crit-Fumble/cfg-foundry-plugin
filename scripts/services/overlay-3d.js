@@ -2072,6 +2072,48 @@ export class Overlay3D {
         }
       }
     })
+    // --- GM soft ghost glow: a passive "this is hidden" cue, always on (not just when
+    // selected) — 3D has no persistent dashed border like the 2D canvas, so state is
+    // otherwise easy to miss from odd angles. GM-only by construction: this whole method
+    // only ever runs for a token whose 3D group exists, and a hidden token's group is
+    // gated out entirely for non-GM viewers upstream in _tokenJson. ---
+    const old2 = g.getObjectByName('cfg-hidden-glow')
+    if (old2) {
+      g.remove(old2)
+      old2.traverse((o) => o.material?.dispose?.())
+    }
+    if (dim && THREE) {
+      const size = canvas?.dimensions?.size || 100
+      const footprint = Math.max(Number(tok.document.width) || 1, Number(tok.document.height) || 1) * size
+      const cx = tok.center?.x ?? 0
+      const cy = tok.center?.y ?? 0
+      const px = this._pxPerUnit()
+      const terrainUnits = this._sampleTerrain(cx, cy)
+      const floorPx = terrainUnits != null ? terrainUnits * px : this._tokenFloorBasePx(tok.document)
+      const elevPx = (Number(tok.document.elevation || 0) + (terrainUnits ?? 0)) * px
+      const localY = floorPx - elevPx // the floor's local Y inside this group (mirrors the disposition ring's math)
+      const glowGrp = new THREE.Group()
+      glowGrp.name = 'cfg-hidden-glow'
+      const GHOST = 0xbfe3ff
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(footprint * 0.42, footprint * 0.58, 40),
+        new THREE.MeshBasicMaterial({ color: GHOST, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }),
+      )
+      ring.rotation.x = -Math.PI / 2
+      ring.position.set(0, localY + 0.8, 0)
+      ring.renderOrder = 888
+      glowGrp.add(ring)
+      const glowH = footprint * 0.55
+      const col = new THREE.Mesh(
+        new THREE.CylinderGeometry(footprint * 0.5, footprint * 0.5, 1, 24, 1, true),
+        new THREE.MeshBasicMaterial({ color: GHOST, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }),
+      )
+      col.scale.set(1, glowH, 1)
+      col.position.set(0, localY + glowH / 2, 0)
+      col.renderOrder = 887
+      glowGrp.add(col)
+      g.add(glowGrp)
+    }
   }
 
   /** The token's visible status-effect icons ({src, tint}[]), matching Foundry's own
@@ -2325,14 +2367,17 @@ export class Overlay3D {
         this._viewer.scene.add(fx.grp)
         this._selFx.set(tok.id, fx)
       }
-      // Rebuild the terrain-draped geometry when the footprint/elevation changes or the token moved.
-      if (fx.fp !== fp || fx.x === undefined || Math.hypot(tmp.x - fx.x, tmp.z - fx.z) > 4 || Math.abs((fx.elev ?? 0) - elevPx) > 0.5) {
+      // Rebuild the terrain-draped geometry when the footprint/elevation/hidden-state changes
+      // or the token moved.
+      const hidden = !!tok.document.hidden
+      if (fx.fp !== fp || fx.x === undefined || Math.hypot(tmp.x - fx.x, tmp.z - fx.z) > 4 || Math.abs((fx.elev ?? 0) - elevPx) > 0.5 || fx.hidden !== hidden) {
         this._clearGroup(fx.grp)
-        this._buildSelBox(fx.grp, tmp.x, tmp.z, fp, this._controlColorNum(), elevPx)
+        this._buildSelBox(fx.grp, tmp.x, tmp.z, fp, this._controlColorNum(), elevPx, hidden)
         fx.fp = fp
         fx.x = tmp.x
         fx.z = tmp.z
         fx.elev = elevPx
+        fx.hidden = hidden
       }
       seen.add(tok.id)
     }
@@ -2342,8 +2387,12 @@ export class Overlay3D {
   /** Build a terrain-draped selection box outline + a fading glow prism, in WORLD coords
    * centred on (cx,cz). Every vertex is dropped to the heightmap surface under it. The glow
    * renders BEHIND the token (far walls only: inward-facing normals + FrontSide, plus depth
-   * test vs the opaque mini) and extends to the token's ± elevation, matching the base pole. */
-  _buildSelBox(grp, cx, cz, fp, colorNum, elevPx = 0) {
+   * test vs the opaque mini) and extends to the token's ± elevation, matching the base pole.
+   * `hidden` dashes the outline — the 3D analogue of Foundry's own native border, which
+   * switches to a dashed style for a hidden token (foundry.canvas.borders.drawBorder,
+   * {dashed: document.hidden}) — a GM-only case, since only the GM ever has this token's
+   * group to select in the first place. */
+  _buildSelBox(grp, cx, cz, fp, colorNum, elevPx = 0, hidden = false) {
     const THREE = this._THREE
     const px = this._pxPerUnit()
     const half = fp / 2
@@ -2366,7 +2415,16 @@ export class Overlay3D {
       }
     }
     ring.push(ring[0].clone())
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color: colorNum, transparent: true, opacity: 0.95 }))
+    const ringGeo = new THREE.BufferGeometry().setFromPoints(ring)
+    // A CONTINUOUS polyline (THREE.Line, not LineSegments — the latter would treat consecutive
+    // point PAIRS as disconnected segments and only draw every other edge of the ring).
+    const line = new THREE.Line(
+      ringGeo,
+      hidden
+        ? new THREE.LineDashedMaterial({ color: colorNum, transparent: true, opacity: 0.95, dashSize: Math.max(6, fp * 0.09), gapSize: Math.max(4, fp * 0.06) })
+        : new THREE.LineBasicMaterial({ color: colorNum, transparent: true, opacity: 0.95 }),
+    )
+    if (hidden) line.computeLineDistances() // required for LineDashedMaterial to render dashes at all
     line.renderOrder = 891
     grp.add(line)
     // --- glow prism: draped side walls, alpha peaking at the ground and fading toward the
