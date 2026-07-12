@@ -197,6 +197,11 @@ export class Overlay3D {
           }
         })
       }
+      // Live vision cull: Foundry recomputes token visibility (vision + fog) and fires
+      // sightRefresh/visibilityRefresh. Toggle each built token's .visible to match — a player
+      // stops rendering a token the moment their sight of it drops, and it reappears instantly,
+      // with no scene rebuild (perf) and no geometry churn (memory). GM: everything stays shown.
+      for (const hk of ['sightRefresh', 'visibilityRefresh']) this._on(hk, () => this._applyVisionCulling())
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
       // both so position + elevation stay live regardless of how it changed.
@@ -553,6 +558,7 @@ export class Overlay3D {
     })
 
     this._applyAllTokenVisuals() // status-effect icons + GM hidden-dim ride on the fresh groups
+    this._applyVisionCulling() // set each fresh token's initial visibility (player vision/fog)
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
     if (this._mode === 'orbit') this.setView('default')
@@ -2005,6 +2011,29 @@ export class Overlay3D {
     art.style.display = inChar && src ? 'block' : 'none'
   }
 
+  /**
+   * Live vision cull (players): show/hide each built token to match Foundry's own
+   * per-token visibility (placeable.visible already folds in vision, fog of war, and floor).
+   * Toggling .visible skips the DRAW without touching geometry — no rebuild, no buffer churn.
+   * GMs see everything. The first-person subject is skipped: its visibility is owned by
+   * _charUpdateSubjectVisibility (which hides your own body in 1st person).
+   */
+  _applyVisionCulling() {
+    if (!this._visible || !this._viewer?.tokens) return
+    const gm = this._isGM()
+    const subjectId = this._mode === 'firstperson' ? this._fpSubjectId : null
+    let changed = false
+    for (const [id, g] of this._viewer.tokens.entries()) {
+      if (!g || id === subjectId) continue
+      const vis = gm || canvas?.tokens?.get?.(id)?.visible !== false
+      if (g.visible !== vis) {
+        g.visible = vis
+        changed = true
+      }
+    }
+    if (changed) this._render()
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Per-token visuals: status-effect icons + GM hidden-dim             */
   /* ------------------------------------------------------------------ */
@@ -3246,10 +3275,12 @@ export class Overlay3D {
   _tokenJson(doc) {
     if (!doc) return null
     if (!this._docInSlice(doc)) return null // token on a floor above the slice → hidden
-    const placeable = canvas?.tokens?.get?.(doc.id)
-    // Players: only render tokens Foundry shows them — its placeable visibility already
-    // respects vision, fog of war, the hidden flag, and floor access.
-    if (!this._isGM() && !placeable?.visible) return null
+    // Players never receive GM-HIDDEN tokens (drop at build). Tokens the player merely can't
+    // SEE right now (vision / fog) are still BUILT, then hidden via .visible by the live vision
+    // cull (_applyVisionCulling on sightRefresh) — so they appear/disappear instantly as sight
+    // changes, without a scene rebuild (perf) or geometry churn (memory). Matches Foundry's
+    // client model, which likewise holds every non-hidden token's data and only masks the draw.
+    if (!this._isGM() && doc.hidden) return null
     // Flight-stand model (BASE on the token's floor, mini floating at its own elevation,
     // post between) is shaped in the pure producer; the gating above stays host-side.
     const px = this._pxPerUnit()
@@ -3352,6 +3383,7 @@ export class Overlay3D {
       if (t) {
         this._viewer.applyDelta({ tokens: [t] })
         this._applyTokenVisuals(id) // fresh group → re-apply status icons + hidden-dim
+        this._applyVisionCulling() // fresh group → set player vision/fog visibility
       }
       this._render()
     } catch {
