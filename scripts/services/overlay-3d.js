@@ -929,9 +929,10 @@ export class Overlay3D {
       cam.position.set(cx, eyeY, cz)
       cam.lookAt(cx + fx * ch * size, eyeY + Math.sin(pitchRad) * size, cz + fz * ch * size)
     } else {
-      // Third person: camera behind + above along the azimuth, looking at the token. Clamp to
-      // stay above the ground plane even if pitch was set wider while in first person.
-      const pitch = Math.max(1, Math.min(89.5, rawPitch)) * (Math.PI / 180)
+      // Third person: camera orbits the token along the azimuth, looking at it. Negative pitch
+      // swings the camera BELOW the token (vert < 0) so you can look UP at it — clamped to
+      // [-85°, 89.5°] to avoid the lookAt up-vector singularity at straight up/down.
+      const pitch = Math.max(-85, Math.min(89.5, rawPitch)) * (Math.PI / 180)
       const horiz = this._charDist * Math.cos(pitch)
       const vert = this._charDist * Math.sin(pitch)
       cam.position.set(cx + Math.cos(this._charAzimuth) * horiz, eyeY + vert, cz + Math.sin(this._charAzimuth) * horiz)
@@ -1316,7 +1317,11 @@ export class Overlay3D {
    * through near-top-down. */
   _pitchBounds() {
     const size = canvas?.dimensions?.size || 100
-    return this._charDist < size * 0.5 ? { min: -47.9, max: 131.9 } : { min: 1, max: 89.5 }
+    // First person (camera at the eyes): full look, straight up ↔ straight down.
+    // Third person (camera orbits the token): allow the orbit to swing BELOW the token so you
+    // can look UP at it / the sky — like first person — while stopping just shy of straight
+    // under (‑85°, avoids the lookAt up-vector singularity). Positive = overhead looking down.
+    return this._charDist < size * 0.5 ? { min: -47.9, max: 131.9 } : { min: -85, max: 89.5 }
   }
 
   /** Show the subject token's model in 3rd person; hide it in 1st (the camera is
@@ -2052,9 +2057,10 @@ export class Overlay3D {
       })
       g.add(sg)
     }
-    // --- GM hidden-dim: the whole stand goes translucent, like the 2D ~50% alpha ---
+    // The token BODY's ~50% translucency for a hidden token is now baked into the material at
+    // creation time by the shared core (ViewerToken.alpha, emitted from _tokenJson) — robust
+    // to async art load, order-consistent, no per-frame material mutation here.
     const dim = !!tok.document.hidden
-    this._setGroupDim(g, dim)
     // --- GM hidden cue: the dimmed token art (above) carries the state like the native 2D
     // canvas; a single SOFT ground ring adds a passive "this is hidden" hint from any angle
     // (3D has no persistent dashed border when nothing is selected). No vertical glow column
@@ -2090,73 +2096,6 @@ export class Overlay3D {
     }
   }
 
-  /** Translucency for a hidden token's whole 3D group — idempotent (per-material state is
-   * tracked in userData, so re-calling only touches materials not already in the target
-   * state). Extracted + idempotent because the token body (billboard sprite / GLB model)
-   * loads ASYNCHRONOUSLY: it can arrive AFTER _applyTokenVisuals first runs, so the tick
-   * sweep (_reassertHiddenDims) re-asserts this to catch a late-arriving body. */
-  _setGroupDim(g, dim) {
-    if (!g) return
-    g.traverse((o) => {
-      if (!o.isMesh && !o.isSprite) return
-      if (o.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-hidden-glow' || o.parent?.name === 'cfg-status-icons') return // our own overlays keep their look
-      // Object-level: the token art must always draw AFTER the walls. The walls are also
-      // transparent (0.85), so with equal render order the two get sorted by distance — and
-      // that sort FLIPS as the camera orbits, which is why the token looked more/less
-      // see-through by angle. A render order above the walls (0) pins the draw order so the
-      // blend is consistent; walls still WRITE depth, so depthTest keeps occlusion correct
-      // (a wall genuinely in front still hides the token).
-      if (dim && o.userData.cfgPrevRenderOrder === undefined) {
-        o.userData.cfgPrevRenderOrder = o.renderOrder
-        o.renderOrder = 20
-      } else if (!dim && o.userData.cfgPrevRenderOrder !== undefined) {
-        o.renderOrder = o.userData.cfgPrevRenderOrder
-        delete o.userData.cfgPrevRenderOrder
-      }
-      const mats = Array.isArray(o.material) ? o.material : [o.material]
-      for (const m of mats) {
-        if (!m) continue
-        if (dim && m.userData.cfgHidden !== true) {
-          m.userData.cfgHidden = true
-          m.userData.cfgPrevOpacity = m.opacity ?? 1
-          m.userData.cfgPrevTransparent = m.transparent
-          m.userData.cfgPrevAlphaTest = m.alphaTest
-          m.userData.cfgPrevDepthWrite = m.depthWrite
-          m.transparent = true
-          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.5) // native's subtle ~50% hidden-token alpha
-          if (m.map) {
-            // Drop the alpha-TEST cutout (alphaTest 0.5): three.js tests POST-opacity alpha, so
-            // at 0.5 opacity a 0.5 cutoff eats all but the fully-solid core → "rough but opaque".
-            // At 0, the art blends smoothly. And a now-blended quad must NOT write depth, or its
-            // transparent corners punch holes in the wall + selection glow behind it (depthTest
-            // stays on so a wall in front still hides it — we only stop it WRITING depth).
-            m.alphaTest = 0
-            m.depthWrite = false
-          }
-          m.needsUpdate = true
-        } else if (!dim && m.userData.cfgHidden) {
-          m.userData.cfgHidden = false
-          m.opacity = m.userData.cfgPrevOpacity ?? 1
-          m.transparent = m.userData.cfgPrevTransparent ?? false
-          if (m.userData.cfgPrevAlphaTest !== undefined) m.alphaTest = m.userData.cfgPrevAlphaTest
-          if (m.userData.cfgPrevDepthWrite !== undefined) m.depthWrite = m.userData.cfgPrevDepthWrite
-          m.needsUpdate = true
-        }
-      }
-    })
-  }
-
-  /** Re-assert hidden-token translucency each (throttled) tick. The token body loads async,
-   * so the initial dim in _applyTokenVisuals can miss a not-yet-arrived sprite/model; this
-   * catches it within a frame or two. Idempotent + cheap (hidden tokens are few; _setGroupDim
-   * no-ops on already-correct materials). GM-only: a hidden token has no group for a player. */
-  _reassertHiddenDims() {
-    if (!this._viewer?.tokens) return
-    for (const [id, g] of this._viewer.tokens.entries()) {
-      const doc = canvas?.tokens?.get?.(id)?.document
-      if (doc?.hidden) this._setGroupDim(g, true)
-    }
-  }
 
   /** The token's visible status-effect icons ({src, tint}[]), matching Foundry's own
    * Token#_drawEffects gate exactly: appliedEffects (active, suppression-aware) whose
@@ -3333,6 +3272,14 @@ export class Overlay3D {
     // doc.isSecret (client/documents/token.mjs): SECRET disposition AND this viewer lacks
     // OBSERVER permission — Foundry's own live getter, always false for the GM.
     const isSecretFromViewer = !!doc.isSecret
+    const tex = doc.texture || {}
+    // Foundry Color is a Number subclass; Number(tint) is the numeric value (0xffffff = none).
+    const tintNum = tex.tint != null ? Number(tex.tint) : NaN
+    // Whole-token opacity: doc.alpha (ghost/incorporeal), and the GM's ~50% hidden dim. This is
+    // the SINGLE source of hidden translucency now (the core bakes it into the material at
+    // creation) — the old per-frame material-mutation dim is retired. GM-only: a hidden token
+    // is gated out for non-GM viewers above, so this only dims for the GM.
+    const alpha = doc.hidden ? 0.5 : Number.isFinite(Number(doc.alpha)) ? Number(doc.alpha) : 1
     return buildTokenJson(doc, {
       pxPerUnit: px,
       sizePx: this._tokenSizePx(doc),
@@ -3342,6 +3289,10 @@ export class Overlay3D {
       dispositionColors: globalThis.CONFIG?.Canvas?.dispositionColors,
       hasPlayerOwner: !!doc.actor?.hasPlayerOwner,
       isSecretFromViewer,
+      alpha,
+      tint: Number.isFinite(tintNum) && tintNum !== 0xffffff ? tintNum : undefined,
+      textureScaleX: Number.isFinite(Number(tex.scaleX)) ? Number(tex.scaleX) : undefined,
+      textureScaleY: Number.isFinite(Number(tex.scaleY)) ? Number(tex.scaleY) : undefined,
       // Selection + target visuals are drawn in 3D by the plugin (_updateSelectionFx): a
       // grid-aligned ground box + upward glow for selection, Foundry-style yellow corner
       // arrows for targets. The core's ring/halo are left off here to avoid doubling up.
@@ -3458,15 +3409,10 @@ export class Overlay3D {
   /** Per-frame: keep the tracked camera synced (or orbit damping), then render. */
   _tick() {
     if (!this._visible || !this._renderer || !this._camera) return
-    const nowT = typeof performance !== 'undefined' ? performance.now() : 0
     this._updateCompass()
     this._updateMoveRuler() // live movement path + distance (Top Down + Character)
     this._updateSelectionFx() // selection box + glow prism on the ground (controlled tokens)
     this._updateTargetReticle() // screen-space yellow corner arrows on targeted tokens
-    if (nowT - (this._hiddenDimAt || 0) > 300) {
-      this._reassertHiddenDims() // catch async-loaded bodies of hidden tokens (throttled)
-      this._hiddenDimAt = nowT
-    }
     // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
     // render-on-change), so this ticker yields to it — no double update/render.
     if (this._mode === 'orbit' && this._sharedControls) return

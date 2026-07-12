@@ -198,6 +198,12 @@ export function buildTokenJson(doc, ctx) {
     model: modelSrc ? ctx.assetUrl(modelSrc) : null,
     modelScale: Number.isFinite(cfgFlags.modelScale) ? cfgFlags.modelScale : undefined,
     modelRotation: Number.isFinite(cfgFlags.modelRotation) ? cfgFlags.modelRotation : undefined,
+    // Texture transform + whole-token opacity (the core renders these; alpha is host-computed
+    // so it can fold in the GM hidden-token dim). Undefined → the core's default (1 / no tint).
+    tint: ctx.tint,
+    alpha: ctx.alpha,
+    textureScaleX: ctx.textureScaleX,
+    textureScaleY: ctx.textureScaleY,
     selected: !!ctx.selected,
     targeted: !!ctx.targeted,
     targetColor: ctx.targetColor,
