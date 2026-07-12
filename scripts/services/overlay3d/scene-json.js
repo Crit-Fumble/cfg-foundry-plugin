@@ -256,6 +256,8 @@ export function buildTokenJson(doc, ctx) {
     ringBackground: ring ? parseHexColor(ring.colors?.background, undefined) : undefined,
     // Token facing (0 when the token locks rotation) — 2D flat-art quad + GLB yaw in the core.
     rotation: doc.lockRotation ? 0 : Number.isFinite(Number(doc.rotation)) ? Number(doc.rotation) : undefined,
+    // Art fit within the cell — Foundry `texture.fit` (default 'contain', aspect-preserving).
+    fit: doc.texture?.fit || 'contain',
     selected: !!ctx.selected,
     targeted: !!ctx.targeted,
     targetColor: ctx.targetColor,

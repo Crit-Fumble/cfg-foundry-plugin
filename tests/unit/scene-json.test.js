@@ -339,7 +339,7 @@ describe('buildTokenJson', () => {
     expect(buildTokenJson(doc, kctx)).toEqual({
       id: 'k', x: 1, y: 2, width: 100, height: 100, elevation: 60, floorElevation: 40,
       color: 0xe72124, texture: 'ABS:k.png', model: 'ABS:k.glb', modelScale: 2, modelRotation: undefined,
-      selected: false, targeted: false, targetColor: undefined,
+      fit: 'contain', selected: false, targeted: false, targetColor: undefined,
     })
   })
   it('a SECRET token this viewer cannot observe substitutes the neutral/INACTIVE color', () => {
@@ -366,6 +366,11 @@ describe('buildTokenJson', () => {
     expect(buildTokenJson({ id: 'k', x: 0, y: 0, rotation: 90, flags: {} }, kctx).rotation).toBe(90)
     expect(buildTokenJson({ id: 'k', x: 0, y: 0, rotation: 90, lockRotation: true, flags: {} }, kctx).rotation).toBe(0)
     expect(buildTokenJson({ id: 'k', x: 0, y: 0, flags: {} }, kctx).rotation).toBeUndefined()
+  })
+  it('emits texture.fit, defaulting to Foundry contain', () => {
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, texture: { src: 'k.png', fit: 'cover' }, flags: {} }, kctx).fit).toBe('cover')
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, texture: { src: 'k.png' }, flags: {} }, kctx).fit).toBe('contain')
+    expect(buildTokenJson({ id: 'k', x: 0, y: 0, flags: {} }, kctx).fit).toBe('contain')
   })
   it('emits the PARTY colour for a player-owned friendly token via ctx.hasPlayerOwner', () => {
     const doc = { id: 'k', x: 0, y: 0, disposition: 1, flags: {} }
