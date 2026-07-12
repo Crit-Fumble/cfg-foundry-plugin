@@ -2064,7 +2064,7 @@ export class Overlay3D {
           m.userData.cfgPrevOpacity = m.opacity ?? 1
           m.userData.cfgPrevTransparent = m.transparent
           m.transparent = true
-          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.4)
+          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.5) // native's subtle ~50% hidden-token alpha
         } else if (!dim && m.userData.cfgHidden) {
           m.userData.cfgHidden = false
           m.opacity = m.userData.cfgPrevOpacity ?? 1
@@ -2072,10 +2072,11 @@ export class Overlay3D {
         }
       }
     })
-    // --- GM soft ghost glow: a passive "this is hidden" cue, always on (not just when
-    // selected) — 3D has no persistent dashed border like the 2D canvas, so state is
-    // otherwise easy to miss from odd angles. GM-only by construction: this whole method
-    // only ever runs for a token whose 3D group exists, and a hidden token's group is
+    // --- GM hidden cue: the dimmed token art (above) carries the state like the native 2D
+    // canvas; a single SOFT ground ring adds a passive "this is hidden" hint from any angle
+    // (3D has no persistent dashed border when nothing is selected). No vertical glow column
+    // — that read as an extra volume, not the native subtle look. GM-only by construction:
+    // this method only runs for a token whose 3D group exists, and a hidden token's group is
     // gated out entirely for non-GM viewers upstream in _tokenJson. ---
     const old2 = g.getObjectByName('cfg-hidden-glow')
     if (old2) {
@@ -2094,24 +2095,14 @@ export class Overlay3D {
       const localY = floorPx - elevPx // the floor's local Y inside this group (mirrors the disposition ring's math)
       const glowGrp = new THREE.Group()
       glowGrp.name = 'cfg-hidden-glow'
-      const GHOST = 0xbfe3ff
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(footprint * 0.42, footprint * 0.58, 40),
-        new THREE.MeshBasicMaterial({ color: GHOST, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }),
+        new THREE.MeshBasicMaterial({ color: 0xbfe3ff, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }),
       )
       ring.rotation.x = -Math.PI / 2
       ring.position.set(0, localY + 0.8, 0)
       ring.renderOrder = 888
       glowGrp.add(ring)
-      const glowH = footprint * 0.55
-      const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(footprint * 0.5, footprint * 0.5, 1, 24, 1, true),
-        new THREE.MeshBasicMaterial({ color: GHOST, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }),
-      )
-      col.scale.set(1, glowH, 1)
-      col.position.set(0, localY + glowH / 2, 0)
-      col.renderOrder = 887
-      glowGrp.add(col)
       g.add(glowGrp)
     }
   }
