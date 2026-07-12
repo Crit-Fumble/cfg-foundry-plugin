@@ -181,6 +181,22 @@ export class Overlay3D {
         if (this._visible) this._scheduleRebuild()
       })
       this._on('updateToken', (doc, change) => this._onUpdateToken(doc, change))
+      // Status-effect icons live on the ACTOR (ActiveEffects), not the token document —
+      // refresh the affected tokens' 3D overlays when conditions are toggled.
+      for (const hk of ['createActiveEffect', 'updateActiveEffect', 'deleteActiveEffect']) {
+        this._on(hk, (effect) => {
+          if (!this._visible) return
+          try {
+            const actor = effect?.parent
+            if (!actor) return
+            const toks = actor.isToken ? [actor.token?.object].filter(Boolean) : actor.getActiveTokens?.() || []
+            for (const t of toks) this._applyTokenVisuals(t.id)
+            this._render()
+          } catch {
+            /* ignore */
+          }
+        })
+      }
       // v13+ routes x/y/elevation/size through the movement pipeline, which
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
       // both so position + elevation stay live regardless of how it changed.
@@ -536,6 +552,7 @@ export class Overlay3D {
       terrain: this._buildTerrainJson(),
     })
 
+    this._applyAllTokenVisuals() // status-effect icons + GM hidden-dim ride on the fresh groups
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
     if (this._mode === 'orbit') this.setView('default')
@@ -829,7 +846,10 @@ export class Overlay3D {
       this._removeToken(id)
       const fresh = canvas?.scene?.tokens?.get?.(id) || tok.document
       const t = this._tokenJson(fresh)
-      if (t) this._viewer.applyDelta({ tokens: [t] })
+      if (t) {
+        this._viewer.applyDelta({ tokens: [t] })
+        this._applyTokenVisuals(id) // fresh group → re-apply status icons + hidden-dim
+      }
     } catch {
       /* ignore — the next elevation change or hook rebuild corrects it */
     }
@@ -1980,6 +2000,123 @@ export class Overlay3D {
     art.style.display = inChar && src ? 'block' : 'none'
   }
 
+  /* ------------------------------------------------------------------ */
+  /*  Per-token visuals: status-effect icons + GM hidden-dim             */
+  /* ------------------------------------------------------------------ */
+
+  _applyAllTokenVisuals() {
+    if (!this._viewer?.tokens) return
+    for (const id of Array.from(this._viewer.tokens.keys())) this._applyTokenVisuals(id)
+  }
+
+  /** Mirror the 2D token's overlays onto its 3D group: a column of status-effect icon
+   * sprites (actor.appliedEffects gated by showIcon — exactly Token#_drawEffects, NOT
+   * temporaryEffects, which only counts effects with a countdown duration and misses
+   * ordinary no-duration conditions like Blinded) and, for GMs, the hidden token's
+   * translucency (players never receive hidden tokens at all). */
+  _applyTokenVisuals(id) {
+    const THREE = this._THREE
+    const g = this._viewer?.tokens?.get?.(id)
+    const tok = canvas?.tokens?.get?.(id)
+    if (!THREE || !g || !tok?.document) return
+    // --- status-effect icons (rebuilt each pass; textures cached) ---
+    const old = g.getObjectByName('cfg-status-icons')
+    if (old) {
+      g.remove(old)
+      old.traverse((o) => o.material?.dispose?.()) // textures stay in the shared cache
+    }
+    const icons = this._tokenStatusIcons(tok)
+    if (icons.length) {
+      const size = canvas?.dimensions?.size || 100
+      const fpw = Math.max(Number(tok.document.width) || 1, 1)
+      const sg = new THREE.Group()
+      sg.name = 'cfg-status-icons'
+      const s = size * 0.26
+      icons.slice(0, 12).forEach(({ src, tint }, i) => {
+        const col = Math.floor(i / 4) // columns of 4, growing outward — like the 2D grid
+        const row = i % 4
+        const mat = new THREE.SpriteMaterial({ color: tint, transparent: true, opacity: 0.95, depthTest: false })
+        this._iconTexture(src, (tex) => {
+          mat.map = tex
+          mat.needsUpdate = true
+          this._render()
+        })
+        const sp = new THREE.Sprite(mat)
+        sp.scale.set(s, s, 1)
+        sp.position.set(-size * fpw * 0.52 - col * s * 1.15, size * 1.55 - row * s * 1.15, 0)
+        sp.renderOrder = 895
+        sg.add(sp)
+      })
+      g.add(sg)
+    }
+    // --- GM hidden-dim: the whole stand goes translucent, like the 2D 50% alpha ---
+    const dim = !!tok.document.hidden
+    g.traverse((o) => {
+      if (!o.isMesh && !o.isSprite) return
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      for (const m of mats) {
+        if (!m) continue
+        if (dim && m.userData.cfgHidden !== true) {
+          m.userData.cfgHidden = true
+          m.userData.cfgPrevOpacity = m.opacity ?? 1
+          m.userData.cfgPrevTransparent = m.transparent
+          m.transparent = true
+          m.opacity = Math.min(m.userData.cfgPrevOpacity, 0.4)
+        } else if (!dim && m.userData.cfgHidden) {
+          m.userData.cfgHidden = false
+          m.opacity = m.userData.cfgPrevOpacity ?? 1
+          m.transparent = m.userData.cfgPrevTransparent ?? false
+        }
+      }
+    })
+  }
+
+  /** The token's visible status-effect icons ({src, tint}[]), matching Foundry's own
+   * Token#_drawEffects gate exactly: appliedEffects (active, suppression-aware) whose
+   * showIcon is ALWAYS, or CONDITIONAL + isTemporary (has a real countdown duration).
+   * NOTE: this is deliberately NOT actor.temporaryEffects — that getter itself requires
+   * isTemporary, so it misses the common case of an ordinary no-duration condition
+   * (e.g. Blinded), which Foundry defaults to showIcon:ALWAYS via fromStatusEffect(). */
+  _tokenStatusIcons(tok) {
+    const out = []
+    try {
+      const SHOW = globalThis.CONST?.ACTIVE_EFFECT_SHOW_ICON ?? { NEVER: 0, CONDITIONAL: 1, ALWAYS: 2 }
+      for (const ef of tok.actor?.appliedEffects || []) {
+        const show = ef.showIcon ?? SHOW.CONDITIONAL
+        if (show !== SHOW.ALWAYS && !(show === SHOW.CONDITIONAL && ef.isTemporary)) continue
+        const src = ef.img
+        if (src) out.push({ src, tint: ef.tint })
+      }
+    } catch {
+      /* actorless / system quirks — no icons */
+    }
+    return out
+  }
+
+  /** Load an icon (SVG or raster) into a cached CanvasTexture — TextureLoader can't do SVG,
+   * and Foundry's condition icons are mostly SVG. */
+  _iconTexture(src, cb) {
+    if (!this._iconTexCache) this._iconTexCache = new Map()
+    const hit = this._iconTexCache.get(src)
+    if (hit) return cb(hit)
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas')
+        c.width = 64
+        c.height = 64
+        c.getContext('2d').drawImage(img, 0, 0, 64, 64)
+        const tex = new this._THREE.CanvasTexture(c)
+        tex.colorSpace = this._THREE.SRGBColorSpace
+        this._iconTexCache.set(src, tex)
+        cb(tex)
+      } catch {
+        /* draw failed — leave the sprite blank */
+      }
+    }
+    img.src = src
+  }
+
   /** Sit the compass at bottom-left, just above the Foundry players (username/latency)
    * pill so it never overlaps the chat. Falls back to a fixed bottom-left offset. */
   _positionCompass() {
@@ -2396,9 +2533,14 @@ export class Overlay3D {
     let y
     const grp = this._viewer?.tokens?.get(tok.id)
     if (grp && this._orbitCamera) {
-      const wp = (this._tmpHud || (this._tmpHud = new this._THREE.Vector3()))
-      grp.getWorldPosition(wp)
-      wp.y += 30
+      // Anchor the menu on the MINI itself, not the stand base — an elevated token's group
+      // origin sits on the floor, so use the group bounds: the art hangs just under the top.
+      const THREE = this._THREE
+      const size = canvas?.dimensions?.size || 100
+      const box = new THREE.Box3().setFromObject(grp)
+      const wp = (this._tmpHud || (this._tmpHud = new THREE.Vector3()))
+      box.getCenter(wp)
+      wp.y = Math.max(box.max.y - size * 0.7, (box.min.y + box.max.y) / 2) // ≈ the mini art's centre
       const p = wp.project(this._orbitCamera)
       x = (p.x * 0.5 + 0.5) * window.innerWidth
       y = (-p.y * 0.5 + 0.5) * window.innerHeight
@@ -3127,7 +3269,10 @@ export class Overlay3D {
       // Re-read the live document (all floors) so x/y/elevation/level are current.
       const fresh = canvas?.scene?.tokens?.get?.(id) || doc
       const t = this._tokenJson(fresh)
-      if (t) this._viewer.applyDelta({ tokens: [t] })
+      if (t) {
+        this._viewer.applyDelta({ tokens: [t] })
+        this._applyTokenVisuals(id) // fresh group → re-apply status icons + hidden-dim
+      }
       this._render()
     } catch {
       this._scheduleRebuild()
