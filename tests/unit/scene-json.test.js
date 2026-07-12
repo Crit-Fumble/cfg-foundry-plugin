@@ -158,11 +158,22 @@ describe('buildGridJson', () => {
 })
 
 describe('dispositionColor', () => {
-  it('maps friendly/hostile/secret/neutral', () => {
-    expect(dispositionColor(1)).toBe(0x4caf50)
-    expect(dispositionColor(-1)).toBe(0xf44336)
-    expect(dispositionColor(-2)).toBe(0x9c27b0)
-    expect(dispositionColor(0)).toBe(0x2196f3)
+  // Fallback numbers mirror CONFIG.Canvas.dispositionColors' own defaults (client/config.mjs) —
+  // used when the caller doesn't pass a live `colors` object (e.g. a headless unit test).
+  it('maps hostile/secret/neutral/inactive (no live colors object → fallback defaults)', () => {
+    expect(dispositionColor(-1)).toBe(0xe72124) // HOSTILE
+    expect(dispositionColor(-2)).toBe(0xa612d4) // SECRET
+    expect(dispositionColor(0)).toBe(0xf1d836) // NEUTRAL
+    expect(dispositionColor(99)).toBe(0x555555) // out-of-range → INACTIVE
+  })
+  it('FRIENDLY splits PARTY (player-owned) vs FRIENDLY (GM-owned NPC ally)', () => {
+    expect(dispositionColor(1, false)).toBe(0x43dfdf) // FRIENDLY
+    expect(dispositionColor(1, true)).toBe(0x33bc4e) // PARTY
+  })
+  it('prefers a live CONFIG.Canvas.dispositionColors object when given', () => {
+    const colors = { HOSTILE: 0x111111, SECRET: 0x222222, NEUTRAL: 0x333333, FRIENDLY: 0x444444, PARTY: 0x555555, INACTIVE: 0x666666 }
+    expect(dispositionColor(-1, false, colors)).toBe(0x111111)
+    expect(dispositionColor(1, true, colors)).toBe(0x555555)
   })
 })
 
@@ -291,9 +302,21 @@ describe('buildTokenJson', () => {
     const doc = { id: 'k', x: 1, y: 2, elevation: 3, disposition: -1, texture: { src: 'k.png' }, flags: { 'crit-fumble-core': { modelSrc: 'k.glb', modelScale: 2 } } }
     expect(buildTokenJson(doc, kctx)).toEqual({
       id: 'k', x: 1, y: 2, width: 100, height: 100, elevation: 60, floorElevation: 40,
-      color: 0xf44336, texture: 'ABS:k.png', model: 'ABS:k.glb', modelScale: 2, modelRotation: undefined,
+      color: 0xe72124, texture: 'ABS:k.png', model: 'ABS:k.glb', modelScale: 2, modelRotation: undefined,
       selected: false, targeted: false, targetColor: undefined,
     })
+  })
+  it('a SECRET token this viewer cannot observe substitutes the neutral/INACTIVE color', () => {
+    const doc = { id: 'k', x: 0, y: 0, disposition: -2, texture: { src: 'k.png' }, flags: {} }
+    expect(buildTokenJson(doc, { ...kctx, isSecretFromViewer: true }).color).toBe(0x555555)
+    // the GM (or an observer) sees the real secret-purple color
+    expect(buildTokenJson(doc, { ...kctx, isSecretFromViewer: false }).color).toBe(0xa612d4)
+  })
+  it('Dynamic Token Ring: an enabled ring draws the SUBJECT texture, not the raw token art', () => {
+    const doc = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: true, subject: { texture: 'subject.png' } }, flags: {} }
+    expect(buildTokenJson(doc, kctx).texture).toBe('ABS:subject.png')
+    const noRing = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: false, subject: { texture: 'subject.png' } }, flags: {} }
+    expect(buildTokenJson(noRing, kctx).texture).toBe('ABS:raw.png')
   })
   it('carries selection/target state from ctx', () => {
     const doc = { id: 'k', x: 0, y: 0, flags: {} }

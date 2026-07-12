@@ -2025,7 +2025,10 @@ export class Overlay3D {
       g.remove(old)
       old.traverse((o) => o.material?.dispose?.()) // textures stay in the shared cache
     }
-    const icons = this._tokenStatusIcons(tok)
+    // Mirrors Foundry's `effects.visible = !isSecret`: a secret token this viewer can't
+    // observe shows none of its status-effect icons either (same privacy boundary as the
+    // disposition ring in _tokenJson).
+    const icons = tok.document.isSecret ? [] : this._tokenStatusIcons(tok)
     if (icons.length) {
       const size = canvas?.dimensions?.size || 100
       const fpw = Math.max(Number(tok.document.width) || 1, 1)
@@ -3149,8 +3152,19 @@ export class Overlay3D {
     return buildNotesJson(canvas?.notes?.placeables || [], (src) => this._assetUrl(src))
   }
 
-  /** Token footprint in pixels, derived from the document (valid mid-update). */
+  /** Token footprint in pixels, derived from the document (valid mid-update). Uses
+   * Foundry's own getSize() (common/documents/token.mjs) — on a square grid this is
+   * exactly width/height × gridSize, but on a HEX grid Foundry applies a 0.75-per-cell
+   * factor that a raw multiply gets wrong (oversized, mis-centered hex footprints). */
   _tokenSizePx(doc) {
+    try {
+      if (doc?.getSize) {
+        const { width, height } = doc.getSize()
+        if (Number.isFinite(width) && Number.isFinite(height)) return { w: width, h: height }
+      }
+    } catch {
+      /* fall through to the manual multiply (e.g. a plain-object doc in a unit test) */
+    }
     const size = canvas?.dimensions?.size || 100
     return { w: (doc?.width || 1) * size, h: (doc?.height || 1) * size }
   }
@@ -3201,18 +3215,33 @@ export class Overlay3D {
     // post between) is shaped in the pure producer; the gating above stays host-side.
     const px = this._pxPerUnit()
     const size = canvas?.dimensions?.size || 100
-    const cx = (doc?.x || 0) + ((Number(doc?.width) || 1) * size) / 2
-    const cy = (doc?.y || 0) + ((Number(doc?.height) || 1) * size) / 2
+    let cx = (doc?.x || 0) + ((Number(doc?.width) || 1) * size) / 2
+    let cy = (doc?.y || 0) + ((Number(doc?.height) || 1) * size) / 2
+    try {
+      const c = doc?.getCenterPoint?.() // hex-aware center (matches _tokenSizePx's getSize)
+      if (Number.isFinite(c?.x) && Number.isFinite(c?.y)) {
+        cx = c.x
+        cy = c.y
+      }
+    } catch {
+      /* fall through to the manual centre */
+    }
     // On heightmap terrain the ground varies, so Foundry's (flat-scene) elevation is treated
     // as height ABOVE the local surface: lift BOTH the token and its floor by the terrain
     // height so a ground token sits ON the surface instead of being buried at sea level.
     const terrainUnits = this._sampleTerrain(cx, cy)
+    // doc.isSecret (client/documents/token.mjs): SECRET disposition AND this viewer lacks
+    // OBSERVER permission — Foundry's own live getter, always false for the GM.
+    const isSecretFromViewer = !!doc.isSecret
     return buildTokenJson(doc, {
       pxPerUnit: px,
       sizePx: this._tokenSizePx(doc),
       floorElevation: terrainUnits != null ? terrainUnits * px : this._tokenFloorBasePx(doc),
       groundOffsetUnits: terrainUnits != null ? terrainUnits : 0,
       assetUrl: (src) => this._assetUrl(src),
+      dispositionColors: globalThis.CONFIG?.Canvas?.dispositionColors,
+      hasPlayerOwner: !!doc.actor?.hasPlayerOwner,
+      isSecretFromViewer,
       // Selection + target visuals are drawn in 3D by the plugin (_updateSelectionFx): a
       // grid-aligned ground box + upward glow for selection, Foundry-style yellow corner
       // arrows for targets. The core's ring/halo are left off here to avoid doubling up.

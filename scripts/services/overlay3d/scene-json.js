@@ -9,17 +9,24 @@
  * here the same way, `overlay-3d.js` shrinks toward thin lifecycle + interaction glue.
  */
 
-/** Foundry CONST.TOKEN_DISPOSITIONS → a tint for placeholder/footprint marks. */
-export function dispositionColor(disposition) {
+/** Foundry CONST.TOKEN_DISPOSITIONS → a tint for placeholder/footprint marks. Mirrors
+ * Token#getDispositionColor (client/canvas/placeables/token.mjs) exactly, including the
+ * FRIENDLY/PARTY split by actor ownership. `colors` should be CONFIG.Canvas.dispositionColors
+ * from the live client; the numbers below are its own defaults, used as a fallback only
+ * (e.g. a headless test, or a module that hasn't populated CONFIG yet). */
+export function dispositionColor(disposition, hasPlayerOwner, colors) {
+  const c = colors || {}
   switch (disposition) {
-    case 1:
-      return 0x4caf50 // friendly
-    case -1:
-      return 0xf44336 // hostile
-    case -2:
-      return 0x9c27b0 // secret
-    default:
-      return 0x2196f3 // neutral
+    case 1: // FRIENDLY
+      return (hasPlayerOwner ? c.PARTY : c.FRIENDLY) ?? (hasPlayerOwner ? 0x33bc4e : 0x43dfdf)
+    case -1: // HOSTILE
+      return c.HOSTILE ?? 0xe72124
+    case -2: // SECRET
+      return c.SECRET ?? 0xa612d4
+    case 0: // NEUTRAL
+      return c.NEUTRAL ?? 0xf1d836
+    default: // INACTIVE (out-of-range / no disposition)
+      return c.INACTIVE ?? 0x555555
   }
 }
 
@@ -162,11 +169,22 @@ export function buildNotesJson(notes, assetUrl) {
  * A token document → viewer token JSON (pure shaping; the caller does the Foundry
  * gating — slice + per-player visibility — and passes resolved size/floor).
  * @param {object} doc  TokenDocument
- * @param {object} ctx  { pxPerUnit, sizePx:{w,h}, floorElevation, assetUrl }
+ * @param {object} ctx  { pxPerUnit, sizePx:{w,h}, floorElevation, assetUrl, dispositionColors?,
+ *   hasPlayerOwner?, isSecretFromViewer? }
  */
 export function buildTokenJson(doc, ctx) {
   const cfgFlags = doc.flags?.['crit-fumble-core'] || {}
   const modelSrc = cfgFlags.modelSrc || cfgFlags.model3d
+  // Mirrors TokenDocument#isSecret (client/documents/token.mjs): a SECRET token this viewer
+  // can't observe gets none of its informational chrome — substitute the neutral/INACTIVE
+  // color instead of leaking "the GM marked this one secret" via the disposition ring.
+  const color = ctx.isSecretFromViewer
+    ? dispositionColor(undefined, false, ctx.dispositionColors)
+    : dispositionColor(doc.disposition, ctx.hasPlayerOwner, ctx.dispositionColors)
+  // Dynamic Token Ring: when enabled, Foundry draws the ring's SUBJECT texture (a
+  // transparent-background portrait, often system-remapped) instead of the raw token art —
+  // the live document has already run prepareDerivedData, so this is correct as-is.
+  const artSrc = (doc.ring?.enabled && doc.ring.subject?.texture) || doc.texture?.src
   return {
     id: doc.id,
     x: doc.x || 0,
@@ -175,8 +193,8 @@ export function buildTokenJson(doc, ctx) {
     height: ctx.sizePx.h,
     elevation: (Number(doc.elevation || 0) + (Number(ctx.groundOffsetUnits) || 0)) * ctx.pxPerUnit,
     floorElevation: ctx.floorElevation,
-    color: dispositionColor(doc.disposition),
-    texture: doc.texture?.src ? ctx.assetUrl(doc.texture.src) : null,
+    color,
+    texture: artSrc ? ctx.assetUrl(artSrc) : null,
     model: modelSrc ? ctx.assetUrl(modelSrc) : null,
     modelScale: Number.isFinite(cfgFlags.modelScale) ? cfgFlags.modelScale : undefined,
     modelRotation: Number.isFinite(cfgFlags.modelRotation) ? cfgFlags.modelRotation : undefined,
