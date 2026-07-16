@@ -315,4 +315,36 @@ export class CoreAPIClient {
       nativeUserId,
     })
   }
+
+  // ── Journal sync (platform → this world) ──────────────────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/journal-sync?world={worldId}
+   * The platform journal entries whose doc DIFFERS from what this world was last
+   * confirmed to hold. Empty is the normal steady state — the server only returns
+   * work, so a quiet tick costs one request and nothing else.
+   * @param {string} installationId
+   * @param {string} worldId — Foundry world folder (`game.world.id`)
+   * @returns {Promise<{ data: Array<{ journalEntryId: string, foundryEntryId: string, partyId: string, docData: object }> }>}
+   */
+  getJournalSyncPlan(installationId, worldId) {
+    return this.get(
+      `/api/v1/installations/${installationId}/foundry/journal-sync?world=${encodeURIComponent(worldId)}`,
+    )
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/journal-sync/ack
+   * Report what was actually written. `docData` MUST be the doc we wrote, not the
+   * one we planned to: the server baselines against it, and if the entry changed
+   * platform-side between the pull and this ack, echoing keeps the baseline honest
+   * about what really landed in the world.
+   * @param {Array<{ journalEntryId: string, foundryEntryId: string, ok: boolean, docData?: object, error?: string }>} results
+   */
+  ackJournalSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/journal-sync/ack`, {
+      world: worldId,
+      results,
+    })
+  }
 }

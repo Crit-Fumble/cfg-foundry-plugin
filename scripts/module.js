@@ -23,6 +23,7 @@ import { maybeShowFirstRunPrompt } from './views/first-run-prompt.js'
 import { syncInstalledModules } from './sync/modules-sync.js'
 import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 import { ProvisionDrain } from './services/provision-drain.js'
+import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { CharacterSyncManager } from './services/character-sync.js'
 import { CharacterPullSync } from './services/character-pull-sync.js'
@@ -59,6 +60,8 @@ let _activityHeartbeat = null
 
 /** @type {ProvisionDrain|null} */
 let _provisionDrain = null
+/** @type {JournalPullSync|null} */
+let _journalPullSync = null
 
 /** @type {WorldActorSnapshot|null} */
 let _worldActorSnapshot = null
@@ -590,6 +593,19 @@ Hooks.once('ready', async () => {
   if ((heartbeatInstallId || apiKey) && game.user.isGM) {
     _characterPullSync = new CharacterPullSync(_api, new CharacterSyncManager(_api), () => _linkedCampaignIds)
     _characterPullSync.start()
+  }
+
+  // Core→Foundry party-journal sync (#184) — pull the platform journal entries
+  // whose doc differs from what this world last held and write them in, so a note
+  // written in PlayTable shows up at the table. GM-only (creating documents and
+  // setting ownership are GM-only); the single-reporter election lives in the
+  // class. Gated on the INSTALLATION id specifically — unlike the actor mirror
+  // above, these endpoints are installation-scoped and resolve the world by
+  // (hostingInstallationId, nativeIdentifier), which a paired self-hosted world
+  // has no row for. Self-hosted journal sync needs its own path (#184 follow-up).
+  if (heartbeatInstallId && game.user.isGM) {
+    _journalPullSync = new JournalPullSync(_api, heartbeatInstallId)
+    _journalPullSync.start()
   }
 
   // 3D overlay (DRAFT — cfs 3D-VTT slice 1) — a three.js view-skin over the
