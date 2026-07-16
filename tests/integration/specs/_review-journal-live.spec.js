@@ -51,5 +51,12 @@ test('REVIEW — watch a PlayTable note land in the live Foundry world', async (
   }, NOTE)
 
   console.log('\n  ✅ The note is in Foundry. Browser is open — close it when done.\n')
-  await page.waitForTimeout(3_600_000) // hold open (1h)
+
+  // Hold open for the reviewer. Closing the window is the EXPECTED exit, so
+  // swallow the resulting "target closed" — otherwise the harness reports
+  // `1 failed` every single time you're done looking at it, which trains you to
+  // ignore red. The assertions above have already passed by this point.
+  await page.waitForTimeout(3_600_000).catch(() => {
+    console.log('  (browser closed — review over)')
+  })
 })
