@@ -107,19 +107,30 @@ function resolveActiveLevel(ctx) {
   return top;
 }
 function buildGridJson(grid, size) {
-  return {
+  const out = {
     size: size || 100,
     showHelper: !(grid && grid.type === 0),
     color: parseHexColor(grid?.color, 13421772),
     // Finite guard: a non-numeric alpha must fall back, not emit NaN opacity.
     opacity: Number.isFinite(Number(grid?.alpha)) ? Math.max(0.25, Number(grid?.alpha)) : 0.4
   };
+  if (Number.isFinite(Number(grid?.distance)))
+    out.distance = Number(grid?.distance);
+  if (typeof grid?.units === "string" && grid.units)
+    out.units = grid.units;
+  return out;
 }
 function levelsElevation(doc) {
   const rb = doc?.flags?.levels?.rangeBottom;
   if (Number.isFinite(Number(rb)))
     return Number(rb);
   return num(doc?.elevation);
+}
+function levelMembership(levels) {
+  if (!Array.isArray(levels) || levels.length === 0)
+    return void 0;
+  const ids = levels.filter((v) => typeof v === "string" && v.length > 0);
+  return ids.length ? ids : void 0;
 }
 function buildTilesJson(docs, ctx) {
   const out = [];
@@ -135,7 +146,7 @@ function buildTilesJson(docs, ctx) {
       const src = d.texture?.src;
       const ground = ctx.terrainAt ? ctx.terrainAt(num(d.x) + w / 2, num(d.y) + h / 2) : null;
       const lift = ground != null ? ground * ctx.pxPerUnit + 2 : 0;
-      out.push({
+      const tile = {
         id: d.id ?? d._id,
         x: num(d.x),
         y: num(d.y),
@@ -146,7 +157,11 @@ function buildTilesJson(docs, ctx) {
         alpha: Number.isFinite(Number(d.alpha)) ? Number(d.alpha) : 1,
         color: elev > 0 ? 8022610 : 5331819
         // no texture → tint by elevation
-      });
+      };
+      const levelIds = levelMembership(d.levels);
+      if (levelIds)
+        tile.levelIds = levelIds;
+      out.push(tile);
     } catch {
     }
   }
@@ -160,7 +175,96 @@ function buildNotesJson(notes, assetUrl) {
       const x = note.center?.x ?? doc.x ?? 0;
       const y = note.center?.y ?? doc.y ?? 0;
       const src = doc.texture?.src;
-      out.push({ id: doc.id ?? doc._id, x, y, size: doc.iconSize || 50, texture: src ? assetUrl(src) : null });
+      const marker = { id: doc.id ?? doc._id, x, y, size: doc.iconSize || 50, texture: src ? assetUrl(src) : null };
+      if (doc.entryId)
+        marker.entryId = doc.entryId;
+      if (doc.text)
+        marker.text = doc.text;
+      const levelIds = levelMembership(doc.levels);
+      if (levelIds)
+        marker.levelIds = levelIds;
+      out.push(marker);
+    } catch {
+    }
+  }
+  return out;
+}
+function buildDrawingsJson(docs, ctx = {}) {
+  const out = [];
+  const inSlice = ctx.docInSlice ?? (() => true);
+  for (const raw of docs || []) {
+    try {
+      const doc = raw.document ?? raw;
+      if (!inSlice(doc))
+        continue;
+      const id = doc.id ?? doc._id;
+      if (!id)
+        continue;
+      const st = doc.shape?.type;
+      const hasPoints = Array.isArray(doc.shape?.points) && (doc.shape?.points).length >= 4;
+      const type = st === "r" ? "rect" : st === "e" ? "ellipse" : st === "p" ? "polygon" : hasPoints ? "polygon" : "rect";
+      const d = { id, type, x: doc.x ?? 0, y: doc.y ?? 0 };
+      if (doc.shape?.width != null)
+        d.width = doc.shape.width;
+      if (doc.shape?.height != null)
+        d.height = doc.shape.height;
+      if (hasPoints)
+        d.points = (doc.shape?.points).map(Number);
+      if (doc.rotation != null && Number.isFinite(Number(doc.rotation)))
+        d.rotation = Number(doc.rotation);
+      const sc = parseHexColor(doc.strokeColor, 16768341);
+      if (sc != null)
+        d.strokeColor = sc;
+      if (doc.strokeAlpha != null)
+        d.strokeAlpha = doc.strokeAlpha;
+      if ((doc.fillType ?? 0) > 0) {
+        const fc = parseHexColor(doc.fillColor, void 0);
+        if (fc != null)
+          d.fillColor = fc;
+        d.fillAlpha = doc.fillAlpha != null ? doc.fillAlpha : 0.25;
+      }
+      if (doc.text) {
+        d.text = String(doc.text).slice(0, 200);
+        if (doc.fontSize != null)
+          d.fontSize = doc.fontSize;
+        const tc = parseHexColor(doc.textColor, void 0);
+        if (tc != null)
+          d.textColor = tc;
+      }
+      out.push(d);
+    } catch {
+    }
+  }
+  return out;
+}
+function buildTemplatesJson(docs, ctx) {
+  const out = [];
+  const inSlice = ctx.docInSlice ?? (() => true);
+  for (const raw of docs || []) {
+    try {
+      const doc = raw.document ?? raw;
+      if (!inSlice(doc))
+        continue;
+      const id = doc.id ?? doc._id;
+      if (!id)
+        continue;
+      const t = doc.t;
+      const type = t === "cone" ? "cone" : t === "ray" ? "ray" : t === "rect" ? "rect" : "circle";
+      const tpl = { id, type, x: Number(doc.x) || 0, y: Number(doc.y) || 0, size: (Number(doc.distance) || 0) * ctx.pxPerUnit };
+      if (doc.direction != null)
+        tpl.direction = Number(doc.direction);
+      if (doc.angle != null)
+        tpl.angle = Number(doc.angle);
+      if (type === "ray")
+        tpl.width = (Number(doc.width) || 1) * ctx.pxPerUnit;
+      const bc = parseHexColor(doc.borderColor, 16724821);
+      if (bc != null)
+        tpl.borderColor = bc;
+      const fc = parseHexColor(doc.fillColor, bc);
+      if (fc != null)
+        tpl.fillColor = fc;
+      tpl.fillAlpha = 0.2;
+      out.push(tpl);
     } catch {
     }
   }
@@ -217,7 +321,8 @@ function buildLevelsJson(levels, ctx) {
     const resolved = ctx.assetUrl(src);
     if (!resolved)
       return;
-    out.push({
+    const seeThrough = level?.visibility?.levels;
+    const quad = {
       elevation: ctx.levelElevPx(level, which),
       which,
       src: resolved,
@@ -226,7 +331,13 @@ function buildLevelsJson(levels, ctx) {
       rotation: Number.isFinite(rot) && rot !== 0 ? -(rot * Math.PI) / 180 : void 0,
       offsetX: num(t.offsetX),
       offsetY: num(t.offsetY)
-    });
+    };
+    const levelId = level?.id ?? level?._id;
+    if (levelId)
+      quad.id = levelId;
+    if (Array.isArray(seeThrough) && seeThrough.length)
+      quad.visibleLevelIds = seeThrough;
+    out.push(quad);
   };
   if (levels?.length) {
     const sorted = [...levels].sort((a, b) => num(a.sort) - num(b.sort));
@@ -278,7 +389,7 @@ function buildLightsJson(lightDocs, tokenDocs, ctx) {
   const pxPerUnit = ctx.pxPerUnit;
   const lights = [];
   let shadowBudget = shadows ? 4 : 0;
-  const addPointLight = (cfg, x, y, elevPx) => {
+  const addPointLight = (cfg, x, y, elevPx, meta) => {
     if (!cfg)
       return;
     const dim = num(cfg.dim);
@@ -290,7 +401,7 @@ function buildLightsJson(lightDocs, tokenDocs, ctx) {
     const castShadow = shadowBudget > 0;
     if (castShadow)
       shadowBudget--;
-    lights.push({
+    const light = {
       x,
       y,
       elevation: elevPx + size * 0.6,
@@ -300,13 +411,18 @@ function buildLightsJson(lightDocs, tokenDocs, ctx) {
       castShadow,
       shadowNear: size * 0.2,
       shadowNormalBias: size * 0.05
-    });
+    };
+    if (meta?.id)
+      light.id = meta.id;
+    if (meta?.levelIds)
+      light.levelIds = meta.levelIds;
+    lights.push(light);
   };
   for (const d of lightDocs || []) {
     try {
       if (d?.hidden || !ctx.docInSlice(d))
         continue;
-      addPointLight(d.config, num(d.x), num(d.y), num(d.elevation) * pxPerUnit);
+      addPointLight(d.config, num(d.x), num(d.y), num(d.elevation) * pxPerUnit, { id: d.id ?? d._id, levelIds: levelMembership(d.levels) });
     } catch {
     }
   }
@@ -336,7 +452,7 @@ function buildTokenJson(doc, ctx) {
   const color = ctx.isSecretFromViewer ? dispositionColor(void 0, false, ctx.dispositionColors) : dispositionColor(doc.disposition, ctx.hasPlayerOwner, ctx.dispositionColors);
   const ring = doc.ring?.enabled ? doc.ring : null;
   const artSrc = ring && ring.subject?.texture || doc.texture?.src;
-  return {
+  const token = {
     id: doc.id ?? doc._id,
     x: num(doc.x),
     y: num(doc.y),
@@ -362,6 +478,9 @@ function buildTokenJson(doc, ctx) {
     targeted: !!ctx.targeted,
     targetColor: ctx.targetColor
   };
+  if (typeof doc.level === "string" && doc.level)
+    token.levelId = doc.level;
+  return token;
 }
 function buildWallsJson(docs, ctx) {
   const out = [];
@@ -436,6 +555,9 @@ function buildWallsJson(docs, ctx) {
         if (a.type)
           wall.animType = a.type;
       }
+      const levelIds = levelMembership(doc.levels);
+      if (levelIds)
+        wall.levelIds = levelIds;
       out.push(wall);
     } catch {
     }
@@ -443,11 +565,13 @@ function buildWallsJson(docs, ctx) {
   return out;
 }
 export {
+  buildDrawingsJson,
   buildGridJson,
   buildLevelsJson,
   buildLightsJson,
   buildNotesJson,
   buildRegionsJson,
+  buildTemplatesJson,
   buildTerrainJson,
   buildTilesJson,
   buildTokenJson,
@@ -458,6 +582,7 @@ export {
   levelBase,
   levelContainingElevation,
   levelForElevation,
+  levelMembership,
   levelTop,
   levelsElevation,
   parseHexColor,
