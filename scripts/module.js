@@ -1,20 +1,32 @@
 /**
- * Crit-Fumble Core Module — Phase 1
+ * Crit-Fumble Core Module
  * Foundry VTT plugin for Crit-Fumble Gaming platform integration.
  *
- * Phase 1 features:
- *   - Campaign linking + GM panel
- *   - Party roster + session tracker
- *   - Quest sync → journal entries
- *   - Character sheet sync (bidirectional)
- *   - Voice: Discord, driven by campaign settings on Core
- *   - Chat log unification (Foundry ↔ Core)
- *   - VTT bridge for core-hosted iframe embedding
+ * What this module ACTUALLY does today (verified fp#47 — the previous list was
+ * aspirational and named several things that have never been wired):
+ *   - Campaign linking — Module Settings → Linked Campaigns (GM-only)
+ *   - Runtime player provisioning — creates the Foundry Users the platform
+ *     reserved, so the proxy can SSO invited players (ProvisionDrain, GM-only)
+ *   - Whole-world actor mirror → Core, for offline sheet viewing (GM-only)
+ *   - Character sheet write-back, Core → live actor (UPDATE-only; it cannot
+ *     create an actor — fp#46)
+ *   - Party journal sync, Core → live world (JournalPullSync, GM-only, #184)
+ *   - 3D overlay — a three.js view-skin over the canvas (draft)
+ *   - Connection banner + first-run pair prompt
+ *
+ * NOT present, though older docs claimed them: party roster, session tracker,
+ * campaign filter, chat unification, quest sync, the iframe VTT bridge. Those
+ * files were DELETED in fp#47 — 28 modules / ~5k lines that had no importer since
+ * the monorepo extraction and would have thrown if wired (they read settings that
+ * were never registered). `git log` has them if any is ever wanted back.
+ *
+ * This file is the ONLY esmodule entry (module.json), so "reachable from here" is
+ * the whole of the live plugin. If you add a file nothing imports, it is dead —
+ * it will still ship in the zip and still read like production code.
  */
 
 import { CoreAPIClient } from './clients/api-client.js'
 import { CfgCampaignLinksDialog } from './views/cfg-campaign-links.js'
-// import { mountCFGSidebar } from './views/sidebar.js' // disabled — see the mount call below
 import { FilePickerCompat } from './utils/file-picker-compat.js'
 import { registerCfgLinkMenu } from './views/cfg-link-settings.js'
 import { applyHostedContext, getHostKind } from './auth/host-context.js'
@@ -34,7 +46,10 @@ import { Overlay3D } from './services/overlay-3d.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-const MODULE_VERSION = '2.13.0'
+// Keep in step with module.json's `version` — this is what `window.CFGCore.version`
+// reports and what the boot log prints. It had drifted a release behind (2.13.0 vs
+// module.json 2.14.0), so both the console and any consumer read a stale version.
+const MODULE_VERSION = '2.14.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -44,7 +59,8 @@ let _platformSystemSlug = null
 
 /**
  * CFG campaign ids that have linked THIS Foundry world via the N:M join
- * (`campaign_foundry_worlds`). Populated by `_resolveLinkedCampaigns` in
+ * (`WorldAccessGrant` rows with `granteeType: 'campaign'`). Populated by
+ * `_resolveLinkedCampaigns` in
  * the ready hook. Per-campaign flows (`_resolveFeatureMode`,
  * `_checkRecommendedModules`) iterate this list; an empty list is
  * normal for unlinked worlds and just skips those flows.
@@ -163,7 +179,7 @@ Hooks.once('init', () => {
   })
 
   // The legacy single-campaign `campaignId` setting has been retired. With
-  // many-to-many linking (`campaign_foundry_worlds` join), a world can host
+  // many-to-many linking (`WorldAccessGrant`, granteeType 'campaign'), a world can host
   // multiple campaigns and a campaign can be played across multiple worlds.
   // The Linked Campaigns dialog (game.settings.registerMenu below) is the
   // single source of truth; plugin-side flows that need a campaign id
@@ -552,8 +568,6 @@ Hooks.once('ready', async () => {
     _linkPlatformUser(apiUrl, apiKey),
   ])
 
-  _showFeatureModeBanner()
-
   // Active-user heartbeat (cfs#109) — reports game.users.active to Core so
   // server-side idle-shutdown automation has a real signal. Only runs when
   // this world is linked to an installation (cfg-hosted, or self-hosted
@@ -620,15 +634,11 @@ Hooks.once('ready', async () => {
     console.warn('CFG Core | Overlay3D init failed (non-fatal):', err)
   }
 
-  // CFG sidebar — DISABLED 2026-06-22. The collapsible "CFG" rail loaded an
-  // iframe to /foundry/sidebar, which 404s, and the rail isn't the surface we
-  // want anyway. Hidden pending a proper ApplicationV2 "Surface" window inside
-  // Foundry (tracked separately). sidebar.js (mount/unmount + its unit test) is
-  // kept intact; re-enable by uncommenting the import + this call.
-  // mountCFGSidebar({
-  //   coreUrl: apiUrl,
-  //   token: apiKey || null,
-  // })
+  // NB the CFG sidebar rail that used to mount here is GONE (fp#47). It was
+  // disabled 2026-06-22 — it loaded an iframe to /foundry/sidebar, which 404s,
+  // and its own note said the rail "isn't the surface we want anyway". The
+  // replacement is a proper ApplicationV2 "Surface" window (tracked separately);
+  // that's a rewrite, so the dead file bought nothing. `git log` has it.
 
   // Offline banner (#699). Subscribes to `pluginConnectionState` and surfaces
   // a small fixed-position pill whenever fetchCfg's last call hit the network
@@ -700,7 +710,7 @@ async function _reportWorldLoaded(apiKey) {
 
 /**
  * Fetch the set of CFG campaigns linked to THIS Foundry world via the
- * many-to-many join (`campaign_foundry_worlds`). The GM manages the
+ * many-to-many join (`WorldAccessGrant`, granteeType 'campaign'). The GM manages the
  * link list in Module Settings → Linked Campaigns; this is the
  * canonical "which campaigns can play in this world" lookup.
  *
@@ -843,15 +853,19 @@ async function _checkRecommendedModules() {
 }
 
 /* -------------------------------------------- */
-/*  Feature Mode Banner                          */
+/*  Feature Mode                                 */
 /* -------------------------------------------- */
-
-function _showFeatureModeBanner() {
-  if (_featureMode === 'full') {
-    ui.notifications.info(`CFG Core: Full integration active — ${_platformSystemSlug} tools enabled`, {
-      permanent: false,
-    })
-  } else {
-    ui.notifications.info('CFG Core: Narrative tools active — voice, quests, party roster, chat', { permanent: false })
-  }
-}
+//
+// The boot toast that used to live here was REMOVED (fp#47). It told every user
+// "Narrative tools active — voice, quests, party roster, chat", and none of that
+// was true from this plugin's side: voice is server-side (Discord/ReSesh), the
+// quests api-client method has no caller, "party roster" is unreachable code
+// (views/party-roster.js has no importer and calls a `cfg.campaignId()` that no
+// longer exists), and there is no chat surface. The `full` variant promised
+// "<system> tools enabled" and enabled nothing.
+//
+// There was no accurate rewrite available, because `_featureMode` GATES NOTHING:
+// it is resolved per-campaign from Core (`_resolveFeatureMode`), logged, and
+// exposed as `window.CFGCore.featureMode()` — but no code branches on it. Left in
+// place rather than ripped out (it's public surface and a real platform concept),
+// but do not add UI that claims it does something until it does.
