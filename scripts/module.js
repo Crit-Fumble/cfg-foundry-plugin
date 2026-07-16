@@ -46,10 +46,11 @@ import { Overlay3D } from './services/overlay-3d.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-// Keep in step with module.json's `version` — this is what `window.CFGCore.version`
-// reports and what the boot log prints. It had drifted a release behind (2.13.0 vs
-// module.json 2.14.0), so both the console and any consumer read a stale version.
-const MODULE_VERSION = '2.14.0'
+// MUST match module.json's `version` — bump both together. This is what
+// `window.CFGCore.version` reports and what the boot log prints; module.json is
+// what Foundry reads. They had silently drifted a release apart (2.13.0 vs
+// 2.14.0) until fp#47, so every consumer read a stale version.
+const MODULE_VERSION = '2.15.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
