@@ -61,10 +61,9 @@ let _platformSystemSlug = null
 /**
  * CFG campaign ids that have linked THIS Foundry world via the N:M join
  * (`WorldAccessGrant` rows with `granteeType: 'campaign'`). Populated by
- * `_resolveLinkedCampaigns` in
- * the ready hook. Per-campaign flows (`_resolveFeatureMode`,
- * `_checkRecommendedModules`) iterate this list; an empty list is
- * normal for unlinked worlds and just skips those flows.
+ * `_resolveLinkedCampaigns` in the ready hook. Per-campaign flows
+ * (`_resolveFeatureMode`) iterate this list; an empty list is normal for an
+ * unlinked world and just skips those flows.
  * @type {string[]}
  */
 let _linkedCampaignIds = []
@@ -562,7 +561,6 @@ Hooks.once('ready', async () => {
   // for each. Link this Foundry user to their platform account in parallel.
   await Promise.allSettled([
     _resolveFeatureMode(),
-    game.user.isGM ? _checkRecommendedModules() : Promise.resolve(),
     // #339 — POST `game.modules` to CFG so the platform UI can list what's
     // installed in this Foundry world. GM-only; non-fatal on failure.
     game.user.isGM ? syncInstalledModules() : Promise.resolve(),
@@ -820,38 +818,6 @@ async function _linkPlatformUser(apiUrl, apiKey) {
   }
 }
 
-/* -------------------------------------------- */
-/*  Module Setup Check                           */
-/* -------------------------------------------- */
-
-async function _checkRecommendedModules() {
-  if (!_api || _linkedCampaignIds.length === 0) return
-
-  try {
-    // Module recommendations are per-system, not per-campaign — so we
-    // only need to query ONE campaign's foundry config. Pick the first
-    // linked one; the rest would return the same `defaultModules` set
-    // for matching systems.
-    const config = await _api.getFoundryConfig(_linkedCampaignIds[0])
-    const defaultModules = config?.defaultModules ?? []
-    if (!defaultModules.length) return
-
-    const missing = defaultModules
-      .filter((mod) => mod.autoInstall === false)
-      .filter((mod) => !game.modules.get(mod.id)?.active)
-      .map((mod) => mod.id)
-
-    if (!missing.length) return
-
-    const systemName = config?.systemName ?? game.system.title ?? game.system.id
-    ui.notifications.warn(
-      `CFG recommends these modules for ${systemName}: ${missing.join(', ')}. Install them in the Module Manager.`,
-    )
-    console.log(`CFG Core | Recommended modules not active:`, missing)
-  } catch (err) {
-    console.log('CFG Core | Module config check skipped:', err.message)
-  }
-}
 
 /* -------------------------------------------- */
 /*  Feature Mode                                 */
