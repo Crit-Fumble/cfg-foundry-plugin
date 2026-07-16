@@ -33,7 +33,7 @@ import { Overlay3D } from './services/overlay-3d.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-const MODULE_VERSION = '2.12.0'
+const MODULE_VERSION = '2.13.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -199,17 +199,12 @@ Hooks.once('init', () => {
     default: false,
   })
 
-  // Host-environment detection (#699) — when Foundry is served by the CFG
-  // VTT proxy, the proxy injects `window.__CFG_HOSTED_CONTEXT__` with the
-  // endpoint, a pre-minted apiKey, an installationId and the cfgUserId. In
-  // that case we auto-apply the injected context so the rest of `ready` sees
-  // the same world settings the pair flow would have populated. Self-hosted /
-  // third-party Foundry sees the original pair-button flow inside the menu.
-  if (getHostKind() === 'cfg-hosted') {
-    // Fire-and-forget: applyHostedContext does its own error logging, and
-    // failing to write a setting here doesn't block the rest of init.
-    void applyHostedContext()
-  }
+  // Host-environment detection (#699): when Foundry is cfg-hosted, the plugin
+  // fetches its installation host key programmatically and stores it as the
+  // Bearer `apiKey` setting. That runs in the `ready` hook (awaited, before the
+  // API client is built) — see `applyHostedContext()` — so settings are live and
+  // the key is in place before the first heartbeat. Self-hosted / third-party
+  // Foundry uses the original pair-button flow inside the menu.
   // Always register the link-menu surface — it renders Link/Unlink for
   // self-hosted, and a read-only "Linked via CFG-hosted Foundry container"
   // row for cfg-hosted (the buttons are hidden, see cfg-link-settings.js).
@@ -511,15 +506,28 @@ Hooks.once('ready', async () => {
     console.warn('CFG Core | FilePicker default path setup failed (non-fatal):', err)
   }
 
-  const apiUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
-  // cfg-hosted Foundry is served same-origin with core (/servers/foundryvtt/<slug>/…),
-  // so the same-origin session cookie is the auth — never the pair-flow API key,
-  // even if a stale one is stored from a prior self-hosted pair (the stale key
-  // 401s on the dev stack and breaks plugin↔core calls — #43). Reserve the key
-  // for genuinely self-hosted installs.
-  const apiKey = getHostKind() === 'cfg-hosted' ? null : game.settings.get(MODULE_ID, 'apiKey') || null
+  // Programmatic pairing: for cfg-hosted Foundry, fetch + store the installation
+  // host key (Bearer) BEFORE building the API client, so the heartbeats
+  // authenticate as the installation. Owner-scoped on the server; a non-owner GM
+  // gets no key and `applyHostedContext` clears any stale one → session fallback.
+  // Awaited so the setting is live before the first heartbeat fires below.
+  if (getHostKind() === 'cfg-hosted') {
+    try {
+      await applyHostedContext()
+    } catch (err) {
+      console.warn('CFG Core | applyHostedContext failed (non-fatal, using session auth):', err?.message || err)
+    }
+  }
 
-  // Core-hosted: apiKey null → session cookie auth.  Self-hosted: apiKey set → Bearer token.
+  const apiUrl = game.settings.get(MODULE_ID, 'coreApiUrl')
+  // Both hosting modes read the same stored key: cfg-hosted gets an installation
+  // key from `applyHostedContext` (programmatic pairing) or, if that couldn't mint
+  // one, an empty value → session-cookie auth (same-origin). Self-hosted gets its
+  // paired key. An empty/absent setting → null → session-cookie auth.
+  const apiKey = game.settings.get(MODULE_ID, 'apiKey') || null
+
+  // apiKey set → Bearer token (installation key or self-hosted pair). Null →
+  // same-origin session-cookie auth (cfg-hosted non-owner GM fallback).
   _api = new CoreAPIClient(apiUrl, apiKey)
   window.CFGCore.api = _api
   console.log(`CFG Core | Auth mode: ${apiKey ? 'self-hosted (API key)' : 'core-hosted (session cookie)'}`)

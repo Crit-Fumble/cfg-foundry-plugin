@@ -142,13 +142,69 @@ export function getHostKind() {
  * @returns {Promise<HostKind>}
  */
 export async function applyHostedContext() {
-  const ctx = getHostedContext()
-  if (!ctx) return 'self-hosted'
+  // 1. Legacy path: an injected `__CFG_HOSTED_CONTEXT__` global wins if present.
+  const injected = getHostedContext()
+  if (injected) {
+    await _setIfChanged('coreApiUrl', injected.endpoint)
+    await _setIfChanged('apiKey', injected.apiKey)
+    await _setIfChanged('installationId', injected.installationId)
+    return 'cfg-hosted'
+  }
 
-  await _setIfChanged('coreApiUrl', ctx.endpoint)
-  await _setIfChanged('apiKey', ctx.apiKey)
-  await _setIfChanged('installationId', ctx.installationId)
+  // 2. Programmatic pairing: cfg-hosted Foundry is served same-origin under
+  //    `/servers/foundryvtt/<installationId>/…`, so fetch the installation's
+  //    host key from core with the browser's session cookie. The endpoint is
+  //    OWNER-scoped — the owner's plugin gets a `cfk_…` key it uses as a Bearer
+  //    token so the status/activity heartbeats authenticate AS the installation
+  //    (no longer piggybacking on whichever user's session is connected). A
+  //    non-owner GM gets no key and stays on same-origin session-cookie auth.
+  const installationId = _installationIdFromPath()
+  if (!installationId) return 'self-hosted'
+
+  const origin = _originOrNull()
+  if (!origin) return 'cfg-hosted'
+  try {
+    const res = await fetch(
+      `${origin}/api/v1/account/foundry/hosted-context?installationId=${encodeURIComponent(installationId)}`,
+      { method: 'GET', headers: { accept: 'application/json' }, credentials: 'include' },
+    )
+    if (res.ok) {
+      const ctx = await res.json()
+      if (ctx && _isNonEmptyString(ctx.apiKey)) {
+        await _setIfChanged('coreApiUrl', ctx.endpoint || origin)
+        await _setIfChanged('apiKey', ctx.apiKey)
+        await _setIfChanged('installationId', ctx.installationId || installationId)
+        return 'cfg-hosted'
+      }
+    }
+  } catch (err) {
+    console.warn('CFG Core | hosted-context fetch failed (non-fatal):', err?.message || err)
+  }
+  // No key (non-owner GM, or a transient failure): CLEAR any stale Bearer key so
+  // the plugin falls back to same-origin session-cookie auth instead of sending
+  // a dead token. installationId/coreApiUrl are set by the ready-hook auto-correct.
+  await _setIfChanged('apiKey', '')
   return 'cfg-hosted'
+}
+
+/** Installation id (or slug) from the cfg-hosted route path, or null. */
+function _installationIdFromPath() {
+  try {
+    if (typeof window === 'undefined') return null
+    const m = window.location?.pathname?.match(/^\/servers\/foundryvtt\/([^/]+)/)
+    return m?.[1] || null
+  } catch {
+    return null
+  }
+}
+
+/** Same-origin base for the hosted-context fetch, or null when unavailable. */
+function _originOrNull() {
+  try {
+    return typeof window !== 'undefined' ? window.location?.origin || null : null
+  } catch {
+    return null
+  }
 }
 
 /**

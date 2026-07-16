@@ -121,6 +121,9 @@ describe('applyHostedContext', () => {
   beforeEach(() => {
     globalThis.window = globalThis.window || {}
     delete globalThis.window.__CFG_HOSTED_CONTEXT__
+    // Default: NOT on the cfg-hosted route → no programmatic fetch.
+    globalThis.window.location = { pathname: '/game', origin: 'https://foundry.local' }
+    globalThis.fetch = jest.fn()
     store = settingsStore({ coreApiUrl: 'https://default', apiKey: '', installationId: '' })
   })
 
@@ -149,6 +152,37 @@ describe('applyHostedContext', () => {
 
     expect(kind).toBe('self-hosted')
     expect(game.settings.set).not.toHaveBeenCalled()
+  })
+
+  it('programmatic pairing: cfg-hosted route + no global → fetches the host key and stores it', async () => {
+    globalThis.window.location = { pathname: '/servers/foundryvtt/rotfs/game', origin: 'https://core.crit-fumble.com' }
+    globalThis.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ endpoint: 'https://core.crit-fumble.com', apiKey: 'cfk_minted', installationId: 'inst_abc', cfgUserId: 'owner_1' }),
+    }))
+
+    const { applyHostedContext } = await loadHostContext()
+    const kind = await applyHostedContext()
+
+    expect(kind).toBe('cfg-hosted')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'https://core.crit-fumble.com/api/v1/account/foundry/hosted-context?installationId=rotfs',
+      expect.objectContaining({ credentials: 'include' }),
+    )
+    expect(store.get('apiKey')).toBe('cfk_minted')
+    expect(store.get('installationId')).toBe('inst_abc')
+  })
+
+  it('programmatic pairing: non-owner GM (404) → clears any stale key so it falls back to session auth', async () => {
+    globalThis.window.location = { pathname: '/servers/foundryvtt/rotfs/game', origin: 'https://core.crit-fumble.com' }
+    store = settingsStore({ coreApiUrl: 'https://core.crit-fumble.com', apiKey: 'cfk_stale', installationId: 'inst_abc' })
+    globalThis.fetch = jest.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }))
+
+    const { applyHostedContext } = await loadHostContext()
+    const kind = await applyHostedContext()
+
+    expect(kind).toBe('cfg-hosted')
+    expect(store.get('apiKey')).toBe('') // stale Bearer cleared → session-cookie auth
   })
 
   it('skips the write when the setting already matches — no spurious change hooks', async () => {
