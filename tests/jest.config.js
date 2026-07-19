@@ -13,6 +13,16 @@ export default {
   transform: {},
   moduleFileExtensions: ['js', 'mjs'],
 
+  // Jest hangs after the suite passes — something (a timer or open handle in
+  // the service tests) keeps the event loop alive, and it prints "Jest did not
+  // exit one second after the test run has completed."
+  //
+  // That is not cosmetic here: .husky/pre-push runs `npm test`, so every push
+  // blocked on the hung runner until it was killed by hand. forceExit is the
+  // same safety net cfg-core-server uses. Chasing the leak itself needs
+  // `--detectOpenHandles`, which is a separate job.
+  forceExit: true,
+
   // Only match .test.js files, not .spec.js (which are Playwright e2e tests)
   // testMatch with cross-platform glob pattern
   testMatch: ['**/*.test.js'],
