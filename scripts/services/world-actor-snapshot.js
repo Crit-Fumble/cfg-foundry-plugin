@@ -165,6 +165,36 @@ export class WorldActorSnapshot {
     const serialized = all.map((a) => this._serialize(a)).filter(Boolean)
     await this._pushBatches(serialized)
     await this._reconcile()
+    // Folders ride the same sweep (cs#195). Pushed AFTER the actors so a fresh
+    // world never shows actors pointing at folders the platform hasn't seen —
+    // the tree builder tolerates that (dangling parent → root), but ordering it
+    // this way keeps the transient state boring.
+    await this._sweepFolders()
+  }
+
+  /** Serialize the world's ACTOR folders and reconcile in one pass. Folders are
+   *  metadata-only and few, so no batching is warranted. Never throws into the
+   *  caller: a folder failure must not abort an otherwise-good actor sweep. */
+  async _sweepFolders() {
+    try {
+      const folders = (game.folders?.contents ?? [])
+        .filter((f) => f?.type === 'Actor')
+        .map((f) => {
+          try {
+            return f.toObject()
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean)
+      if (folders.length) await this._api.pushWorldFolders(this._worldId, { folders })
+      await this._api.pushWorldFolders(this._worldId, {
+        reconcile: true,
+        keepFolderIds: folders.map((f) => f._id).filter(Boolean),
+      })
+    } catch (err) {
+      console.debug?.(`${LOG} folder sweep skipped:`, err?.message || err)
+    }
   }
 
   async _pushBatches(actors) {

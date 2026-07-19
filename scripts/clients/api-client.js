@@ -236,6 +236,19 @@ export class CoreAPIClient {
     return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/actors`, body)
   }
 
+  /**
+   * POST /api/v1/foundry/worlds/{worldId}/folders — mirror the world's Folder
+   * documents so the platform can render the actor directory as a TREE (cs#195).
+   *
+   * Actors already carry their folder id (we send `actor.toObject()`), so this
+   * supplies the missing half: what each folder is called and where it sits.
+   * Same body shape as the actor push — { folders } and/or
+   * { reconcile, keepFolderIds }.
+   */
+  pushWorldFolders(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/folders`, body)
+  }
+
   // ── Parties ───────────────────────────────────────────────────────────────
 
   /** GET /api/v1/player/campaigns/{id}/parties */
