@@ -8,6 +8,9 @@ on:
 
 permissions:
   contents: read
+  # @crit-fumble/shared installs from GitHub Packages; GITHUB_TOKEN cannot read
+  # it without this, so npm ci 401s no matter what auth the step passes.
+  packages: read
 
 jobs:
   unit:
@@ -18,5 +21,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+          # Writes the //npm.pkg.github.com/:_authToken line into the runner's
+          # .npmrc. Without it, the repo .npmrc only names the registry and
+          # nothing binds a token to it — NODE_AUTH_TOKEN alone is ignored.
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@crit-fumble'
       - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm test
