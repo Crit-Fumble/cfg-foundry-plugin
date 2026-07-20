@@ -43,6 +43,7 @@ import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { CharacterSyncManager } from './services/character-sync.js'
 import { CharacterPullSync } from './services/character-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
+import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -654,6 +655,15 @@ Hooks.once('ready', async () => {
     _overlay3D.start()
   } catch (err) {
     console.warn('CFG Core | Overlay3D init failed (non-fatal):', err)
+  }
+
+  // dt#212 parity — an "Edit JSON" control on Item/Actor/JournalEntry sheet headers, opening the
+  // CFG JSON editor with the same discard/required-empty diagnostics and pre-save health probe
+  // PlayTable runs. GM-only; injected via the generic renderDocumentSheetV2 hook.
+  try {
+    registerJsonEditorHeaderButton()
+  } catch (err) {
+    console.warn('CFG Core | JSON editor button registration failed (non-fatal):', err)
   }
 
   // NB the CFG sidebar rail that used to mount here is GONE (fp#47). It was

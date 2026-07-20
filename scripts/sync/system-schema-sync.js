@@ -109,6 +109,37 @@ export function readSystemSchemas() {
 }
 
 /**
+ * Build ONE descriptor for a single document class from the live CONFIG — the in-Foundry JSON
+ * editor's counterpart to `readSystemSchemas` (which builds all of them for the push). Same shape
+ * the server stores and the shared checker consumes, so the editor's diagnostics match PlayTable's
+ * exactly. Returns null when the class declares no introspectable dataModels (nothing to check).
+ *
+ * @param {string} documentClass  e.g. 'Item'
+ * @returns {{ systemId: string, systemVersion?: string, documentClass: string, types: object } | null}
+ */
+export function descriptorForDocumentClass(documentClass) {
+  const systemId = game?.system?.id
+  if (!systemId) return null
+  const dataModels = globalThis.CONFIG?.[documentClass]?.dataModels
+  if (!dataModels || typeof dataModels !== 'object') return null
+
+  const types = {}
+  for (const [typeName, model] of Object.entries(dataModels)) {
+    const described = describeModel(model)
+    if (described) types[typeName] = described
+  }
+  if (Object.keys(types).length === 0) return null
+
+  const systemVersion = game?.system?.version
+  return {
+    systemId: String(systemId),
+    ...(systemVersion ? { systemVersion: String(systemVersion) } : {}),
+    documentClass,
+    types,
+  }
+}
+
+/**
  * Describe one DataModel's schema: the top-level `system` keys it allows, and which of those are
  * required with no default to fall back on.
  *

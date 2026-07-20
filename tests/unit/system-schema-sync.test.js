@@ -161,6 +161,33 @@ describe('describeModel', () => {
   })
 })
 
+describe('descriptorForDocumentClass', () => {
+  it('builds one descriptor for a single class from live CONFIG', async () => {
+    globalThis.CONFIG = { Item: { dataModels: { subclass: model({ classIdentifier: field({ required: true }) }) } } }
+    const { descriptorForDocumentClass } = await loadSync()
+    const d = descriptorForDocumentClass('Item')
+    expect(d).toEqual({
+      systemId: 'dnd5e',
+      systemVersion: '5.3.3',
+      documentClass: 'Item',
+      types: { subclass: { fields: ['classIdentifier'], required: ['classIdentifier'] } },
+    })
+  })
+
+  it('returns null for a class the system does not describe', async () => {
+    globalThis.CONFIG = { Item: { dataModels: { feat: model({ a: field() }) } } }
+    const { descriptorForDocumentClass } = await loadSync()
+    expect(descriptorForDocumentClass('Actor')).toBeNull()
+  })
+
+  it('returns null when there is no system', async () => {
+    globalThis.game.system = undefined
+    globalThis.CONFIG = { Item: { dataModels: { feat: model({ a: field() }) } } }
+    const { descriptorForDocumentClass } = await loadSync()
+    expect(descriptorForDocumentClass('Item')).toBeNull()
+  })
+})
+
 describe('readSystemSchemas', () => {
   it('projects each described document class', async () => {
     globalThis.CONFIG = {
