@@ -74,6 +74,40 @@ describe('describeModel', () => {
     expect(out).toEqual({ fields: ['classIdentifier', 'description'], required: ['classIdentifier'] })
   })
 
+  it('reads the default from getInitialValue(), not the `initial` property', async () => {
+    // The live-prod regression. Every dnd5e 5.3.3 subclass field looks like this: required, not
+    // nullable, `initial` undefined — yet each returns a real default from getInitialValue().
+    // Testing `initial` marked all six required and errored on every well-formed subclass.
+    const { describeModel } = await loadSync()
+    const dnd5eShaped = (initial) => ({ required: true, nullable: false, initial: undefined, getInitialValue: () => initial })
+    const out = describeModel(
+      model({
+        classIdentifier: dnd5eShaped(''),
+        description: dnd5eShaped({ value: '', chat: '' }),
+        source: dnd5eShaped({ revision: 1, rules: '2024' }),
+      }),
+    )
+    expect(out).toEqual({ fields: ['classIdentifier', 'description', 'source'] })
+    expect(out.required).toBeUndefined()
+  })
+
+  it('still reports a field whose getInitialValue() yields nothing', async () => {
+    const { describeModel } = await loadSync()
+    const out = describeModel(
+      model({
+        mustSupply: { required: true, nullable: false, initial: undefined, getInitialValue: () => undefined },
+        hasDefault: { required: true, nullable: false, initial: undefined, getInitialValue: () => '' },
+      }),
+    )
+    expect(out).toEqual({ fields: ['mustSupply', 'hasDefault'], required: ['mustSupply'] })
+  })
+
+  it('does not claim required when the initial-value machinery throws', async () => {
+    const { describeModel } = await loadSync()
+    const out = describeModel(model({ odd: { required: true, nullable: false, getInitialValue: () => { throw new Error('boom') } } }))
+    expect(out).toEqual({ fields: ['odd'] })
+  })
+
   it('does not call a nullable field required — null is its own default', async () => {
     const { describeModel } = await loadSync()
     expect(describeModel(model({ img: field({ required: true, nullable: true }) }))).toEqual({ fields: ['img'] })

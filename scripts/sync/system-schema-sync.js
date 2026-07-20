@@ -157,5 +157,26 @@ function isRequiredWithoutDefault(field) {
   if (!field || typeof field !== 'object') return false
   if (field.required !== true) return false
   if (field.nullable === true) return false
+
+  // A Foundry field's default lives behind `getInitialValue()`, NOT the `initial` property.
+  // Verified against live dnd5e 5.3.3: every one of subclass's six fields has
+  // `required: true, nullable: false, initial: undefined` — and every one returns a real default
+  // from `getInitialValue({})` (`identifier` → "", `description` → {value,chat},
+  // `source` → {revision,rules}). Testing `initial` therefore marked ALL SIX required and would
+  // have errored on every well-formed subclass, which is the confidently-wrong failure this
+  // module is supposed to avoid.
+  //
+  // A consequence worth knowing: on dnd5e this set is EMPTY, including `classIdentifier` — the
+  // system defaults it to "" rather than leaving it absent, so "a subclass with no
+  // classIdentifier" is an empty value, not a missing field, and is not detectable from the
+  // schema. The discard warning is the load-bearing half; this half stays for systems that do
+  // declare genuinely defaultless fields.
+  try {
+    if (typeof field.getInitialValue === 'function') return field.getInitialValue({}) === undefined
+  } catch {
+    // A field whose initial-value machinery throws tells us nothing; claiming it is required
+    // would be a guess.
+    return false
+  }
   return field.initial === undefined
 }
