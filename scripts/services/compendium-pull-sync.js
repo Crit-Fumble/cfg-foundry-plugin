@@ -25,6 +25,17 @@
  * Failures are non-fatal per entry: one bad document must not strand the rest of the queue.
  */
 
+import { probeDocumentHealth } from './document-health-probe.js'
+
+/** A pending entry that would crash Foundry's document preparation (dt#213). Carries the reason so
+ *  the apply loop can log WHY, distinct from a transient world-rejected-it skip. */
+class DocumentHealthError extends Error {
+  constructor(reason) {
+    super(reason)
+    this.name = 'DocumentHealthError'
+  }
+}
+
 /**
  * Augment a desired-state payload with Foundry's `-=` deletion markers.
  *
@@ -158,7 +169,15 @@ export class CompendiumPullSync {
       try {
         if (await this._applyEntry(pack, entry)) applied.push(entry.foundryEntryId)
       } catch (err) {
-        console.debug?.(`${LOG} entry ${entry.foundryEntryId} skipped:`, err?.message || err)
+        if (err instanceof DocumentHealthError) {
+          // Louder than a transient skip: this entry is stuck until the GM fixes it, and applying
+          // it would have crashed the world. Surfaced at warn so it is visible in logs; the entry
+          // stays pending (not reported as applied) so nothing is lost. Reporting the reason back
+          // to the platform editor is the follow-up (dt#213 needs a status channel).
+          console.warn(`${LOG} entry ${entry.foundryEntryId} would crash Foundry — not applied:`, err.message)
+        } else {
+          console.debug?.(`${LOG} entry ${entry.foundryEntryId} skipped:`, err?.message || err)
+        }
       }
     }
     return applied
@@ -169,6 +188,15 @@ export class CompendiumPullSync {
     const doc = entry.doc ?? {}
     const DocClass = CONFIG[pack.metadata.type]?.documentClass
     if (!DocClass) return false
+
+    // dt#213 — refuse to apply a document that will crash Foundry's preparation. The headline case
+    // is a class retooled into a subclass that KEEPS a HitPoints advancement reading the `hd` the
+    // subclass discards: schema-valid, and it throws on render. This matters most for the
+    // type-change path below, which is delete + recreate — without this guard a crashing recreate
+    // would leave the world with the document DELETED and nothing in its place. Probing up front
+    // means one code path protects every branch, and nothing destructive runs on a doomed doc.
+    const health = probeDocumentHealth(DocClass, { ...doc, _id: entry.foundryEntryId })
+    if (!health.ok) throw new DocumentHealthError(health.reason)
 
     // Absent from the world (deleted there, or platform-authored): recreate it so the GM's work
     // is not silently dropped. keepId keeps the platform row pointing at the same document.

@@ -96,6 +96,84 @@ beforeEach(() => {
   }
 })
 
+describe('_applyEntry — document health guard (dt#213)', () => {
+  it('refuses a doc that would crash Foundry, WITHOUT deleting the live document', async () => {
+    // The corruption this prevents: the type-change path is delete + recreate, so a recreate that
+    // crashes on prep would leave the world with the document deleted and nothing in its place.
+    // Probing up front means nothing destructive runs on a doomed doc. Verified against real
+    // dnd5e in specs/document-health-probe.spec.js; here the crash is modelled with a throwing
+    // advancement so the guard's WIRING is pinned without a Foundry.
+    globalThis.foundry = { utils: { deepClone: (v) => JSON.parse(JSON.stringify(v)) } }
+    class CrashingDoc {
+      static create = jest.fn(async () => ({ _id: 'x' }))
+      constructor(data) {
+        this.type = data.type
+        this.advancement = {
+          byId: {
+            a: {
+              constructor: { name: 'HitPointsAdvancement' },
+              sortingValueForLevel: () => {
+                throw new Error("Cannot read properties of undefined (reading 'denomination')")
+              },
+            },
+          },
+        }
+      }
+    }
+    globalThis.CONFIG = { Item: { documentClass: CrashingDoc } }
+
+    const { CompendiumPullSync } = await loadSync()
+    const svc = new CompendiumPullSync({})
+    const live = liveDoc('class')
+    const pack = packStub(live)
+
+    await expect(
+      svc._applyEntry(pack, { foundryEntryId: 'abc123', doc: { type: 'subclass', name: 'Broken' } }),
+    ).rejects.toThrow(/fails to prepare/)
+
+    expect(live.delete).not.toHaveBeenCalled()
+    expect(CrashingDoc.create).not.toHaveBeenCalled()
+    expect(live.update).not.toHaveBeenCalled()
+  })
+
+  it('reports a health failure at warn and keeps applying the rest of the pack', async () => {
+    // A doomed entry must not strand the queue. _applyPack catches DocumentHealthError, warns, and
+    // moves on — the bad entry stays pending (not reported applied), a good sibling still lands.
+    globalThis.foundry = { utils: { deepClone: (v) => JSON.parse(JSON.stringify(v)) } }
+    class MaybeCrashingDoc {
+      static create = jest.fn(async (data) => ({ _id: data._id, type: data.type }))
+      constructor(data) {
+        this.type = data.type
+        // Only the entry named "Broken" carries a throwing advancement.
+        this.advancement =
+          data.name === 'Broken'
+            ? { byId: { a: { constructor: { name: 'HitPointsAdvancement' }, valueForLevel: () => { throw new Error('boom') } } } }
+            : undefined
+      }
+    }
+    globalThis.CONFIG = { Item: { documentClass: MaybeCrashingDoc } }
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const { CompendiumPullSync } = await loadSync()
+    const svc = new CompendiumPullSync({})
+    // Both entries absent from the world → the create path, so a healthy one lands via create.
+    const pack = { collection: 'world.p', metadata: { type: 'Item', packageType: 'world' }, getDocument: jest.fn(async () => null) }
+    globalThis.game.packs = { get: jest.fn(() => pack) }
+
+    const applied = await svc._applyPack({
+      name: 'p',
+      entries: [
+        { foundryEntryId: 'bad1', doc: { type: 'subclass', name: 'Broken' } },
+        { foundryEntryId: 'good1', doc: { type: 'feat', name: 'Fine' } },
+      ],
+    })
+
+    expect(applied).toEqual(['good1'])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('would crash Foundry'), expect.any(String))
+    warn.mockRestore()
+  })
+})
+
 describe('_applyEntry', () => {
   it('recreates with keepId when the type changes — even though the server flag says otherwise', async () => {
     // The regression. `typeChanged` is derived from the held doc rather than the live document, so
