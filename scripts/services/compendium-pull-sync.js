@@ -25,6 +25,55 @@
  * Failures are non-fatal per entry: one bad document must not strand the rest of the queue.
  */
 
+/**
+ * Augment a desired-state payload with Foundry's `-=` deletion markers.
+ *
+ * `Document#update()` deep-merges, so a key the GM removed on the platform is merely ABSENT from
+ * the payload and Foundry keeps its old value. The write-back could therefore add and change but
+ * never remove — verified live: deleting a HitPoints advancement from a subclass wrote back the
+ * sibling edits and silently kept the advancement, leaving a document whose sheet crashed on
+ * render because that advancement reads a field the subclass no longer has.
+ *
+ * Walks `live` against `next` and returns a copy of `next` carrying `-=<key>: null` for every key
+ * that exists in the live document but not the desired one.
+ *
+ * Only PLAIN objects are recursed. Arrays are replaced wholesale by `update()` already, so
+ * descending into them would emit meaningless index deletions; and a null/primitive on either side
+ * ends the walk because there is no key set to compare.
+ *
+ * `_id` and `type` are NEVER deleted. Both are identity rather than content, and `type` in
+ * particular is deliberately stripped from the payload by the caller — so a naive diff concludes
+ * the GM removed it and emits `-=type`, asking Foundry to delete the field that decides what the
+ * document IS. A test caught exactly that; it would have been far worse than the merge bug this
+ * function exists to fix.
+ */
+const NEVER_DELETE = new Set(['_id', 'type'])
+
+export function withDeletions(live, next) {
+  if (!isPlainObject(live) || !isPlainObject(next)) return next
+
+  const out = {}
+  for (const [key, nextValue] of Object.entries(next)) {
+    const liveValue = live[key]
+    out[key] = isPlainObject(liveValue) && isPlainObject(nextValue) ? withDeletions(liveValue, nextValue) : nextValue
+  }
+
+  for (const key of Object.keys(live)) {
+    if (NEVER_DELETE.has(key)) continue
+    if (Object.prototype.hasOwnProperty.call(next, key)) continue
+    out[`-=${key}`] = null
+  }
+
+  return out
+}
+
+/** A data object, as opposed to an array, null, or a class instance Foundry would rather we left alone. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 const LOG = 'CFG Core | CompendiumPull |'
 const TICK_MS = 60_000
 const SERVICE_GM_ID = 'cfgservicegm0001'
@@ -146,7 +195,14 @@ export class CompendiumPullSync {
     // `type` is stripped rather than sent-and-ignored, so the no-op is explicit here instead of
     // silent inside Foundry.
     const { type: _ignored, ...rest } = doc
-    await live.update(rest)
+
+    // The platform doc is the DESIRED STATE, but `update()` deep-MERGES: a key the GM removed is
+    // simply absent from the payload, and Foundry keeps the old value. So deletions never reached
+    // the world at all — verified live, removing a HitPoints advancement from a subclass wrote
+    // back the sibling field edits and silently kept the advancement, leaving a document whose
+    // sheet then crashed. Foundry's own mechanism for "remove this key" is the `-=` prefix, so
+    // diff the live document against the desired one and say so explicitly.
+    await live.update(withDeletions(live.toObject(), rest))
     return true
   }
 }

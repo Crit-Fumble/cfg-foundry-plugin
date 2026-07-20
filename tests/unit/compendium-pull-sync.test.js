@@ -17,9 +17,57 @@ async function loadSync() {
   return await import('../../scripts/services/compendium-pull-sync.js')
 }
 
+describe('withDeletions', () => {
+  it('marks a key the desired state dropped', async () => {
+    const { withDeletions } = await loadSync()
+    expect(withDeletions({ a: 1, b: 2 }, { a: 1 })).toEqual({ a: 1, '-=b': null })
+  })
+
+  it('recurses into nested objects — the advancement case', async () => {
+    // The live failure: an advancement collection keyed by _id, with one member removed.
+    const { withDeletions } = await loadSync()
+    const live = { system: { advancement: { keep1: { type: 'Trait' }, hp1: { type: 'HitPoints' } } } }
+    const next = { system: { advancement: { keep1: { type: 'Trait' } } } }
+    expect(withDeletions(live, next)).toEqual({
+      system: { advancement: { keep1: { type: 'Trait' }, '-=hp1': null } },
+    })
+  })
+
+  it('never deletes _id or type — identity, not content', async () => {
+    // `type` matters most: the caller strips it from the payload on purpose, so a naive diff
+    // concludes the GM removed it and emits `-=type`, asking Foundry to delete the field that
+    // decides what the document IS.
+    const { withDeletions } = await loadSync()
+    expect(withDeletions({ _id: 'abc', type: 'subclass', a: 1 }, { a: 1 })).toEqual({ a: 1 })
+  })
+
+  it('does not descend into arrays', async () => {
+    // update() replaces arrays wholesale, so index deletions would be meaningless noise.
+    const { withDeletions } = await loadSync()
+    expect(withDeletions({ tags: ['x', 'y', 'z'] }, { tags: ['x'] })).toEqual({ tags: ['x'] })
+  })
+
+  it('adds nothing when the desired state only adds', async () => {
+    const { withDeletions } = await loadSync()
+    expect(withDeletions({ a: 1 }, { a: 1, b: 2 })).toEqual({ a: 1, b: 2 })
+  })
+
+  it('replaces rather than recurses when the shape changes', async () => {
+    const { withDeletions } = await loadSync()
+    expect(withDeletions({ v: { nested: 1 } }, { v: 'now a string' })).toEqual({ v: 'now a string' })
+    expect(withDeletions({ v: 'was a string' }, { v: { nested: 1 } })).toEqual({ v: { nested: 1 } })
+  })
+})
+
 /** A live Foundry document stub that records what was done to it. */
 function liveDoc(type) {
-  return { type, update: jest.fn(async () => true), delete: jest.fn(async () => true) }
+  return {
+    type,
+    // Deletion markers are diffed against the live document's own data.
+    toObject: () => ({ type }),
+    update: jest.fn(async () => true),
+    delete: jest.fn(async () => true),
+  }
 }
 
 function packStub(live) {
@@ -84,6 +132,30 @@ describe('_applyEntry', () => {
     expect(created).toHaveLength(0)
     // `type` is stripped rather than sent-and-ignored, so the no-op is explicit here.
     expect(live.update).toHaveBeenCalledWith({ name: 'Expert' })
+  })
+
+  it('propagates a REMOVAL through the update path', async () => {
+    // Without the deletion markers this update merges and the advancement survives — which is
+    // exactly what happened live, leaving a subclass whose sheet crashed on render.
+    const { CompendiumPullSync } = await loadSync()
+    const svc = new CompendiumPullSync({})
+    const live = liveDoc('subclass')
+    live.toObject = () => ({
+      type: 'subclass',
+      name: 'Expert',
+      system: { advancement: { keep1: { type: 'Trait' }, hp1: { type: 'HitPoints' } } },
+    })
+    const pack = packStub(live)
+
+    await svc._applyEntry(pack, {
+      foundryEntryId: 'abc123',
+      doc: { type: 'subclass', name: 'Expert', system: { advancement: { keep1: { type: 'Trait' } } } },
+    })
+
+    expect(live.update).toHaveBeenCalledWith({
+      name: 'Expert',
+      system: { advancement: { keep1: { type: 'Trait' }, '-=hp1': null } },
+    })
   })
 
   it('recreates a document that is absent from the world', async () => {
