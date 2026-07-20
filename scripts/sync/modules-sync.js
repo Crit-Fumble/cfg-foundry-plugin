@@ -18,6 +18,7 @@
 
 'use strict'
 
+import { getHostedContext } from '../auth/host-context.js'
 import { fetchCfg } from '../auth/pair-flow.js'
 
 /**
@@ -34,9 +35,15 @@ export async function syncInstalledModules() {
   }
 
   const modules = readWorldModules()
+  // On a cfg-hosted world `fetchCfg` authenticates with the same-origin SESSION cookie and
+  // deliberately never the paired key (#43). A cookie identifies a user, not an installation, so
+  // name the installation explicitly or the server cannot bind the push — which is what made this
+  // sync 403 on every hosted world (dt#211). Harmless on the self-hosted path: the API key is
+  // already installation-bound and the server ignores this field there.
+  const installationId = getHostedContext()?.installationId ?? null
   const res = await fetchCfg('/api/v1/foundry/modules', {
     method: 'POST',
-    body: JSON.stringify({ modules }),
+    body: JSON.stringify(installationId ? { modules, installationId } : { modules }),
   })
 
   if (res.ok) {
