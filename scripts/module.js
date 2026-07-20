@@ -33,6 +33,7 @@ import { applyHostedContext, getHostKind } from './auth/host-context.js'
 import { mountConnectionBanner } from './views/connection-banner.js'
 import { maybeShowFirstRunPrompt } from './views/first-run-prompt.js'
 import { syncInstalledModules } from './sync/modules-sync.js'
+import { syncSystemSchemas } from './sync/system-schema-sync.js'
 import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 import { ProvisionDrain } from './services/provision-drain.js'
 import { JournalPullSync } from './services/journal-pull-sync.js'
@@ -572,6 +573,9 @@ Hooks.once('ready', async () => {
     // #339 — POST `game.modules` to CFG so the platform UI can list what's
     // installed in this Foundry world. GM-only; non-fatal on failure.
     game.user.isGM ? syncInstalledModules() : Promise.resolve(),
+    // dt#212 — introspect the system's own DataModels and push them, so the platform's JSON
+    // editor can warn before Foundry silently discards a field. GM-only; non-fatal on failure.
+    game.user.isGM ? syncSystemSchemas() : Promise.resolve(),
     _linkPlatformUser(apiUrl, apiKey),
   ])
 
