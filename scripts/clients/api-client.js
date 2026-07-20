@@ -265,6 +265,20 @@ export class CoreAPIClient {
     return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/compendiums`, body)
   }
 
+  /**
+   * GET /api/v1/foundry/worlds/{worldId}/compendiums/pending — platform edits queued for the live
+   * world (dt#185 slice 3). Each entry carries `typeChanged`, because a type change cannot be
+   * applied with update() and must be delete + create.
+   */
+  listPendingWorldCompendiums(worldId) {
+    return this.get(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/compendiums/pending`)
+  }
+
+  /** POST .../compendiums/drain — release the claim for entries the world accepted. */
+  drainWorldCompendiums(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/compendiums/drain`, body)
+  }
+
   // ── Parties ───────────────────────────────────────────────────────────────
 
   /** GET /api/v1/player/campaigns/{id}/parties */
