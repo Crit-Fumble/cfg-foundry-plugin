@@ -37,6 +37,7 @@ import { ActivityHeartbeat } from './services/activity-heartbeat.js'
 import { ProvisionDrain } from './services/provision-drain.js'
 import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
+import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CharacterSyncManager } from './services/character-sync.js'
 import { CharacterPullSync } from './services/character-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
@@ -81,6 +82,9 @@ let _journalPullSync = null
 
 /** @type {WorldActorSnapshot|null} */
 let _worldActorSnapshot = null
+
+/** @type {WorldPackSnapshot|null} */
+let _worldPackSnapshot = null
 
 /** @type {CharacterPullSync|null} */
 let _characterPullSync = null
@@ -595,6 +599,12 @@ Hooks.once('ready', async () => {
   if ((heartbeatInstallId || apiKey) && game.user.isGM) {
     _worldActorSnapshot = new WorldActorSnapshot(_api)
     _worldActorSnapshot.start()
+
+    // World-authored compendium packs (dt#185). Gated identically — same reporter election, same
+    // linked-world requirement. Only packs Foundry marks packageType 'world' are sent; module
+    // packs belong to their publisher and are never ingested.
+    _worldPackSnapshot = new WorldPackSnapshot(_api)
+    _worldPackSnapshot.start()
   }
 
   // Core→Foundry character write-back (cfs#17 #147) — pull the platform's

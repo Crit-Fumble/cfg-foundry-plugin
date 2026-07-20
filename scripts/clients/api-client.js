@@ -249,6 +249,22 @@ export class CoreAPIClient {
     return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/folders`, body)
   }
 
+  /**
+   * POST /api/v1/foundry/worlds/{worldId}/compendiums — mirror the world's GM-AUTHORED
+   * compendium packs so their documents are readable (and later editable) on the platform (dt#185).
+   *
+   * ONLY packs Foundry marks `packageType === 'world'` may be sent. Module packs (WotC books,
+   * Plutonium, …) belong to their publisher, and the platform stores mirrored packs with an
+   * `origin` that asserts provenance — sending one would make that claim false. The server
+   * re-checks and refuses, but the filter belongs here too: do not widen it.
+   *
+   * Same body modes as the actor push — { packs } to upsert, and/or
+   * { reconcile: true, keepPackIds, keepEntryIdsByPack } to drop what the world no longer has.
+   */
+  pushWorldCompendiums(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/compendiums`, body)
+  }
+
   // ── Parties ───────────────────────────────────────────────────────────────
 
   /** GET /api/v1/player/campaigns/{id}/parties */
