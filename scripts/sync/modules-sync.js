@@ -18,7 +18,7 @@
 
 'use strict'
 
-import { getHostedContext } from '../auth/host-context.js'
+import { getInstallationRef } from '../auth/host-context.js'
 import { fetchCfg } from '../auth/pair-flow.js'
 
 /**
@@ -40,7 +40,7 @@ export async function syncInstalledModules() {
   // name the installation explicitly or the server cannot bind the push — which is what made this
   // sync 403 on every hosted world (dt#211). Harmless on the self-hosted path: the API key is
   // already installation-bound and the server ignores this field there.
-  const installationId = getHostedContext()?.installationId ?? null
+  const installationId = getInstallationRef()
   const res = await fetchCfg('/api/v1/foundry/modules', {
     method: 'POST',
     body: JSON.stringify(installationId ? { modules, installationId } : { modules }),

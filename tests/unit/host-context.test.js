@@ -66,6 +66,40 @@ describe('getHostKind', () => {
     expect(getHostKind()).toBe('cfg-hosted')
   })
 
+  it('getInstallationRef falls back to the URL path when no global is injected', async () => {
+    // The bug behind dt#211's first fix attempt: module sync read
+    // getHostedContext()?.installationId, which is null in exactly the path-fallback case it
+    // needed to work in — so it sent no installation and the server kept 403ing. The ref must
+    // come from here, where the fallback lives.
+    globalThis.window.location = {
+      pathname: '/servers/foundryvtt/rotfs/game',
+      origin: 'https://core.crit-fumble.com',
+    }
+    const { getInstallationRef, getHostedContext } = await loadHostContext()
+    expect(getHostedContext()).toBeNull()
+    expect(getInstallationRef()).toBe('rotfs') // slug is fine — the server resolves id or slug
+  })
+
+  it('getInstallationRef prefers the injected global over the path', async () => {
+    globalThis.window.__CFG_HOSTED_CONTEXT__ = {
+      endpoint: 'https://core.crit-fumble.com',
+      apiKey: 'cfk_injected',
+      installationId: 'inst_from_global',
+      cfgUserId: 'user_xyz',
+    }
+    globalThis.window.location = {
+      pathname: '/servers/foundryvtt/rotfs/game',
+      origin: 'https://core.crit-fumble.com',
+    }
+    const { getInstallationRef } = await loadHostContext()
+    expect(getInstallationRef()).toBe('inst_from_global')
+  })
+
+  it('getInstallationRef is null when neither source knows', async () => {
+    const { getInstallationRef } = await loadHostContext()
+    expect(getInstallationRef()).toBeNull()
+  })
+
   it("getHostedContext stays null on the path fallback — no auth payload without the global", async () => {
     globalThis.window.location = {
       pathname: '/servers/foundryvtt/cmpn6xzfa000h01qdjr15ey1t/game',

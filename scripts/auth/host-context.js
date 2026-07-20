@@ -187,6 +187,22 @@ export async function applyHostedContext() {
   return 'cfg-hosted'
 }
 
+/**
+ * The installation this world belongs to, id or slug, or null when unknowable.
+ *
+ * Prefers the injected global, falls back to the hosted route path. The fallback is the case
+ * that matters: a world created through Foundry's own setup UI has no injected context, so
+ * `getHostedContext()` is null while the world is still very much cfg-hosted — which is why
+ * `getHostKind()` has the same path fallback. Callers that need to NAME the installation to the
+ * server (module sync, dt#211) must use this rather than reaching into the context, or they get
+ * null in exactly the situation they were written for.
+ *
+ * Slug is fine on the wire: the server resolves id or slug.
+ */
+export function getInstallationRef() {
+  return getHostedContext()?.installationId || _installationIdFromPath()
+}
+
 /** Installation id (or slug) from the cfg-hosted route path, or null. */
 function _installationIdFromPath() {
   try {
