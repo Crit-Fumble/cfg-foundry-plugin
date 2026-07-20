@@ -3,14 +3,14 @@
  * (dt#212 parity). Reached from a header button on Item / Actor / JournalEntry sheets, including
  * documents opened from a compendium.
  *
- * Textarea-first by owner decision: this ships the VALIDATION that makes the editor worth having —
- * the same discard warning, required-but-empty error and pre-save health probe PlayTable runs —
- * without pulling CodeMirror into the plugin bundle. Syntax highlighting is a later tier.
+ * The editor widget is Foundry v13's OWN `<code-mirror>` custom element — the same one its "edit
+ * HTML source" surface uses — so line numbers and JSON syntax highlighting come for free, with no
+ * CodeMirror bundled into the plugin. On top of Foundry's defaults we layer OUR rules: the discard
+ * warning, the required-but-empty error, JSON formatting, and the pre-save health probe — the same
+ * validation PlayTable runs, from the same shared code-editor core (`scripts/lib/code-editor-core.js`).
  *
- * The diagnostics come from the shared code-editor core, bundled for Foundry as
- * `scripts/lib/code-editor-core.js`. The save goes through the SAME `applyDesiredDocument` the
- * compendium write-back uses, so a type change, a field removal and a doomed document behave
- * identically here and there.
+ * The save goes through the SAME `applyDesiredDocument` the compendium write-back uses, so a type
+ * change, a field removal and a doomed document behave identically here and there.
  */
 
 'use strict'
@@ -35,7 +35,7 @@ export class CfgJsonEditor extends ApplicationV2 {
     // a class the system does not describe (most non-dnd5e items) — the checks then simply no-op.
     this._descriptor = descriptorForDocumentClass(document.documentName)
     this._statusEl = null
-    this._textarea = null
+    this._cm = null
   }
 
   static DEFAULT_OPTIONS = {
@@ -64,17 +64,28 @@ export class CfgJsonEditor extends ApplicationV2 {
     toolbar.appendChild(this._button('Upload', () => this._onUpload()))
     root.appendChild(toolbar)
 
-    const textarea = document.createElement('textarea')
-    textarea.value = this._serialize()
-    textarea.spellcheck = false
-    textarea.style.cssText =
-      'flex:1; width:100%; resize:none; font-family:var(--font-mono, monospace); font-size:0.85rem; ' +
-      'white-space:pre; overflow:auto; padding:0.5rem; border:1px solid var(--color-border-light-tertiary,#888); border-radius:4px;'
-    textarea.addEventListener('input', () => this._revalidate())
-    this._textarea = textarea
-    root.appendChild(textarea)
+    // Foundry v13 ships a CodeMirror editor as the `<code-mirror>` custom element — the same one
+    // its own "edit HTML source" surface uses — so line numbers and JSON highlighting come for
+    // FREE, with no CodeMirror bundled into the plugin. Verified in-world: `language="json"`
+    // highlights, `.value` round-trips, and it fires `input`/`change` on edit. Our diagnostics and
+    // the health probe layer on top; Foundry owns the widget.
+    const cm = document.createElement('code-mirror')
+    cm.setAttribute('language', 'json')
+    cm.setAttribute('indent', '2')
+    cm.setAttribute('name', 'cfg-json')
+    cm.style.cssText =
+      'flex:1; min-height:0; display:block; overflow:auto; ' +
+      'border:1px solid var(--color-border-light-tertiary,#888); border-radius:4px;'
+    // `.value` is applied on connect; the initial serialize is (re)set in _onRender to be safe
+    // once the element is in the DOM and its CM view exists.
+    cm.addEventListener('input', () => this._revalidate())
+    this._cm = cm
+    root.appendChild(cm)
 
     const status = document.createElement('div')
+    // A stable hook so tests read diagnostics from HERE, not from the CodeMirror line-number gutter
+    // (whose cells are also leaf divs with text).
+    status.className = 'cfg-json-status'
     status.style.cssText = 'min-height:2.5rem; font-size:0.8rem; display:flex; flex-direction:column; gap:0.15rem;'
     this._statusEl = status
     root.appendChild(status)
@@ -87,6 +98,8 @@ export class CfgJsonEditor extends ApplicationV2 {
   }
 
   async _onRender() {
+    // Seed the editor now that the element is connected and its CM view is built.
+    if (this._cm) this._cm.value = this._serialize()
     this._revalidate()
   }
 
@@ -108,7 +121,7 @@ export class CfgJsonEditor extends ApplicationV2 {
    * mid-conversion decides — matching PlayTable.
    */
   _revalidate() {
-    const text = this._textarea?.value ?? ''
+    const text = this._cm?.value ?? ''
     const messages = []
     let saveable = false
 
@@ -156,7 +169,7 @@ export class CfgJsonEditor extends ApplicationV2 {
       ui.notifications?.warn('Cannot save — the JSON is invalid or violates a Foundry rule.')
       return
     }
-    const parsed = parseJson(this._textarea.value)
+    const parsed = parseJson(this._cm.value)
     if (!parsed.ok) return
 
     const doc = this._document
@@ -168,7 +181,7 @@ export class CfgJsonEditor extends ApplicationV2 {
       // A type change replaced the document; re-resolve so a subsequent save targets the live one.
       const fresh = doc.pack ? await game.packs.get(doc.pack)?.getDocument(doc.id) : DocClass.get?.(doc.id)
       if (fresh) this._document = fresh
-      this._textarea.value = this._serialize()
+      this._cm.value = this._serialize()
       this._revalidate()
     } catch (err) {
       if (err instanceof DocumentHealthError) {
@@ -182,17 +195,17 @@ export class CfgJsonEditor extends ApplicationV2 {
   }
 
   _onFormat() {
-    const res = formatJsonText(this._textarea.value)
+    const res = formatJsonText(this._cm.value)
     if (!res.ok) {
       ui.notifications?.warn('Cannot format while the JSON is invalid.')
       return
     }
-    this._textarea.value = res.text
+    this._cm.value = res.text
     this._revalidate()
   }
 
   _onDownload() {
-    const blob = new Blob([this._textarea.value], { type: 'application/json' })
+    const blob = new Blob([this._cm.value], { type: 'application/json' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `${this._document.name || this._document.documentName || 'document'}.json`
@@ -207,7 +220,7 @@ export class CfgJsonEditor extends ApplicationV2 {
     input.addEventListener('change', async () => {
       const file = input.files?.[0]
       if (!file) return
-      this._textarea.value = await file.text()
+      this._cm.value = await file.text()
       this._revalidate()
     })
     input.click()

@@ -45,19 +45,20 @@ async function driveEditor(page, mutate) {
       const editor = new CfgJsonEditor(await pack.getDocument(cls.id))
       await editor.render(true)
       await new Promise((r) => setTimeout(r, 500))
-      const ta = editor.element.querySelector('textarea')
+      // The editor is Foundry's native <code-mirror>; `.value` is the buffer.
+      const cm = editor.element.querySelector('code-mirror')
 
       // eslint-disable-next-line no-new-func
       const mutate = new Function('obj', 'foundry', mutateSrc)
-      const next = mutate(JSON.parse(ta.value), foundry)
-      ta.value = JSON.stringify(next, null, 2)
-      ta.dispatchEvent(new Event('input', { bubbles: true }))
+      const next = mutate(JSON.parse(cm.value), foundry)
+      cm.value = JSON.stringify(next, null, 2)
+      cm.dispatchEvent(new Event('input', { bubbles: true }))
       await new Promise((r) => setTimeout(r, 250))
 
+      // Read from the status element only — NOT all divs, which would include the CodeMirror
+      // line-number gutter cells.
       const readStatus = () =>
-        [...editor.element.querySelectorAll('div')]
-          .filter((d) => d.children.length === 0 && d.textContent.trim())
-          .map((d) => d.textContent.trim())
+        [...editor.element.querySelectorAll('.cfg-json-status > div')].map((d) => d.textContent.trim()).filter(Boolean)
 
       const diagnostics = readStatus()
       await editor._onSave()
