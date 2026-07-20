@@ -129,7 +129,15 @@ export class CompendiumPullSync {
     }
 
     // Type change → delete + recreate. update() would resolve without applying it.
-    if (entry.typeChanged && doc.type && doc.type !== live.type) {
+    //
+    // Deliberately NOT gated on the server's `entry.typeChanged`. That flag is computed as
+    // `doc.type !== row.docType`, but `docType` is denormalized FROM the held doc by the same
+    // write that stores it — the two are copies of one value, so the flag is always false and this
+    // branch was unreachable. A class retooled into a subclass updated on the platform and
+    // silently stayed a class in the world, which is the precise failure the flag was added to
+    // prevent. The live document is the only thing that actually knows the world's current type,
+    // and the client is the only place holding it — so decide here and ignore the hint.
+    if (doc.type && doc.type !== live.type) {
       await live.delete()
       const created = await DocClass.create({ ...doc, _id: entry.foundryEntryId }, { pack: pack.collection, keepId: true })
       return !!created
