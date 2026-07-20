@@ -71,7 +71,13 @@ describe('describeModel', () => {
         description: field({ required: true, initial: '' }),
       }),
     )
-    expect(out).toEqual({ fields: ['classIdentifier', 'description'], required: ['classIdentifier'] })
+    // `description` has an empty-string default, so it lands in requiredNonEmpty — a different
+    // finding from "absent", and reported separately.
+    expect(out).toEqual({
+      fields: ['classIdentifier', 'description'],
+      required: ['classIdentifier'],
+      requiredNonEmpty: ['description'],
+    })
   })
 
   it('reads the default from getInitialValue(), not the `initial` property', async () => {
@@ -87,8 +93,36 @@ describe('describeModel', () => {
         source: dnd5eShaped({ revision: 1, rules: '2024' }),
       }),
     )
-    expect(out).toEqual({ fields: ['classIdentifier', 'description', 'source'] })
+    expect(out.fields).toEqual(['classIdentifier', 'description', 'source'])
     expect(out.required).toBeUndefined()
+    // classIdentifier's default is the empty string, so it is still reported — just as
+    // "set this", not as "this is missing".
+    expect(out.requiredNonEmpty).toEqual(['classIdentifier'])
+  })
+
+  it('flags a required field whose default is an EMPTY STRING', async () => {
+    // The live case: dnd5e defaults classIdentifier to "", so a converted subclass attaches to no
+    // class while looking perfectly well-formed.
+    const { describeModel } = await loadSync()
+    const dnd5eShaped = (initial) => ({ required: true, nullable: false, initial: undefined, getInitialValue: () => initial })
+    const out = describeModel(
+      model({
+        classIdentifier: dnd5eShaped(''),
+        identifier: dnd5eShaped(''),
+        description: dnd5eShaped({ value: '', chat: '' }),
+        advancement: dnd5eShaped({}),
+      }),
+    )
+    expect(out.requiredNonEmpty).toEqual(['classIdentifier', 'identifier'])
+    // An empty OBJECT default is a normal resting state — flagging it would bury the real finding.
+    expect(out.requiredNonEmpty).not.toContain('description')
+    expect(out.requiredNonEmpty).not.toContain('advancement')
+  })
+
+  it('omits requiredNonEmpty when nothing qualifies', async () => {
+    const { describeModel } = await loadSync()
+    const out = describeModel(model({ a: { required: true, nullable: false, getInitialValue: () => 'preset' } }))
+    expect(out.requiredNonEmpty).toBeUndefined()
   })
 
   it('still reports a field whose getInitialValue() yields nothing', async () => {
@@ -99,7 +133,11 @@ describe('describeModel', () => {
         hasDefault: { required: true, nullable: false, initial: undefined, getInitialValue: () => '' },
       }),
     )
-    expect(out).toEqual({ fields: ['mustSupply', 'hasDefault'], required: ['mustSupply'] })
+    expect(out).toEqual({
+      fields: ['mustSupply', 'hasDefault'],
+      required: ['mustSupply'],
+      requiredNonEmpty: ['hasDefault'],
+    })
   })
 
   it('does not claim required when the initial-value machinery throws', async () => {

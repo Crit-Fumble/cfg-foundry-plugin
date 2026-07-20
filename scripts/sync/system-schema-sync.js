@@ -125,8 +125,12 @@ export function describeModel(model) {
 
   const names = Object.keys(fields)
   const required = names.filter((name) => isRequiredWithoutDefault(fields[name]))
+  const requiredNonEmpty = names.filter((name) => isRequiredButBlankByDefault(fields[name]))
 
-  return required.length > 0 ? { fields: names, required } : { fields: names }
+  const out = { fields: names }
+  if (required.length > 0) out.required = required
+  if (requiredNonEmpty.length > 0) out.requiredNonEmpty = requiredNonEmpty
+  return out
 }
 
 /** Pull the `{name: DataField}` map off a model, tolerating the shapes Foundry has used. */
@@ -153,6 +157,30 @@ function resolveSchemaFields(model) {
  * nothing to fall back on: a subclass without `classIdentifier` attaches to no class, which is the
  * other half of the class-to-subclass conversion this feature exists for.
  */
+/**
+ * Is this a field the system requires but hands you an EMPTY STRING for?
+ *
+ * These are the ones that actually bite. `isRequiredWithoutDefault` above finds nothing on dnd5e
+ * because every field has a default — but a default of `""` is a placeholder, not a value. A
+ * subclass whose `classIdentifier` is `""` loads cleanly and attaches to no class, and "is the key
+ * missing?" can never see it because the key is always there.
+ *
+ * Confined to STRING defaults on purpose. An empty object default (`description` → `{value, chat}`,
+ * `advancement` → `{}`) is a perfectly normal resting state, and flagging those would bury the one
+ * finding that matters in noise.
+ */
+function isRequiredButBlankByDefault(field) {
+  if (!field || typeof field !== 'object') return false
+  if (field.required !== true) return false
+  if (field.nullable === true) return false
+  try {
+    if (typeof field.getInitialValue !== 'function') return field.initial === ''
+    return field.getInitialValue({}) === ''
+  } catch {
+    return false
+  }
+}
+
 function isRequiredWithoutDefault(field) {
   if (!field || typeof field !== 'object') return false
   if (field.required !== true) return false
