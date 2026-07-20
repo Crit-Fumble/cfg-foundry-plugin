@@ -237,6 +237,17 @@ export class CoreAPIClient {
   }
 
   /**
+   * POST /api/v1/foundry/worlds/{worldId}/macros — mirror the world's Macro documents so
+   * PlayTable can list, edit and hotbar-assign them (dt#214). Same body shape as the actor push:
+   * a batch of `macro.toObject()` snapshots, and/or a reconcile signal.
+   *
+   * @param {{ macros?: Array, reconcile?: boolean, keepMacroIds?: string[] }} body
+   */
+  pushWorldMacros(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/macros`, body)
+  }
+
+  /**
    * POST /api/v1/foundry/worlds/{worldId}/folders — mirror the world's Folder
    * documents so the platform can render the actor directory as a TREE (cs#195).
    *
