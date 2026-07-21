@@ -248,6 +248,18 @@ export class CoreAPIClient {
   }
 
   /**
+   * POST /api/v1/foundry/worlds/{worldId}/scenes — mirror the world's Scene documents so the
+   * platform can show them in PlayTable and render the offline viewer WHILE the world is running
+   * (the LevelDB read is locked then). Same body shape as the actor push: a batch of
+   * `scene.toObject()` snapshots, and/or a reconcile signal.
+   *
+   * @param {{ scenes?: Array, reconcile?: boolean, keepSceneIds?: string[] }} body
+   */
+  pushWorldScenes(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/scenes`, body)
+  }
+
+  /**
    * POST /api/v1/foundry/worlds/{worldId}/folders — mirror the world's Folder
    * documents so the platform can render the actor directory as a TREE (cs#195).
    *

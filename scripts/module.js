@@ -39,6 +39,7 @@ import { ProvisionDrain } from './services/provision-drain.js'
 import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
+import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { CharacterSyncManager } from './services/character-sync.js'
@@ -55,7 +56,7 @@ const MODULE_ID = 'crit-fumble-core'
 // `window.CFGCore.version` reports and what the boot log prints; module.json is
 // what Foundry reads. They had silently drifted a release apart (2.13.0 vs
 // 2.14.0) until fp#47, so every consumer read a stale version.
-const MODULE_VERSION = '2.15.0'
+const MODULE_VERSION = '2.28.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -88,6 +89,8 @@ let _journalPullSync = null
 let _worldActorSnapshot = null
 /** @type {WorldMacroSnapshot|null} */
 let _worldMacroSnapshot = null
+/** @type {WorldSceneSnapshot|null} */
+let _worldSceneSnapshot = null
 
 /** @type {WorldPackSnapshot|null} */
 let _worldPackSnapshot = null
@@ -617,6 +620,12 @@ Hooks.once('ready', async () => {
     // PlayTable's chat; script macros are edit-here / run-in-Foundry.
     _worldMacroSnapshot = new WorldMacroSnapshot(_api)
     _worldMacroSnapshot.start()
+
+    // World Scenes (fp#48). Same reporter election + linked-world gate. Batched (scenes can be
+    // large). The push is what lets the platform show scenes WHILE the world runs — the LevelDB
+    // read is locked then.
+    _worldSceneSnapshot = new WorldSceneSnapshot(_api)
+    _worldSceneSnapshot.start()
 
     // World-authored compendium packs (dt#185). Gated identically — same reporter election, same
     // linked-world requirement. Only packs Foundry marks packageType 'world' are sent; module
