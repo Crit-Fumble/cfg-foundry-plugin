@@ -135,42 +135,13 @@ function isBlank(value) {
     return true;
   return typeof value === "string" && value.trim() === "";
 }
-function suggestMissingFields(value, descriptor) {
-  if (!descriptor || value === null || typeof value !== "object" || Array.isArray(value))
-    return [];
-  const doc = value;
-  const type = typeof doc.type === "string" ? doc.type : null;
-  if (!type)
-    return [];
-  const schema = descriptor.types[type];
-  if (!schema)
-    return [];
-  const system = doc.system && typeof doc.system === "object" && !Array.isArray(doc.system) ? doc.system : {};
-  const required = new Set(schema.required ?? []);
-  return schema.fields.filter((f) => !(f in system)).map((f) => ({ field: f, required: required.has(f) })).sort((a, b) => a.required === b.required ? a.field.localeCompare(b.field) : a.required ? -1 : 1);
-}
-function fieldsLostOnTypeChange(value, nextType, descriptor) {
-  if (!descriptor || value === null || typeof value !== "object" || Array.isArray(value))
-    return [];
-  const doc = value;
-  const target = descriptor.types[nextType];
-  if (!target)
-    return [];
-  const system = doc.system;
-  if (system === null || typeof system !== "object" || Array.isArray(system))
-    return [];
-  const allowed = new Set(target.fields);
-  return Object.keys(system).filter((k) => !allowed.has(k));
-}
 export {
   canSaveDocument,
   checkAgainstSystemSchema,
   checkFoundryDoc,
-  fieldsLostOnTypeChange,
   formatJson,
   formatJsonText,
   lineColumnToOffset,
   offsetToLineColumn,
-  parseJson,
-  suggestMissingFields
+  parseJson
 };
