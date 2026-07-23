@@ -89,7 +89,11 @@ export default defineConfig({
     {
       name: 'integration',
       testDir: './specs',
-      testIgnore: 'overlay-3d.spec.js',
+      // overlay-3d runs in its own screenshot project; `_*.spec.js` are headed
+      // human-review harnesses (setTimeout(0), hold the browser open, no
+      // assertions) — they can't pass headless, so keep them out of the
+      // automated run. Invoke a review harness explicitly with --headed.
+      testIgnore: ['overlay-3d.spec.js', '_*.spec.js'],
       dependencies: ['setup'],
       use: {
         storageState: join(__dirname, '../.auth/foundry.json'),
