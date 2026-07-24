@@ -17,7 +17,10 @@
  *     reconciles (drops platform rows whose actor was deleted). Also re-converges
  *     after a reporter handoff.
  *   - Live deltas via createActor/updateActor/deleteActor hooks, debounced to
- *     coalesce rapid edits (combat HP ticks, etc.).
+ *     coalesce rapid edits (combat HP ticks, etc.). Actor-folder create/update/delete
+ *     ride the same debounce and re-sweep the (small, metadata-only) folder set, so a
+ *     rename/move/delete shows on the web within DELTA_DEBOUNCE_MS instead of only on
+ *     the next full sweep.
  *
  * Auth + transport: the shared CoreAPIClient attaches the world's installation
  * API key (cfg-hosted) or paired key (self-hosted), with a session-cookie
@@ -47,6 +50,7 @@ export class WorldActorSnapshot {
     this._debounceHandle = null
     this._dirty = new Set() // actor ids changed since the last flush
     this._needsReconcile = false // a delete happened — drop stale rows on flush
+    this._foldersDirty = false // an Actor-folder changed — re-sweep folders on flush
     this._hooks = [] // [[hookName, fnRef]] for teardown
     this._running = false
   }
@@ -68,6 +72,11 @@ export class WorldActorSnapshot {
     this._register('createActor', (actor) => this._onActorChanged(actor))
     this._register('updateActor', (actor) => this._onActorChanged(actor))
     this._register('deleteActor', () => this._onActorDeleted())
+
+    // Actor-folder edits — re-sweep the folder set on the same debounce.
+    this._register('createFolder', (folder) => this._onFolderChanged(folder))
+    this._register('updateFolder', (folder) => this._onFolderChanged(folder))
+    this._register('deleteFolder', (folder) => this._onFolderChanged(folder))
 
     console.log(`${LOG} started for world ${this._worldId} (system ${this._systemId ?? 'unknown'})`)
   }
@@ -117,6 +126,16 @@ export class WorldActorSnapshot {
     this._scheduleFlush()
   }
 
+  /** A folder create/update/delete. Only Actor folders are mirrored (the platform
+   *  allowlist rejects other types), so ignore Item/Scene/etc. edits — a delete hook
+   *  still carries the doc, so its type is readable here too. */
+  _onFolderChanged(folder) {
+    if (!this._running) return
+    if (folder?.type && folder.type !== 'Actor') return
+    this._foldersDirty = true
+    this._scheduleFlush()
+  }
+
   _scheduleFlush() {
     if (this._debounceHandle) return
     this._debounceHandle = setTimeout(() => {
@@ -142,12 +161,15 @@ export class WorldActorSnapshot {
     if (!this._isReporter()) {
       this._dirty.clear()
       this._needsReconcile = false
+      this._foldersDirty = false
       return
     }
     const ids = [...this._dirty]
     this._dirty.clear()
     const needsReconcile = this._needsReconcile
     this._needsReconcile = false
+    const foldersDirty = this._foldersDirty
+    this._foldersDirty = false
 
     const actors = ids
       .map((id) => game.actors.get(id))
@@ -157,6 +179,7 @@ export class WorldActorSnapshot {
 
     if (actors.length > 0) await this._pushBatches(actors)
     if (needsReconcile) await this._reconcile()
+    if (foldersDirty) await this._sweepFolders()
   }
 
   async _fullSweep() {
