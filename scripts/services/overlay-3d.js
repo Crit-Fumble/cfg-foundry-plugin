@@ -112,6 +112,14 @@ export class Overlay3D {
     this._sculptStrength = 1.5
     this._sculptDrag = false
     this._sculptHeights = null
+    /** Brush footprint: false = round (Euclidean), true = square (Chebyshev — lines up with a
+     * square grid). Grid-lock snaps the brush to tile centres + quantises height to whole/half
+     * grid-units for tile-accurate heightmapping; `_sculptSnapHalf` picks the step. */
+    this._sculptSquare = false
+    this._sculptSnap = false
+    this._sculptSnapHalf = false
+    /** Game cells already stepped THIS stroke (grid-lock = one step per stroke, not per dab). */
+    this._sculptSnapTouched = null
     /** Undo stack of height-field snapshots (units), one per stroke/generate; capped. */
     this._sculptUndoStack = []
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -2763,6 +2771,9 @@ export class Overlay3D {
     return buildTerrainJson(field, {
       pxPerUnit: this._pxPerUnit(),
       src: bg ? this._assetUrl(bg) : undefined,
+      // No background image → tint the terrain with the scene's OWN letterbox colour, so 3D matches
+      // the 2D canvas instead of falling back to the shared core's hardcoded grass-green (0x6a7f52).
+      color: this._sceneBackgroundColor(),
     })
   }
 
@@ -3514,11 +3525,11 @@ export class Overlay3D {
     this._sculptMode = mode
     if (mode && (this._mode === 'firstperson' || !this._visible)) this.setViewMode('topdown')
     if (!mode) this._viewer?.hideBrushCursor?.()
-    try {
-      ui?.controls?.render?.()
-    } catch {
-      /* controls not ready */
-    }
+    // Sculpt tools are independent toggle buttons whose highlight is derived from
+    // `active: this._sculptMode === X` at render. A bare render() leaves the PREVIOUS tool's
+    // .active DOM class in place (switching raise→lower shows BOTH lit). A `{ reset: true }`
+    // rebuild re-derives every button from state, so only the current mode stays active.
+    this._syncControlState()
   }
 
   /**
@@ -3605,6 +3616,7 @@ export class Overlay3D {
     this._sculptPushUndo(field.heights) // snapshot the pre-stroke state for undo
     this._sculptHeights = field.heights.slice()
     this._sculptDrag = true
+    this._sculptSnapTouched = new Set() // grid-lock: fresh per-stroke "already stepped" tile set
     if (this._sculptMode === 'level') {
       const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
       const i = uv ? Math.round(uv.u * (this._sculptCols - 1)) : 0
@@ -3619,17 +3631,77 @@ export class Overlay3D {
     if (!this._sculptDrag || !this._sculptHeights) return
     const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
     if (!uv) return
-    const raise = this._sculptMode === 'raise' || this._sculptMode === 'lower'
-    this._sculptHeights = applyTerrainBrush(this._sculptHeights, this._sculptCols, this._sculptRows, {
-      mode: this._sculptMode,
-      u: uv.u,
-      v: uv.v,
-      radius: this._sculptRadius,
-      strength: raise ? this._sculptStrength : 0.5,
-      level: this._sculptLevel || 0,
-    })
+    // Grid-lock: raise/lower step whole tiles up/down by a fixed grid-unit (Foundry-snapped),
+    // for tile-accurate heightmapping. Level/smooth keep their continuous brush.
+    if (this._sculptSnap && (this._sculptMode === 'raise' || this._sculptMode === 'lower')) {
+      this._sculptApplyGridStep(uv)
+    } else {
+      const raise = this._sculptMode === 'raise' || this._sculptMode === 'lower'
+      this._sculptHeights = applyTerrainBrush(this._sculptHeights, this._sculptCols, this._sculptRows, {
+        mode: this._sculptMode,
+        u: uv.u,
+        v: uv.v,
+        radius: this._sculptRadius,
+        strength: raise ? this._sculptStrength : 0.5,
+        level: this._sculptLevel || 0,
+        shape: this._sculptSquare ? 'square' : 'circle',
+      })
+    }
     const px = this._pxPerUnit()
     this._viewer?.updateTerrainHeights?.(this._sculptHeights.map((val) => val * px))
+  }
+
+  /** Heightfield cell index range [i0,i1] covering the world span [w0,w1] on one axis. */
+  _cellRange(w0, w1, origin, size, cells) {
+    if (!(size > 0) || !(cells >= 2)) return null
+    const a = ((w0 - origin) / size) * (cells - 1)
+    const b = ((w1 - origin) / size) * (cells - 1)
+    const i0 = Math.max(0, Math.round(Math.min(a, b)))
+    const i1 = Math.min(cells - 1, Math.round(Math.max(a, b)))
+    return i1 >= i0 ? [i0, i1] : null
+  }
+
+  /**
+   * Grid-lock brush: snap the cursor to a tile CENTRE (Foundry-native getSnappedPoint), then set
+   * every tile in the brush footprint to a FLAT plateau quantised to whole/half grid-units — one
+   * step up (raise) or down (lower) from its pre-stroke level, applied at most ONCE per tile per
+   * stroke (drag across tiles to paint a stepped landscape). Gridless scenes pass through unsnapped.
+   */
+  _sculptApplyGridStep(uv) {
+    const rect = this._sceneRect()
+    const gridSize = canvas?.dimensions?.size || 100
+    const step = this._sculptSnapHalf ? 0.5 : 1
+    const dir = this._sculptMode === 'raise' ? 1 : -1
+    const cols = this._sculptCols
+    const rows = this._sculptRows
+    const heights = this._sculptHeights
+    if (!heights || !(cols >= 2) || !(rows >= 2)) return
+    // Cursor (u,v over the scene-rect-sized field) → world px → snapped tile centre.
+    const wx = rect.x + uv.u * rect.width
+    const wy = rect.y + uv.v * rect.height
+    const M = (typeof CONST !== 'undefined' && CONST.GRID_SNAPPING_MODES) || null
+    const snap = canvas?.grid?.getSnappedPoint
+      ? canvas.grid.getSnappedPoint({ x: wx, y: wy }, { mode: (M && M.CENTER) || 0, resolution: 1 })
+      : { x: wx, y: wy }
+    if (!this._sculptSnapTouched) this._sculptSnapTouched = new Set()
+    // Brush footprint in whole TILES (radius fraction → world → tiles), round or square.
+    const tiles = Math.max(0, Math.round((this._sculptRadius * Math.max(rect.width, rect.height)) / gridSize))
+    for (let ty = -tiles; ty <= tiles; ty++) {
+      for (let tx = -tiles; tx <= tiles; tx++) {
+        if (!this._sculptSquare && Math.hypot(tx, ty) > tiles + 1e-3) continue
+        const cx = snap.x + tx * gridSize
+        const cy = snap.y + ty * gridSize
+        const key = `${Math.round(cx)},${Math.round(cy)}`
+        if (this._sculptSnapTouched.has(key)) continue
+        const iR = this._cellRange(cx - gridSize / 2, cx + gridSize / 2, rect.x, rect.width, cols)
+        const jR = this._cellRange(cy - gridSize / 2, cy + gridSize / 2, rect.y, rect.height, rows)
+        if (!iR || !jR) continue
+        const mid = Number(heights[Math.round((jR[0] + jR[1]) / 2) * cols + Math.round((iR[0] + iR[1]) / 2)]) || 0
+        const target = Math.max(0, Math.round(mid / step) * step + dir * step)
+        for (let j = jR[0]; j <= jR[1]; j++) for (let i = iR[0]; i <= iR[1]; i++) heights[j * cols + i] = target
+        this._sculptSnapTouched.add(key)
+      }
+    }
   }
 
   /** End the stroke: persist the height field to the scene flag (multiplayer + reload). */
@@ -3775,6 +3847,42 @@ export class Overlay3D {
             toggle: true,
             active: this._sculptMode === 'smooth',
             onChange: (event, active) => this._setSculptMode(active ? 'smooth' : null),
+          },
+          sculptSquare: {
+            name: 'sculptSquare',
+            order: 14,
+            title: 'Brush shape: SQUARE (aligns with a square grid) vs round',
+            icon: 'fa-solid fa-square',
+            toggle: true,
+            active: this._sculptSquare,
+            onChange: (event, active) => {
+              this._sculptSquare = active
+              this._syncControlState()
+            },
+          },
+          sculptSnap: {
+            name: 'sculptSnap',
+            order: 15,
+            title: 'Grid-lock: raise/lower snap to tile centres + step whole grid-units (tile heightmapping)',
+            icon: 'fa-solid fa-border-all',
+            toggle: true,
+            active: this._sculptSnap,
+            onChange: (event, active) => {
+              this._sculptSnap = active
+              this._syncControlState()
+            },
+          },
+          sculptSnapHalf: {
+            name: 'sculptSnapHalf',
+            order: 16,
+            title: 'Grid-lock step: HALF a grid-unit (vs a whole unit)',
+            icon: 'fa-solid fa-stairs',
+            toggle: true,
+            active: this._sculptSnapHalf,
+            onChange: (event, active) => {
+              this._sculptSnapHalf = active
+              this._syncControlState()
+            },
           },
         }
         // Gate: the whole 3D View toolbar (Top Down · Free Camera · Character · Slice ·
