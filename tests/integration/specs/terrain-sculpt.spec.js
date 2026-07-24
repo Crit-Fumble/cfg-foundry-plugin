@@ -206,39 +206,51 @@ test('image-less scene: 3D terrain uses the scene background colour, not hardcod
   expect(t.color, 'not the hardcoded grass-green').not.toBe(0x6a7f52)
 })
 
-test('tool-deselect: switching sculpt tools leaves only ONE active in the toolbar', async ({ page }) => {
+test('tool rail: the shared React panel replaces the native sculpt buttons; one tool active at a time', async ({ page }) => {
   test.setTimeout(90_000)
   await openFlatTerrain(page)
 
-  // Make the cfg-3d control group active so its sculpt tools render in the toolbar DOM.
+  // Our control group must be active for Foundry to render its tool column (which hosts the rail).
   await page.evaluate(async () => ui.controls.activate({ control: 'cfg-3d' }))
-  await page.waitForTimeout(300)
+  await page.waitForTimeout(400)
 
-  /** data-tool → is the rendered button marked active (class or aria-pressed). */
-  const sculptActive = () =>
+  // The rail is the SHARED @crit-fumble/react panel, mounted INTO Foundry's native tool column —
+  // and the old native sculpt buttons are gone (the panel owns those tools now).
+  expect(await page.evaluate(() => document.getElementById('cfg-3d-terrain-rail')?.parentElement?.id)).toBe('scene-controls-tools')
+  expect(await page.evaluate(() => document.querySelectorAll('[data-tool^="sculpt"]').length), 'native sculpt buttons removed').toBe(0)
+
+  /** testId → does the rail button carry the selected-tool glow. */
+  const active = () =>
     page.evaluate(() => {
       const out = {}
-      for (const el of document.querySelectorAll('[data-tool]')) {
-        const name = el.getAttribute('data-tool')
-        if (!name || !name.startsWith('sculpt')) continue
-        out[name] = el.classList.contains('active') || el.getAttribute('aria-pressed') === 'true'
+      for (const el of document.querySelectorAll('#cfg-3d-terrain-rail [data-testid]')) {
+        out[el.getAttribute('data-testid')] = el.classList.contains('cfgr-active')
       }
       return out
     })
 
-  // Activate Raise through the real UI path (fires its onChange → _setSculptMode).
-  await page.evaluate(async () => ui.controls.activate({ control: 'cfg-3d', toggles: { sculptRaise: true } }))
-  await page.waitForTimeout(300)
-  const afterRaise = await sculptActive()
-  console.log('[terrain] after raise-select:', JSON.stringify(afterRaise))
+  await page.click('[data-testid="cfgr-tool-raise"]')
+  await page.waitForTimeout(200)
   expect(await page.evaluate(() => window.CFGCore.overlay3D._instance._sculptMode)).toBe('raise')
+  const afterRaise = await active()
+  console.log('[terrain] after raise:', JSON.stringify(afterRaise))
+  expect(afterRaise['cfgr-tool-raise']).toBe(true)
 
-  // Switch to Lower — Raise must DESELECT (the bug left both lit; the {reset:true} render fixes it).
-  await page.evaluate(async () => ui.controls.activate({ control: 'cfg-3d', toggles: { sculptLower: true } }))
-  await page.waitForTimeout(300)
-  const afterLower = await sculptActive()
-  console.log('[terrain] after lower-select:', JSON.stringify(afterLower))
+  // Switching tools must DESELECT the previous one (only ever one lit).
+  await page.click('[data-testid="cfgr-tool-lower"]')
+  await page.waitForTimeout(200)
   expect(await page.evaluate(() => window.CFGCore.overlay3D._instance._sculptMode)).toBe('lower')
-  expect(afterLower.sculptLower, 'the newly-picked tool is active').toBe(true)
-  expect(afterLower.sculptRaise, 'the previously-picked tool DESELECTED (no lingering highlight)').toBe(false)
+  const afterLower = await active()
+  console.log('[terrain] after lower:', JSON.stringify(afterLower))
+  expect(afterLower['cfgr-tool-lower'], 'the newly-picked tool is active').toBe(true)
+  expect(afterLower['cfgr-tool-raise'], 'the previous tool deselected').toBe(false)
+
+  // The Level Stamp is mutually exclusive with the brush tools (it is NOT a _sculptMode).
+  await page.click('[data-testid="cfgr-tool-stamp"]')
+  await page.waitForTimeout(200)
+  expect(await page.evaluate(() => !!window.CFGCore.overlay3D._instance._stamp), 'stamp armed').toBe(true)
+  expect(await page.evaluate(() => window.CFGCore.overlay3D._instance._sculptMode), 'brush disarmed').toBeNull()
+  const afterStamp = await active()
+  expect(afterStamp['cfgr-tool-stamp']).toBe(true)
+  expect(afterStamp['cfgr-tool-lower']).toBe(false)
 })

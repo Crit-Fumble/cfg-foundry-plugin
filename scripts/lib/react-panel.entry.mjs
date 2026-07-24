@@ -14,20 +14,33 @@
  */
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TerrainToolPanel } from '@crit-fumble/react'
+import { TerrainToolPanel, TerrainElevationPill } from '@crit-fumble/react'
 
-export { TerrainToolPanel }
+export { TerrainToolPanel, TerrainElevationPill }
 
 /**
- * Mount the terrain panel into `container` and return handles. `update(nextProps)` re-renders with new
- * props (call on state change); `unmount()` tears the React root down (call when the overlay hides — no
- * leaked roots). Lifecycle-bound mounting keeps React's memory footprint tied to the overlay's.
+ * Mount a cfg-react component into `container` and return handles. `update(nextProps)` re-renders with
+ * new props (call on state change); `unmount()` tears the React root down (call when the overlay hides
+ * — no leaked roots). Lifecycle-bound mounting keeps React's memory footprint tied to the overlay's.
+ *
+ * NOTE: the container element is OURS — Foundry re-renders its scene-controls DOM often, so the host
+ * keeps this node and re-APPENDS it (a move, not a recreate), which leaves the React root intact.
  */
-export function mountTerrainPanel(container, props) {
+function mountComponent(Component, container, props) {
   const root = createRoot(container)
-  root.render(createElement(TerrainToolPanel, props))
+  root.render(createElement(Component, props))
   return {
-    update: (nextProps) => root.render(createElement(TerrainToolPanel, nextProps)),
+    update: (nextProps) => root.render(createElement(Component, nextProps)),
     unmount: () => root.unmount(),
   }
+}
+
+/** The terrain tool RAIL — hosted inside Foundry's native scene-controls tool column. */
+export function mountTerrainPanel(container, props) {
+  return mountComponent(TerrainToolPanel, container, props)
+}
+
+/** The elevation READOUT — floats over the 3D view (the tool column is too narrow for it). */
+export function mountElevationPill(container, props) {
+  return mountComponent(TerrainElevationPill, container, props)
 }

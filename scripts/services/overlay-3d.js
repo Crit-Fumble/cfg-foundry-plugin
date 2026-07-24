@@ -29,7 +29,7 @@ import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
 import { TerrainStampController } from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
-import { mountTerrainPanel } from '../lib/react-panel.js'
+import { mountTerrainPanel, mountElevationPill } from '../lib/react-panel.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
 
@@ -131,6 +131,8 @@ export class Overlay3D {
      * the Level Stamp is armed (mutually exclusive with `_sculptMode`); `_stampScratch` a reused vec3. */
     this._terrainPanel = null
     this._terrainRail = null
+    this._elevPill = null
+    this._elevPillRoot = null
     this._stamp = null
     this._stampScratch = null
     /** Undo stack of height-field snapshots (units), one per stroke/generate; capped. */
@@ -3801,34 +3803,83 @@ export class Overlay3D {
     }
   }
 
-  /** Re-render the panel with fresh props (call whenever sculpt/stamp/heightfield state changes). */
+  /** Re-render the panel + pill with fresh props (whenever sculpt/stamp/heightfield state changes). */
   _syncTerrainPanel() {
     this._terrainPanel?.update?.(this._terrainPanelProps())
+    this._elevPillRoot?.update?.(this._elevPillProps())
   }
 
-  /** Mount the React terrain rail into the overlay (GM only). Idempotent. */
+  /**
+   * Mount the React terrain rail INSIDE Foundry's native scene-controls tool column (GM only), where
+   * the old terrain buttons lived — the scene controls are ordinary DOM (`aside#scene-controls >
+   * menu#scene-controls-tools > li > button`), only the map canvas is pixi, so React is at home there.
+   *
+   * Foundry re-renders that menu on every control change, which would destroy a root mounted into ITS
+   * nodes. So we own a persistent <li> and simply re-APPEND it after each render (a move, not a
+   * recreate) — the React root and its state survive. The elevation readout is a separate floating pill
+   * over the 3D view, since the tool column is too narrow for a "+15 ft" label.
+   */
   _mountTerrainPanel() {
-    if (this._terrainPanel || !this._container || !this._canBuild()) return
-    const rail = document.createElement('div')
-    rail.id = 'cfg-3d-terrain-rail'
-    rail.style.cssText = 'position:absolute;top:50%;left:12px;transform:translateY(-50%);z-index:20;pointer-events:auto;'
-    this._container.appendChild(rail)
-    this._terrainRail = rail
-    try {
-      this._terrainPanel = mountTerrainPanel(rail, this._terrainPanelProps())
-    } catch (err) {
-      console.warn('CFG Core | terrain panel mount failed:', err)
-      rail.remove()
-      this._terrainRail = null
+    if (!this._canBuild()) return
+    if (!this._terrainRail) {
+      const li = document.createElement('li')
+      li.id = 'cfg-3d-terrain-rail'
+      li.style.cssText = 'display:block;list-style:none;'
+      this._terrainRail = li
+      try {
+        this._terrainPanel = mountTerrainPanel(li, this._terrainPanelProps())
+      } catch (err) {
+        console.warn('CFG Core | terrain panel mount failed:', err)
+        this._terrainRail = null
+        return
+      }
     }
+    if (!this._elevPill && this._container) {
+      const pill = document.createElement('div')
+      pill.id = 'cfg-3d-elev-pill'
+      pill.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:20;pointer-events:none;'
+      this._container.appendChild(pill)
+      this._elevPill = pill
+      try {
+        this._elevPillRoot = mountElevationPill(pill, this._elevPillProps())
+      } catch (err) {
+        console.warn('CFG Core | elevation pill mount failed:', err)
+        pill.remove()
+        this._elevPill = null
+      }
+    }
+    this._attachTerrainRail()
   }
 
-  /** Unmount the React root + remove its DOM host (called when the overlay hides — no leaked root). */
+  /** Put our rail back into the native tool column — after any scene-controls re-render. */
+  _attachTerrainRail() {
+    if (!this._terrainRail) return
+    const menu = document.getElementById('scene-controls-tools')
+    // Only while OUR control group is the active one (Foundry renders one group's tools at a time).
+    const ours = !!menu?.querySelector('[data-tool="topdown"], [data-tool="free"], [data-tool="firstperson"]')
+    if (menu && ours && this._terrainRail.parentElement !== menu) menu.appendChild(this._terrainRail)
+    else if ((!menu || !ours) && this._terrainRail.parentElement) this._terrainRail.remove()
+  }
+
+  /** Unmount both React roots + their DOM hosts (overlay hidden — no leaked roots). */
   _unmountTerrainPanel() {
     try { this._terrainPanel?.unmount?.() } catch { /* */ }
     this._terrainPanel = null
     try { this._terrainRail?.remove?.() } catch { /* */ }
     this._terrainRail = null
+    try { this._elevPillRoot?.unmount?.() } catch { /* */ }
+    this._elevPillRoot = null
+    try { this._elevPill?.remove?.() } catch { /* */ }
+    this._elevPill = null
+  }
+
+  /** Props for the floating elevation readout (null elevation → the pill renders nothing). */
+  _elevPillProps() {
+    return {
+      elevation: this._stamp ? this._stamp.currentLevel : null,
+      unitLabel: canvas?.scene?.grid?.units || 'ft',
+      placed: !!this._stamp?.isPlaced,
+    }
   }
 
   /** Panel tool pick: brush tools go through _setSculptMode; 'stamp' arms the shared controller.
@@ -3998,78 +4049,11 @@ export class Overlay3D {
             button: true,
             onChange: () => this._sculptUndo(),
           },
-          sculptRaise: {
-            name: 'sculptRaise',
-            order: 10,
-            title: 'Sculpt: RAISE terrain — drag on the terrain (scroll = brush size)',
-            icon: 'fa-solid fa-mound',
-            toggle: true,
-            active: this._sculptMode === 'raise',
-            onChange: (event, active) => this._setSculptMode(active ? 'raise' : null),
-          },
-          sculptLower: {
-            name: 'sculptLower',
-            order: 11,
-            title: 'Sculpt: LOWER terrain — drag on the terrain',
-            icon: 'fa-solid fa-hill-rockslide',
-            toggle: true,
-            active: this._sculptMode === 'lower',
-            onChange: (event, active) => this._setSculptMode(active ? 'lower' : null),
-          },
-          sculptLevel: {
-            name: 'sculptLevel',
-            order: 12,
-            title: 'Sculpt: LEVEL/flatten — flattens to the first-click height (makes cliffs/mesas)',
-            icon: 'fa-solid fa-ruler-horizontal',
-            toggle: true,
-            active: this._sculptMode === 'level',
-            onChange: (event, active) => this._setSculptMode(active ? 'level' : null),
-          },
-          sculptSmooth: {
-            name: 'sculptSmooth',
-            order: 13,
-            title: 'Sculpt: SMOOTH terrain — softens bumps and slopes',
-            icon: 'fa-solid fa-wind',
-            toggle: true,
-            active: this._sculptMode === 'smooth',
-            onChange: (event, active) => this._setSculptMode(active ? 'smooth' : null),
-          },
-          sculptSquare: {
-            name: 'sculptSquare',
-            order: 14,
-            title: 'Brush shape: SQUARE (aligns with a square grid) vs round',
-            icon: 'fa-solid fa-square',
-            toggle: true,
-            active: this._sculptSquare,
-            onChange: (event, active) => {
-              this._sculptSquare = active
-              this._syncControlState()
-            },
-          },
-          sculptSnap: {
-            name: 'sculptSnap',
-            order: 15,
-            title: 'Grid-lock: raise/lower snap to tile centres + step whole grid-units (tile heightmapping)',
-            icon: 'fa-solid fa-border-all',
-            toggle: true,
-            active: this._sculptSnap,
-            onChange: (event, active) => {
-              this._sculptSnap = active
-              this._syncControlState()
-            },
-          },
-          sculptSnapHalf: {
-            name: 'sculptSnapHalf',
-            order: 16,
-            title: 'Grid-lock step: HALF a grid-unit (vs a whole unit)',
-            icon: 'fa-solid fa-stairs',
-            toggle: true,
-            active: this._sculptSnapHalf,
-            onChange: (event, active) => {
-              this._sculptSnapHalf = active
-              this._syncControlState()
-            },
-          },
+          // NOTE: the sculpt TOOL buttons (raise/lower/level/smooth, brush shape, grid-lock,
+          // half-step) are no longer registered here — the shared @crit-fumble/react TerrainToolPanel
+          // renders them (plus the Level Stamp, which native buttons never had) into this same tool
+          // column via _mountTerrainPanel(), so PlayTable and the plugin present ONE tool rail.
+          // Generate + Undo stay native: they're actions with no panel equivalent yet.
         }
         // Gate: the whole 3D View toolbar (Top Down · Free Camera · Character · Slice ·
         // terrain tools) is GM / Assistant GM only. Players get NO 3D toolbar — their one
@@ -4085,6 +4069,15 @@ export class Overlay3D {
         controls['cfg-3d'] = group
       } catch (err) {
         console.warn('CFG Core | Overlay3D control registration failed:', err)
+      }
+    })
+    // Foundry rebuilds #scene-controls-tools on every control change, which would orphan our React
+    // rail. Re-append it after each render (a MOVE of the node we own, so the root + its state live on).
+    this._on('renderSceneControls', () => {
+      try {
+        if (this._visible) this._attachTerrainRail()
+      } catch (err) {
+        console.warn('CFG Core | terrain rail re-attach failed:', err)
       }
     })
   }
