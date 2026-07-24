@@ -7,7 +7,12 @@
     "build:three": "esbuild scripts/lib/three-bundle.entry.mjs --bundle --format=esm --minify --legal-comments=none --outfile=scripts/lib/three.bundle.js",
     "build:producer": "esbuild scripts/lib/scene-json.entry.mjs --bundle --format=esm --legal-comments=none --outfile=scripts/services/overlay3d/scene-json.js",
     "build:terrain-brush": "esbuild scripts/lib/terrain-brush.entry.mjs --bundle --format=esm --legal-comments=none --outfile=scripts/services/overlay3d/terrain-brush.js",
-    "build:bundles": "npm run build:three && npm run build:producer && npm run build:terrain-brush && npm run build:code-editor",
+    "build:terrain-stamp": "esbuild scripts/lib/terrain-stamp.entry.mjs --bundle --format=esm --legal-comments=none --outfile=scripts/services/overlay3d/terrain-stamp.js",
+    "//build:react-panel": "React must resolve to ONE copy or hooks throw 'Cannot read properties of null (reading useEffect)' — cfg-react carries react in its own devDeps, so the --alias flags force both it and this bundle onto the plugin's copy (aliases cover subpaths like react/jsx-runtime). NODE_ENV must be defined or React reads `process` in the browser.",
+    "build:react-panel": "esbuild scripts/lib/react-panel.entry.mjs --bundle --format=esm --minify --legal-comments=none --alias:react=./node_modules/react --alias:react-dom=./node_modules/react-dom --define:process.env.NODE_ENV='\"production\"' --outfile=scripts/lib/react-panel.js",
+    "build:bundles": "npm run build:three && npm run build:producer && npm run build:terrain-brush && npm run build:terrain-stamp && npm run build:react-panel && npm run build:code-editor",
+    "//dev:react": "LOCAL DEV ONLY. Links the sibling cfg-react repo (built) so its edits flow into react-panel.js. Publish cfg-react + switch the devDep off file: before a release.",
+    "dev:react:link": "npm --prefix ../cfg-react run build && npm link @crit-fumble/react && npm run build:react-panel",
     "//dev:shared": "LOCAL DEV ONLY. Links the sibling cfg-shared repo so its edits flow into the bundles. NEVER release a bundle built while linked — it may contain UNPUBLISHED shared code. Run dev:shared:unlink + build:bundles from the published package before a plugin release.",
     "dev:shared:link": "npm --prefix ../cfg-shared run build && npm link @crit-fumble/shared && npm run build:bundles",
     "dev:shared:sync": "npm --prefix ../cfg-shared run build && npm run build:bundles",
@@ -33,10 +38,13 @@
     "js-yaml": "^4.2.0"
   },
   "devDependencies": {
+    "@crit-fumble/react": "file:../cfg-react",
     "@crit-fumble/shared": "^1.43.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
     "jest": "^29.7.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "three": "^0.184.0"
   },
   "version": "2.28.0"

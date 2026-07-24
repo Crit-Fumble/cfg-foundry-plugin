@@ -1,4 +1,4 @@
-// node_modules/@crit-fumble/shared/dist/vtt-viewer/producer.js
+// ../cfg-shared/dist/vtt-viewer/producer.js
 function parseHexColor(c, dflt) {
   if (c == null || c === "")
     return dflt;

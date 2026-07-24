@@ -24,6 +24,12 @@
 // static import adds nothing to load-time cost. See overlay3d/scene-json.js.
 import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTokenJson, buildLightsJson, buildLevelsJson, buildRegionsJson, buildTerrainJson, levelBase, levelTop, levelForElevation, resolveActiveLevel, parseHexColor } from './overlay3d/scene-json.js'
 import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
+// Shared, framework-free Level Stamp behaviour (identical to PlayTable) — a local bundle of
+// @crit-fumble/shared vtt-viewer/terrain-stamp (see terrain-stamp.entry.mjs).
+import { TerrainStampController } from './overlay3d/terrain-stamp.js'
+// The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
+// (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
+import { mountTerrainPanel } from '../lib/react-panel.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
 
@@ -120,6 +126,13 @@ export class Overlay3D {
     this._sculptSnapHalf = false
     /** Game cells already stepped THIS stroke (grid-lock = one step per stroke, not per dab). */
     this._sculptSnapTouched = null
+    /** PlayTable-style React terrain panel (@crit-fumble/react), mounted only while the overlay is
+     * visible + GM; `_terrainRail` is its DOM host. `_stamp` is the shared TerrainStampController while
+     * the Level Stamp is armed (mutually exclusive with `_sculptMode`); `_stampScratch` a reused vec3. */
+    this._terrainPanel = null
+    this._terrainRail = null
+    this._stamp = null
+    this._stampScratch = null
     /** Undo stack of height-field snapshots (units), one per stroke/generate; capped. */
     this._sculptUndoStack = []
     /** @type {{cx:number,cz:number,span:number}|null} cached scene framing */
@@ -292,6 +305,7 @@ export class Overlay3D {
         if (this._container) this._container.style.display = 'block'
         this._applyMode() // active camera + input routing + UI-hide (orbit only)
         this._updateControlBar()
+        this._mountTerrainPanel() // PlayTable-style terrain rail (GM only) — React, lifecycle-bound
         this._startLoop()
         this._hideLoading()
       } else {
@@ -301,6 +315,8 @@ export class Overlay3D {
         this._clearMoveRuler() // drop the movement path + distance label
         this._clearSelectionFx() // drop the selection box/glow + target reticle
         this._wasMoving = false
+        this._disarmStamp() // flush any pending stamp commit + drop the reticle
+        this._unmountTerrainPanel() // tear the React root down — no leaked root while hidden
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
@@ -1083,6 +1099,13 @@ export class Overlay3D {
     if (!this._visible) return
     if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
     this._hideTokenHud() // a new scene interaction dismisses an open token HUD
+    // Level Stamp: a left-click imprints the ghost at the cursor's grid square (WASD walks it; Q/E height).
+    if (this._stampActive() && event.button === 0) {
+      event.preventDefault?.()
+      const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
+      if (uv) this._stamp.placeAt(uv.u, uv.v)
+      return
+    }
     // Sculpt: a left-drag paints the active terrain brush (raycast → height field).
     if (this._sculptActive() && event.button === 0) {
       event.preventDefault?.()
@@ -1117,6 +1140,12 @@ export class Overlay3D {
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
     if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
+    if (this._stampActive()) {
+      // Ghost follows the cursor's grid square (no imprint until click / WASD while placed).
+      const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
+      if (uv) this._stamp.moveTo(uv.u, uv.v)
+      return
+    }
     if (this._sculptActive()) {
       // Show the brush ring under the cursor; drag applies dabs. No pick/pan while sculpting.
       this._viewer?.showBrushCursor?.(event.clientX, event.clientY, this._sculptRadius)
@@ -1576,6 +1605,15 @@ export class Overlay3D {
    */
   _onWheel(event) {
     if (!this._visible) return
+    // Level Stamp: the wheel resizes the stamp footprint (whole grid squares).
+    if (this._stampActive()) {
+      event.preventDefault?.()
+      event.stopImmediatePropagation?.()
+      const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
+      this._sculptRadius = Math.max(0.02, Math.min(0.5, this._sculptRadius * step))
+      this._stamp.setRadiusFrac(this._sculptRadius)
+      return
+    }
     // Sculpting: the wheel sizes the brush instead of zooming the camera.
     if (this._sculptActive()) {
       event.preventDefault?.()
@@ -1624,6 +1662,13 @@ export class Overlay3D {
       event.preventDefault()
       event.stopImmediatePropagation()
       this._sculptUndo()
+      return
+    }
+    // Level Stamp: WASD/arrows walk the ghost one grid square (seat-relative); Q/E lower/raise the
+    // target elevation. The controller returns false for any other key so Esc/etc. still fall through.
+    if (this._stampActive() && this._stamp.key(event.key)) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
       return
     }
     // Esc mirrors Foundry's dismiss precedence: an open token HUD / context menu / window
@@ -3522,9 +3567,11 @@ export class Overlay3D {
    *  see + raycast the terrain, so switch to Top-Down if we're off or in Character view. */
   _setSculptMode(mode) {
     if (mode && !this._canBuild()) return // terrain sculpting is GM / Assistant GM only
+    if (mode && this._stamp) this._disarmStamp() // brush + Level Stamp are mutually exclusive
     this._sculptMode = mode
     if (mode && (this._mode === 'firstperson' || !this._visible)) this.setViewMode('topdown')
     if (!mode) this._viewer?.hideBrushCursor?.()
+    this._syncTerrainPanel()
     // Sculpt tools are independent toggle buttons whose highlight is derived from
     // `active: this._sculptMode === X` at render. A bare render() leaves the PREVIOUS tool's
     // .active DOM class in place (switching raise→lower shows BOTH lit). A `{ reset: true }`
@@ -3604,6 +3651,7 @@ export class Overlay3D {
       this._sculptPushUndo(scene.flags?.['crit-fumble-core']?.heightfield?.heights) // undoable
       await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: T2.map((t) => HT[t]) })
       ui?.notifications?.info?.('Generated 3D terrain from the map — sculpt from here.')
+      this._syncTerrainPanel() // hasTerrain flipped → the panel swaps "Add terrain" for the tools
     } catch (e) {
       console.warn('CFG Core | generate terrain from map failed', e)
       ui?.notifications?.error?.('Terrain generation failed (see console).')
@@ -3726,6 +3774,132 @@ export class Overlay3D {
       canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols: this._sculptCols, rows: this._sculptRows, heights: h })
     } catch {
       /* not a GM / no scene */
+    }
+  }
+
+  // ── PlayTable-style terrain tool PANEL (React, @crit-fumble/react) + Level Stamp ─────────────────
+  // The overlay hosts the SAME tool rail as PlayTable (one component in cfg-react) and drives the SAME
+  // Level Stamp behaviour (one controller in cfg-shared). The panel is pure UI; these methods wire its
+  // callbacks to the plugin's sculpt state + a TerrainStampController.
+
+  /** Live props for the mounted TerrainToolPanel, derived from the current sculpt/stamp state. */
+  _terrainPanelProps() {
+    return {
+      tool: this._stamp ? 'stamp' : this._sculptMode,
+      hasTerrain: !!canvas?.scene?.flags?.['crit-fumble-core']?.heightfield,
+      shape: this._sculptSquare ? 'square' : 'circle',
+      snap: this._sculptSnap,
+      snapHalf: this._sculptSnapHalf,
+      elevation: this._stamp ? this._stamp.currentLevel : null,
+      unitLabel: canvas?.scene?.grid?.units || 'ft',
+      labelSide: 'right', // left-edge rail → labels open right, toward the scene
+      onSelectTool: (t) => this._selectTerrainTool(t),
+      onAddTerrain: () => this._generateTerrainFromMap(),
+      onSetShape: (s) => { this._sculptSquare = s === 'square'; if (this._stamp) this._stamp.setShape(s); this._syncTerrainPanel() },
+      onToggleSnap: () => { this._sculptSnap = !this._sculptSnap; this._syncTerrainPanel() },
+      onToggleSnapHalf: () => { this._sculptSnapHalf = !this._sculptSnapHalf; this._syncTerrainPanel() },
+    }
+  }
+
+  /** Re-render the panel with fresh props (call whenever sculpt/stamp/heightfield state changes). */
+  _syncTerrainPanel() {
+    this._terrainPanel?.update?.(this._terrainPanelProps())
+  }
+
+  /** Mount the React terrain rail into the overlay (GM only). Idempotent. */
+  _mountTerrainPanel() {
+    if (this._terrainPanel || !this._container || !this._canBuild()) return
+    const rail = document.createElement('div')
+    rail.id = 'cfg-3d-terrain-rail'
+    rail.style.cssText = 'position:absolute;top:50%;left:12px;transform:translateY(-50%);z-index:20;pointer-events:auto;'
+    this._container.appendChild(rail)
+    this._terrainRail = rail
+    try {
+      this._terrainPanel = mountTerrainPanel(rail, this._terrainPanelProps())
+    } catch (err) {
+      console.warn('CFG Core | terrain panel mount failed:', err)
+      rail.remove()
+      this._terrainRail = null
+    }
+  }
+
+  /** Unmount the React root + remove its DOM host (called when the overlay hides — no leaked root). */
+  _unmountTerrainPanel() {
+    try { this._terrainPanel?.unmount?.() } catch { /* */ }
+    this._terrainPanel = null
+    try { this._terrainRail?.remove?.() } catch { /* */ }
+    this._terrainRail = null
+  }
+
+  /** Panel tool pick: brush tools go through _setSculptMode; 'stamp' arms the shared controller.
+   *  Re-picking the armed tool toggles it off. */
+  _selectTerrainTool(t) {
+    if (t === 'stamp') {
+      if (this._stamp) this._disarmStamp()
+      else this._armStamp()
+    } else {
+      this._disarmStamp()
+      this._setSculptMode(this._sculptMode === t ? null : t)
+    }
+    this._syncTerrainPanel()
+  }
+
+  /** True while the Level Stamp is armed (mutually exclusive with a brush sculpt mode). */
+  _stampActive() {
+    return !!this._stamp && this._visible
+  }
+
+  /** Arm the Level Stamp: a shared TerrainStampController over the current heightfield. */
+  _armStamp() {
+    if (!this._canBuild()) return
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    if (!field?.heights?.length) {
+      ui?.notifications?.warn?.('No 3D terrain on this scene yet — add a heightfield first.')
+      return
+    }
+    if (this._mode === 'firstperson' || !this._visible) this.setViewMode('topdown')
+    this._setSculptMode(null) // stamp + brush are mutually exclusive
+    const cols = Math.floor(Number(field.cols))
+    const rows = Math.floor(Number(field.rows))
+    const rect = this._sceneRect()
+    const gridSize = canvas?.dimensions?.size || 100
+    const step = Number(canvas?.scene?.grid?.distance) || 5
+    this._stamp = new TerrainStampController(
+      this._stampHost(),
+      { cols, rows, gridSize, boundsWidth: rect.width, boundsHeight: rect.height, pxPerUnit: this._pxPerUnit(), step, shape: this._sculptSquare ? 'square' : 'circle', radiusFrac: this._sculptRadius },
+      {
+        onCommit: (heights) => { try { canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols, rows, heights }) } catch { /* not a GM / no scene */ } },
+        onLevelChange: () => this._syncTerrainPanel(),
+        onPlacedChange: () => this._syncTerrainPanel(),
+      },
+    )
+    this._stamp.refresh()
+  }
+
+  _disarmStamp() {
+    if (!this._stamp) return
+    try { this._stamp.end() } catch { /* */ }
+    this._stamp = null
+    this._viewer?.hideReticle?.()
+  }
+
+  /** The viewer interface (TerrainStampHost) the shared controller drives. */
+  _stampHost() {
+    const v = this._viewer
+    return {
+      getTerrainHeights: () => v?.getTerrainHeights?.() ?? null,
+      updateTerrainHeights: (h) => v?.updateTerrainHeights?.(h),
+      terrainCellToWorld: (i, j) => v?.terrainCellToWorld?.(i, j),
+      showReticle: (wx, wz, r, shape, wy, placed) => v?.showReticle?.(wx, wz, r, shape, wy, placed),
+      hideReticle: () => v?.hideReticle?.(),
+      getCameraForward: () => {
+        if (!this._stampScratch && this._THREE) this._stampScratch = new this._THREE.Vector3()
+        if (this._stampScratch && this._orbitCamera) {
+          this._orbitCamera.getWorldDirection(this._stampScratch)
+          return { x: this._stampScratch.x, z: this._stampScratch.z }
+        }
+        return { x: 0, z: 1 }
+      },
     }
   }
 
