@@ -14,9 +14,9 @@
  */
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TerrainToolPanel, TerrainElevationPill } from '@crit-fumble/react'
+import { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher } from '@crit-fumble/react'
 
-export { TerrainToolPanel, TerrainElevationPill }
+export { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher }
 
 /**
  * Mount a cfg-react component into `container` and return handles. `update(nextProps)` re-renders with
@@ -43,4 +43,9 @@ export function mountTerrainPanel(container, props) {
 /** The elevation READOUT — floats over the 3D view (the tool column is too narrow for it). */
 export function mountElevationPill(container, props) {
   return mountComponent(TerrainElevationPill, container, props)
+}
+
+/** The camera-mode bar — hosted above Foundry's hotbar while the 3D overlay is up. */
+export function mountCameraSwitcher(container, props) {
+  return mountComponent(CameraModeSwitcher, container, props)
 }

@@ -29,7 +29,7 @@ import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
 import { TerrainStampController } from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
-import { mountTerrainPanel, mountElevationPill } from '../lib/react-panel.js'
+import { mountTerrainPanel, mountElevationPill, mountCameraSwitcher } from '../lib/react-panel.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
 
@@ -133,6 +133,8 @@ export class Overlay3D {
     this._terrainRail = null
     this._elevPill = null
     this._elevPillRoot = null
+    this._cameraBar = null
+    this._cameraSwitcher = null
     this._stamp = null
     this._stampScratch = null
     /** Undo stack of height-field snapshots (units), one per stroke/generate; capped. */
@@ -246,7 +248,11 @@ export class Overlay3D {
         const BUILD = ['regions', 'drawings', 'tiles', 'walls', 'sounds', 'lighting', 'notes']
         if (BUILD.includes(name)) {
           this._exitingBuild = true // guard against the control re-render our own exit triggers
-          Promise.resolve(this.setViewMode('2d')).finally(() => {
+          // From CHARACTER view, step OUT to the Party seat rather than dropping 3D entirely —
+          // you're still at the table and can leave from there (owner 2026-07-24). Other 3D
+          // modes still fall back to 2D, since scene EDITING belongs on the flat canvas.
+          const next = this._mode === 'firstperson' ? 'tabletop' : '2d'
+          Promise.resolve(this.setViewMode(next)).finally(() => {
             this._exitingBuild = false
           })
         }
@@ -308,6 +314,7 @@ export class Overlay3D {
         this._applyMode() // active camera + input routing + UI-hide (orbit only)
         this._updateControlBar()
         this._mountTerrainPanel() // PlayTable-style terrain rail (GM only) — React, lifecycle-bound
+        this._mountCameraSwitcher() // camera modes live above the hotbar while 3D is up
         this._startLoop()
         this._hideLoading()
       } else {
@@ -318,7 +325,7 @@ export class Overlay3D {
         this._clearSelectionFx() // drop the selection box/glow + target reticle
         this._wasMoving = false
         this._disarmStamp() // flush any pending stamp commit + drop the reticle
-        this._unmountTerrainPanel() // tear the React root down — no leaked root while hidden
+        this._unmountCameraSwitcher() // camera bar belongs to the 3D session
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
@@ -622,13 +629,17 @@ export class Overlay3D {
   /** Free Camera: attach the shared @crit-fumble/shared ViewerControls (left-select,
    * right-drag orbit, arrows/WASD pan, Q/E elevation, wheel zoom, focus-pivot). One
    * scheme shared with the platform viewer. Created on entry, disposed on leave. */
-  _ensureSharedControls() {
-    if (this._sharedControls || !this._viewer || !this._createViewerControlsFn) return
+  _ensureSharedControls(mode = 'free') {
+    if (this._sharedControls) {
+      this._sharedControls.setMode?.(mode)
+      return
+    }
+    if (!this._viewer || !this._createViewerControlsFn) return
     this._sharedControls = this._createViewerControlsFn(this._viewer, {
       THREE: this._THREE,
       OrbitControls: this._OrbitControls,
-      mode: 'free',
-      allowedModes: ['free'],
+      mode,
+      allowedModes: ['free', 'tabletop', 'tabletop-gm'],
       getBounds: () => {
         const r = this._sceneRect()
         return { width: r.width, height: r.height, x: r.x, y: r.y }
@@ -1099,7 +1110,7 @@ export class Overlay3D {
    */
   _onCharDown(event) {
     if (!this._visible) return
-    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     this._hideTokenHud() // a new scene interaction dismisses an open token HUD
     // Level Stamp: a left-click imprints the ghost at the cursor's grid square (WASD walks it; Q/E height).
     if (this._stampActive() && event.button === 0) {
@@ -1141,7 +1152,7 @@ export class Overlay3D {
 
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
-    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     if (this._stampActive()) {
       // Ghost follows the cursor's grid square (no imprint until click / WASD while placed).
       const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
@@ -1188,7 +1199,7 @@ export class Overlay3D {
 
   /** Mouse up: finish the marquee (target the enclosed group) or resolve a bare click. */
   _onCharUp(event) {
-    if (this._mode === 'orbit' && this._sharedControls) return // shared ViewerControls owns Free Camera input
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     if (this._sculptDrag) {
       this._sculptEnd()
       return
@@ -1810,7 +1821,9 @@ export class Overlay3D {
     // and tear it down when leaving so its listeners don't fight the tracked/character/
     // sculpt input in the other modes.
     if (this._controls) this._controls.enabled = false
-    if (m === 'orbit') this._ensureSharedControls()
+    // Free + the Party/GM tabletop seats all run on the SHARED ViewerControls.
+    const sharedMode = m === 'orbit' ? 'free' : m === 'tabletop' || m === 'tabletop-gm' ? m : null
+    if (sharedMode) this._ensureSharedControls(sharedMode)
     else this._teardownSharedControls()
     if (this._container) this._container.style.pointerEvents = 'auto'
     document.body.classList.toggle('cfg-3d-active', this._visible)
@@ -1823,7 +1836,8 @@ export class Overlay3D {
       if (m !== 'tracked') this._orbitCamera.up.set(0, 1, 0)
     }
     this._setFpInput(this._visible) // keyboard + wheel + 3D-pick mouse for every 3D mode
-    if (m === 'orbit') this.setView('default')
+    if (sharedMode && sharedMode !== 'free') this._sharedControls?.setMode?.(sharedMode)
+    else if (m === 'orbit') this.setView('default')
     else if (m === 'firstperson') {
       // Clear stale movement on every (re-)entry — switching 3D modes doesn't re-run
       // _setFpInput (its handlers are already bound), so a leftover glide goal or a
@@ -1843,7 +1857,7 @@ export class Overlay3D {
    * the 3D) or 'orbit' (free-look perspective — UI hidden).
    */
   setMode(mode) {
-    mode = ['tracked', 'orbit', 'firstperson'].includes(mode) ? mode : 'tracked'
+    mode = ['tracked', 'orbit', 'firstperson', 'tabletop', 'tabletop-gm'].includes(mode) ? mode : 'tracked'
     if (mode === this._mode) return
     this._mode = mode
     if (this._mounted && this._visible) {
@@ -1872,7 +1886,14 @@ export class Overlay3D {
       this._syncControlState()
       return
     }
-    const cam = mode === 'topdown' ? 'tracked' : mode === 'firstperson' ? 'firstperson' : 'orbit'
+    // Party ('tabletop') + GM ('tabletop-gm') seats are driven by the SHARED ViewerControls, the same
+    // camera scheme PlayTable ships; 'topdown'/'firstperson' keep the plugin's own rigs.
+    const cam =
+      mode === 'topdown' ? 'tracked'
+      : mode === 'firstperson' ? 'firstperson'
+      : mode === 'tabletop' ? 'tabletop'
+      : mode === 'tabletop-gm' ? 'tabletop-gm'
+      : 'orbit'
     if (cam === 'firstperson') {
       // Pin the character-view subject = the controlled token, and re-anchor the FP camera
       // to it. This is the ONLY place the subject changes (Token-HUD "3D View" button).
@@ -1897,6 +1918,7 @@ export class Overlay3D {
     if (!this._visible) return '2d'
     if (this._mode === 'tracked') return 'topdown'
     if (this._mode === 'firstperson') return 'firstperson'
+    if (this._mode === 'tabletop' || this._mode === 'tabletop-gm') return this._mode
     return 'free'
   }
 
@@ -3807,6 +3829,7 @@ export class Overlay3D {
   _syncTerrainPanel() {
     this._terrainPanel?.update?.(this._terrainPanelProps())
     this._elevPillRoot?.update?.(this._elevPillProps())
+    this._cameraSwitcher?.update?.(this._cameraSwitcherProps())
   }
 
   /**
@@ -3856,7 +3879,7 @@ export class Overlay3D {
     if (!this._terrainRail) return
     const menu = document.getElementById('scene-controls-tools')
     // Only while OUR control group is the active one (Foundry renders one group's tools at a time).
-    const ours = !!menu?.querySelector('[data-tool="topdown"], [data-tool="free"], [data-tool="firstperson"]')
+    const ours = !!menu?.querySelector('[data-tool="view3d"], [data-tool="terrainGenerate"]')
     if (menu && ours && this._terrainRail.parentElement !== menu) menu.appendChild(this._terrainRail)
     else if ((!menu || !ours) && this._terrainRail.parentElement) this._terrainRail.remove()
   }
@@ -3873,6 +3896,73 @@ export class Overlay3D {
     this._elevPill = null
   }
 
+  /** True while the SHARED ViewerControls owns pointer input (Free Camera + the Party/GM seats). */
+  _sharedControlsOwnInput() {
+    return !!this._sharedControls && (this._mode === 'orbit' || this._mode === 'tabletop' || this._mode === 'tabletop-gm')
+  }
+
+  /** The camera modes THIS user may use — a player gets the shared seats + their token's view;
+   *  Free Camera and the GM seat stay GM/Assistant-GM only (mirrors the old toolbar gate). */
+  _cameraModes() {
+    const gm = this._canBuild()
+    const modes = [{ key: '2d', label: '2D', title: 'Leave 3D — back to the normal Foundry canvas' }]
+    if (gm) modes.push({ key: 'topdown', label: 'Top Down', title: 'Overhead 3D — arrows pan · scroll zoom' })
+    modes.push({ key: 'tabletop', label: 'Party View', title: 'Seated at the table (player side)' })
+    if (gm) modes.push({ key: 'tabletop-gm', label: 'GM View', title: "Seated at the GM's side of the table" })
+    if (gm) modes.push({ key: 'free', label: 'Free Camera', title: 'Orbit freely — right-drag rotates, scroll zooms' })
+    modes.push({ key: 'character', label: 'Character', title: 'Look through your token' })
+    return modes
+  }
+
+  /** Mount the shared CameraModeSwitcher ABOVE the hotbar (footer#ui-bottom is a flex column, so
+   *  inserting before #hotbar stacks it on top). Foundry re-renders that footer too, hence the same
+   *  own-the-node + re-append approach as the terrain rail. */
+  _mountCameraSwitcher() {
+    if (!this._cameraBar) {
+      const bar = document.createElement('div')
+      bar.id = 'cfg-3d-camera-bar'
+      // #ui-bottom is pointer-events:none; the switcher's own buttons opt back in (cfgr-switch-btn).
+      bar.style.cssText = 'display:flex;justify-content:center;padding:0 0 6px;pointer-events:none;'
+      this._cameraBar = bar
+      try {
+        this._cameraSwitcher = mountCameraSwitcher(bar, this._cameraSwitcherProps())
+      } catch (err) {
+        console.warn('CFG Core | camera switcher mount failed:', err)
+        this._cameraBar = null
+        return
+      }
+    }
+    this._attachCameraSwitcher()
+  }
+
+  /** Put the switcher back above the hotbar — after any UI re-render. Only while 3D is up. */
+  _attachCameraSwitcher() {
+    if (!this._cameraBar) return
+    const footer = document.getElementById('ui-bottom')
+    const hotbar = document.getElementById('hotbar')
+    if (this._visible && footer && this._cameraBar.parentElement !== footer) {
+      if (hotbar) footer.insertBefore(this._cameraBar, hotbar)
+      else footer.appendChild(this._cameraBar)
+    } else if (!this._visible && this._cameraBar.parentElement) {
+      this._cameraBar.remove() // hidden with the overlay — 3D is entered from the toolbar toggle
+    }
+  }
+
+  _unmountCameraSwitcher() {
+    try { this._cameraSwitcher?.unmount?.() } catch { /* */ }
+    this._cameraSwitcher = null
+    try { this._cameraBar?.remove?.() } catch { /* */ }
+    this._cameraBar = null
+  }
+
+  _cameraSwitcherProps() {
+    return {
+      modes: this._cameraModes(),
+      active: this._currentViewMode() === 'firstperson' ? 'character' : this._currentViewMode(),
+      onSelect: (key) => void this.setViewMode(key === 'character' ? 'firstperson' : key),
+    }
+  }
+
   /** Props for the floating elevation readout (null elevation → the pill renders nothing). */
   _elevPillProps() {
     return {
@@ -3885,6 +3975,10 @@ export class Overlay3D {
   /** Panel tool pick: brush tools go through _setSculptMode; 'stamp' arms the shared controller.
    *  Re-picking the armed tool toggles it off. */
   _selectTerrainTool(t) {
+    // Sculpting is a 3D activity: picking any terrain tool ENTERS 3D (owner 2026-07-24) — the rail is
+    // mounted with the toolbar, so it's reachable from the flat canvas. GMs land in the Top-Down
+    // building camera; Character view is never a sculpting camera.
+    if (!this._visible || this._mode === 'firstperson') void this.setViewMode('topdown')
     if (t === 'stamp') {
       if (this._stamp) this._disarmStamp()
       else this._armStamp()
@@ -3997,32 +4091,14 @@ export class Overlay3D {
         // Three 3D view modes as radio-like toggles; "2D" = none active (overlay off).
         const vm = this._currentViewMode()
         const tools = {
-          topdown: {
-            name: 'topdown',
+          view3d: {
+            name: 'view3d',
             order: 0,
-            title: 'Top Down (3D overhead — arrows pan · scroll zoom · click select/target)',
-            icon: 'fa-solid fa-table-cells',
+            title: '3D View — enter/leave 3D. Pick the camera (Top Down · Party · GM · Free · Character) above the hotbar.',
+            icon: 'fa-solid fa-cube',
             toggle: true,
-            active: vm === 'topdown',
-            onChange: (event, active) => this.setViewMode(active ? 'topdown' : '2d'),
-          },
-          free: {
-            name: 'free',
-            order: 1,
-            title: 'Free Camera (orbit — drag to rotate/tilt, scroll to zoom)',
-            icon: 'fa-solid fa-video',
-            toggle: true,
-            active: vm === 'free',
-            onChange: (event, active) => this.setViewMode(active ? 'free' : '2d'),
-          },
-          firstperson: {
-            name: 'firstperson',
-            order: 2,
-            title: 'Character View (WASD move · arrows turn camera · click select/target · scroll zoom)',
-            icon: 'fa-solid fa-person',
-            toggle: true,
-            active: vm === 'firstperson',
-            onChange: (event, active) => this.setViewMode(active ? 'firstperson' : '2d'),
+            active: this._visible,
+            onChange: (event, active) => this.setViewMode(active ? (this._canBuild() ? 'topdown' : 'tabletop') : '2d'),
           },
           slice: {
             name: 'slice',
@@ -4075,7 +4151,8 @@ export class Overlay3D {
     // rail. Re-append it after each render (a MOVE of the node we own, so the root + its state live on).
     this._on('renderSceneControls', () => {
       try {
-        if (this._visible) this._attachTerrainRail()
+        this._mountTerrainPanel() // mount-if-needed + re-attach (the rail persists while 3D is off,
+        this._attachCameraSwitcher() // so picking a terrain tool can ENTER 3D — see _selectTerrainTool)
       } catch (err) {
         console.warn('CFG Core | terrain rail re-attach failed:', err)
       }

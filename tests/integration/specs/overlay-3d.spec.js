@@ -177,7 +177,12 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
   expect(info.tokens, 'every 3D mode renders its own opaque token minis').toBe(6)
   expect(info.hasCanvas).toBe(true)
   expect(info.group, 'top-level 3D control group should exist').not.toBeNull()
-  expect(info.group.tools).toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson', 'slice']))
+  // The toolbar keeps ONE 3D on/off toggle (+ slice and the terrain ACTIONS). The camera MODES
+  // moved to the shared CameraModeSwitcher above the hotbar, and the sculpt TOOLS to the shared
+  // React rail hosted in this same tool column — so players and GMs pick views in one place.
+  expect(info.group.tools).toEqual(expect.arrayContaining(['view3d', 'slice']))
+  expect(info.group.tools, 'camera modes are no longer toolbar buttons').not.toEqual(expect.arrayContaining(['topdown', 'free', 'firstperson']))
+  expect(info.group.tools, 'sculpt tools moved to the shared React rail').not.toEqual(expect.arrayContaining(['sculptRaise', 'sculptLower']))
   expect(info.group.tools, 'per-angle camera preset buttons removed').not.toEqual(expect.arrayContaining(['viewTop', 'viewAngle', 'viewLow', 'viewReset']))
 
   // Underground token (elevation -15 under its floor base 0): the flight-stand post's
@@ -205,7 +210,9 @@ test('3D overlay — seed a scene and capture review angles', async ({ page }) =
     inst._syncTrackedCamera()
     const cam = inst._orbitCamera
     const focusBefore = { ...inst._trackFocus }
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    // `code` is REQUIRED: Foundry keybindings (and the overlay's _controlMap) are code-keyed, so a
+    // synthetic event carrying only `key` matches nothing a real keyboard would send.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }))
     return {
       opaque: inst._foundryFloor() === false,
       pe: getComputedStyle(document.getElementById('cfg-3d-overlay')).pointerEvents,
@@ -311,14 +318,17 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   })
   await page.waitForFunction(() => globalThis.canvas?.ready === true, { timeout: 60_000 })
 
-  // Iterate the three 3D modes via the scene-control MENU (the real UI path:
-  // clicking a mode toggle = activate({toggles})). "2D" = no mode toggle active.
-  const modes = ['topdown', 'free', 'firstperson']
+  // Enter 3D from the toolbar toggle, then iterate modes by CLICKING the shared camera switcher
+  // above the hotbar — the real UI path now that camera modes left the toolbar.
+  await page.evaluate(async () => ui.controls.activate({ control: 'cfg-3d', toggles: { view3d: true } }))
+  await page.waitForTimeout(900)
+  await expect.poll(() => page.evaluate(() => !!document.querySelector('[data-testid="cfgr-camera-switcher"]')), { timeout: 15_000 }).toBe(true)
+
+  const modes = ['topdown', 'tabletop', 'tabletop-gm', 'free', 'firstperson']
   const results = {}
   for (const mode of modes) {
-    await page.evaluate(async (m) => {
-      await ui.controls.activate({ control: 'cfg-3d', toggles: { [m]: true } })
-    }, mode)
+    const testid = mode === 'firstperson' ? 'cfgr-camera-character' : `cfgr-camera-${mode}`
+    await page.click(`[data-testid="${testid}"]`)
     await page.waitForTimeout(900)
     results[mode] = await page.evaluate(() => ({
       viewMode: window.CFGCore.overlay3D.getViewMode(),
@@ -327,14 +337,14 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   }
   console.log('[overlay-3d] menu view modes:', JSON.stringify(results))
   expect(results.topdown.viewMode).toBe('topdown')
+  expect(results.tabletop.viewMode, 'Party seat').toBe('tabletop')
+  expect(results['tabletop-gm'].viewMode, "GM's side of the table").toBe('tabletop-gm')
   expect(results.free.viewMode).toBe('free')
   expect(results.firstperson.viewMode).toBe('firstperson')
   for (const m of modes) expect(results[m].visible, `${m} should make the overlay visible`).toBe(true)
 
-  // 2D: deactivate the active mode toggle → overlay off.
-  await page.evaluate(async () => {
-    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: false } })
-  })
+  // 2D: pick "2D" in the switcher → overlay off (and the bar hides with it).
+  await page.click('[data-testid="cfgr-camera-2d"]')
   await page.waitForTimeout(500)
   expect(await page.evaluate(() => window.CFGCore.overlay3D.getViewMode())).toBe('2d')
   expect(await page.evaluate(() => window.CFGCore.overlay3D.isVisible())).toBe(false)
@@ -348,7 +358,9 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
     await t.document.update({ rotation: 0 })
     t.control({ releaseOthers: true })
     await new Promise((r) => setTimeout(r, 150))
-    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: true } })
+    // Camera modes moved out of the toolbar to the shared switcher; this block is about WASD, and
+    // the switcher path for Character view is already covered above, so enter it via the API.
+    await window.CFGCore.overlay3D.setViewMode('firstperson')
     return t.id
   })
   await page.waitForTimeout(1500)
@@ -361,7 +373,10 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
       const d = canvas.scene.tokens.get(tid)
       return { x: d.x, y: d.y, rotation: d.rotation }
     }, id)
-  const key = (k, type) => page.evaluate(([kk, tt]) => window.dispatchEvent(new KeyboardEvent(tt, { key: kk, bubbles: true, cancelable: true })), [k, type])
+  // `code` mirrors a real press (Foundry keybindings are code-keyed): 'w' → 'KeyW', 'ArrowUp' → itself.
+  const codeFor = (k) => (/^[a-z]$/i.test(k) ? `Key${k.toUpperCase()}` : k)
+  const key = (k, type) =>
+    page.evaluate(([kk, tt, cc]) => window.dispatchEvent(new KeyboardEvent(tt, { key: kk, code: cc, bubbles: true, cancelable: true })), [k, type, codeFor(k)])
   const tap = async (k) => {
     await key(k, 'keydown')
     await key(k, 'keyup')
@@ -533,9 +548,8 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   await page.waitForTimeout(180)
   await tap('d')
   await page.waitForTimeout(300)
-  await page.evaluate(async () => {
-    await ui.controls.activate({ control: 'cfg-3d', toggles: { firstperson: false } })
-  })
+  // Leave 3D via the shared switcher (camera modes are no longer toolbar toggles).
+  await page.evaluate(async () => window.CFGCore.overlay3D.setViewMode('2d'))
   await page.waitForTimeout(700)
   const ghost = await page.evaluate(() => ({
     viewMode: window.CFGCore.overlay3D.getViewMode(),
