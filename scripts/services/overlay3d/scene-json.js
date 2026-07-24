@@ -217,6 +217,8 @@ function buildDrawingsJson(docs, ctx = {}) {
         d.strokeColor = sc;
       if (doc.strokeAlpha != null)
         d.strokeAlpha = doc.strokeAlpha;
+      if (doc.strokeWidth != null && Number.isFinite(Number(doc.strokeWidth)))
+        d.strokeWidth = Number(doc.strokeWidth);
       if ((doc.fillType ?? 0) > 0) {
         const fc = parseHexColor(doc.fillColor, void 0);
         if (fc != null)

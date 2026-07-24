@@ -1,5 +1,13 @@
 // node_modules/@crit-fumble/shared/dist/vtt-viewer/terrain-brush.js
-function forEachInRadius(cols, rows, ci, cj, radiusCells, shape, fn) {
+var FLAT_INNER = 0.7;
+function profileFalloff(t, profile) {
+  if (profile === "plateau")
+    return 1;
+  if (profile === "flat")
+    return t <= FLAT_INNER ? 1 : Math.max(0, (1 - t) / (1 - FLAT_INNER));
+  return 1 - t;
+}
+function forEachInRadius(cols, rows, ci, cj, radiusCells, shape, profile, fn) {
   const r = Math.max(0.5, radiusCells);
   const iMin = Math.max(0, Math.floor(ci - r));
   const iMax = Math.min(cols - 1, Math.ceil(ci + r));
@@ -11,7 +19,7 @@ function forEachInRadius(cols, rows, ci, cj, radiusCells, shape, fn) {
       const dist = square ? Math.max(Math.abs(i - ci), Math.abs(j - cj)) : Math.hypot(i - ci, j - cj);
       if (dist > r)
         continue;
-      fn(i, j, 1 - dist / r);
+      fn(i, j, profileFalloff(dist / r, profile));
     }
   }
 }
@@ -30,7 +38,8 @@ function applyTerrainBrush(heights, cols, rows, opts) {
   const strength = Number.isFinite(Number(opts?.strength)) ? Number(opts.strength) : 1;
   const level = Number(opts?.level) || 0;
   const shape = opts?.shape === "square" ? "square" : "circle";
-  forEachInRadius(cols, rows, ci, cj, radiusCells, shape, (i, j, falloff) => {
+  const profile = opts?.profile === "flat" ? "flat" : opts?.profile === "plateau" ? "plateau" : "peak";
+  forEachInRadius(cols, rows, ci, cj, radiusCells, shape, profile, (i, j, falloff) => {
     const k = j * cols + i;
     const w = falloff * strength;
     if (mode === "raise")

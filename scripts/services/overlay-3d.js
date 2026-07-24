@@ -3546,8 +3546,19 @@ export class Overlay3D {
       return
     }
     try {
-      const cols = 80
-      const rows = 80
+      // Grid-aligned resolution (corner lattice): an integer number of samples per grid square, +1 for
+      // the far corner — so `cols-1` is a multiple of the square count and the field lines up with the
+      // grid the Level Stamp + PlayTable use (matches the server's ensureSceneHeightfield convention).
+      // samples-per-square is chosen to keep ~96 samples across for image detail, clamped to the 256 store cap.
+      const gridSize = Number(scene?.grid?.size) || 100
+      const rect = canvas?.dimensions?.sceneRect || { width: scene?.width || 2000, height: scene?.height || 2000 }
+      const squaresX = Math.max(1, Math.round(rect.width / gridSize))
+      const squaresY = Math.max(1, Math.round(rect.height / gridSize))
+      const maxSq = Math.max(squaresX, squaresY)
+      let spp = Math.max(1, Math.round(96 / maxSq))
+      while (spp > 1 && spp * maxSq + 1 > 256) spp--
+      const cols = Math.min(256, spp * squaresX + 1)
+      const rows = Math.min(256, spp * squaresY + 1)
       const url = typeof foundry?.utils?.getRoute === 'function' ? foundry.utils.getRoute(src) : src
       const img = await new Promise((ok, no) => {
         const im = new Image()
@@ -3645,6 +3656,7 @@ export class Overlay3D {
         strength: raise ? this._sculptStrength : 0.5,
         level: this._sculptLevel || 0,
         shape: this._sculptSquare ? 'square' : 'circle',
+        profile: 'plateau', // match PlayTable: flat interior, ramped rim (terrain SHAPE, not peaks)
       })
     }
     const px = this._pxPerUnit()
