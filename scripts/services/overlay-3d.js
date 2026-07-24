@@ -26,7 +26,13 @@ import { buildWallsJson, buildGridJson, buildTilesJson, buildNotesJson, buildTok
 import { applyTerrainBrush } from './overlay3d/terrain-brush.js'
 // Shared, framework-free Level Stamp behaviour (identical to PlayTable) — a local bundle of
 // @crit-fumble/shared vtt-viewer/terrain-stamp (see terrain-stamp.entry.mjs).
-import { TerrainStampController } from './overlay3d/terrain-stamp.js'
+import {
+  TerrainStampController,
+  HEIGHTMAP_WARNING_TITLE,
+  HEIGHTMAP_WARNING_BODY,
+  HEIGHTMAP_WARNING_CONFIRM,
+  HEIGHTMAP_WARNING_ACK_KEY,
+} from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
 import { mountTerrainPanel, mountElevationPill, mountCameraSwitcher } from '../lib/react-panel.js'
@@ -3616,6 +3622,7 @@ export class Overlay3D {
       ui?.notifications?.warn?.('This scene has no background image to generate terrain from.')
       return
     }
+    if (!(await this._confirmHeightmapWarning())) return // one-time performance caution, per user
     try {
       // Grid-aligned resolution (corner lattice): an integer number of samples per grid square, +1 for
       // the far corner — so `cols-1` is a multiple of the square count and the field lines up with the
@@ -3680,6 +3687,43 @@ export class Overlay3D {
       console.warn('CFG Core | generate terrain from map failed', e)
       ui?.notifications?.error?.('Terrain generation failed (see console).')
     }
+  }
+
+  /**
+   * One-time heightmap performance caution (owner 2026-07-24). Terrain is an OPTIONAL 3D enhancement
+   * that adds a displaced mesh on top of everything else the scene renders, so a big, wall-heavy scene
+   * can drop frames on weaker hardware — and low resource requirements are a platform design
+   * constraint. Shown the FIRST time a GM/Assistant GM generates terrain, per USER (localStorage), with
+   * copy shared with PlayTable so the wording never drifts. Returns false if they decline.
+   */
+  async _confirmHeightmapWarning() {
+    try {
+      if (globalThis.localStorage?.getItem(HEIGHTMAP_WARNING_ACK_KEY) === '1') return true
+    } catch {
+      /* storage blocked — fall through and just ask again */
+    }
+    let ok = false
+    try {
+      const DialogV2 = foundry?.applications?.api?.DialogV2
+      ok = DialogV2?.confirm
+        ? await DialogV2.confirm({
+            window: { title: HEIGHTMAP_WARNING_TITLE },
+            content: `<p>${HEIGHTMAP_WARNING_BODY}</p>`,
+            yes: { label: HEIGHTMAP_WARNING_CONFIRM, default: true },
+          })
+        : globalThis.confirm?.(`${HEIGHTMAP_WARNING_TITLE}\n\n${HEIGHTMAP_WARNING_BODY}`)
+    } catch (err) {
+      console.warn('CFG Core | heightmap warning dialog failed:', err)
+      ok = true // never block terrain creation on a dialog failure
+    }
+    if (ok) {
+      try {
+        globalThis.localStorage?.setItem(HEIGHTMAP_WARNING_ACK_KEY, '1')
+      } catch {
+        /* storage blocked — they'll be asked again next time */
+      }
+    }
+    return !!ok
   }
 
   /** True while a sculpt tool is active — the drag sculpts instead of panning/picking. */

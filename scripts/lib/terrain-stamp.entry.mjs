@@ -5,3 +5,5 @@
  * is cfg-shared/src/vtt-viewer/terrain-stamp.ts. Rebuild from the PUBLISHED package before a release.
  */
 export * from '@crit-fumble/shared/vtt-viewer/terrain-stamp'
+// Shared heightmap-performance warning COPY, so the caution reads identically in PlayTable and here.
+export * from '@crit-fumble/shared/constants/terrain-warnings'
