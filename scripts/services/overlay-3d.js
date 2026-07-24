@@ -320,6 +320,7 @@ export class Overlay3D {
         await this.rebuild()
         if (this._container) this._container.style.display = 'block'
         this._applyMode() // active camera + input routing + UI-hide (orbit only)
+        this._applySeatFraming(this._mode) // after rebuild()'s framing, so a seat isn't left mid-table
         this._updateControlBar()
         this._mountTerrainPanel() // PlayTable-style terrain rail (GM only) — React, lifecycle-bound
         this._mountCameraSwitcher() // camera modes live above the hotbar while 3D is up
@@ -640,6 +641,7 @@ export class Overlay3D {
   _ensureSharedControls(mode = 'free') {
     if (this._sharedControls) {
       this._sharedControls.setMode?.(mode)
+      this._applySeatFraming(mode) // setMode is a no-op when the mode is unchanged — seat it anyway
       return
     }
     if (!this._viewer || !this._createViewerControlsFn) return
@@ -665,6 +667,23 @@ export class Overlay3D {
     const o = this._sharedControls.orbit3d
     o.maxDistance = 5_000_000
     o.maxPolarAngle = Math.PI * 0.495
+    // Created WITH this mode, so setMode() would early-return and the seat would never be applied.
+    this._applySeatFraming(mode)
+  }
+
+  /** Sit the camera at its seat. reframe() re-runs the controller's mode framing, which is what puts a
+   *  Party/GM seat at the correct side of the table — and must be re-applied after rebuild(), which
+   *  re-frames the camera for its own reasons and otherwise leaves the seat stranded mid-table. */
+  _applySeatFraming(mode) {
+    if (mode !== 'tabletop' && mode !== 'tabletop-gm') return
+    try {
+      // setSeat() UNCONDITIONALLY re-applies the seat position. reframe()/setMode() both early-return
+      // when the controller thinks it is already in this mode, which silently left the Party seat
+      // wherever the previous camera happened to be. Home: Party south (0), GM north (π).
+      this._sharedControls?.setSeat?.(mode === 'tabletop-gm' ? Math.PI : 0)
+    } catch (err) {
+      console.warn('CFG Core | seat framing failed:', err)
+    }
   }
 
   _teardownSharedControls() {
@@ -1435,6 +1454,16 @@ export class Overlay3D {
    * every frame from `_fpCenter` (see `_fpStep`/`_fpSyncSubjectVisual`) — this call
    * is purely for persistence + multiplayer sync, decoupled from local smoothness.
    */
+  /** Foundry's world setting for rotate-on-move (core.tokenAutoRotate, default true). */
+  _tokenAutoRotate() {
+    try {
+      const v = game?.settings?.get?.('core', 'tokenAutoRotate')
+      return v === undefined ? true : !!v
+    } catch {
+      return true // setting not registered in this build — follow Foundry's default
+    }
+  }
+
   /** Foundry's facing convention for a movement vector (measured against canvas.tokens.moveMany):
    *  0 = up, angle = atan2(dy, dx) - 90°, normalised to [0,360). */
   _facingFor(dx, dy) {
@@ -1445,10 +1474,9 @@ export class Overlay3D {
     try {
       const doc = tok.document
       const { w, h } = this._tokenSizePx(doc)
-      // animate:false — we already render the motion locally (the glide + camera
-      // follow `_fpCenter` every frame), so Foundry's native token animation is
-      // redundant and, running underneath, fires mid-flight update hooks that fight
-      // our per-frame sync. Commit the final cell position instantly instead.
+      // Let Foundry's NATIVE walk run (no `animate:false`): when in doubt we follow Foundry's
+      // defaults, and the native movement animation is what draws Token#showRuler — the measuring
+      // ruler players see on the 2D canvas. That's parity the 3D view previously threw away.
       // Facing follows MOVEMENT, not the camera — Foundry's native 2D behaviour is the baseline, and
       // there a moving token turns to face its direction of travel while the view stays independent.
       // (Previously this wrote the camera heading, which welded the token's facing to where you LOOKED.)
@@ -1461,8 +1489,10 @@ export class Overlay3D {
       // Prefer the direction we're TRAVELLING (set when the input/goal was chosen): in grid mode a
       // single throttled commit is only a few px of the glide, too small to infer a heading from.
       const facing = this._fpFacing ?? (Math.hypot(dx, dy) > 1 ? this._facingFor(dx, dy) : null)
-      if (!doc.lockRotation && facing != null) update.rotation = facing
-      doc.update(update, { animate: false })
+      // Foundry's own rotate-on-move contract: the WORLD setting core.tokenAutoRotate (default true)
+      // gates it, and a token opts out individually with lockRotation.
+      if (this._tokenAutoRotate() && !doc.lockRotation && facing != null) update.rotation = facing
+      doc.update(update)
     } catch {
       /* permission / movement rejected — ignore */
     }
@@ -1888,7 +1918,9 @@ export class Overlay3D {
     this._mode = mode
     if (this._mounted && this._visible) {
       this._applyMode()
-      this.rebuild() // floor/bg/grid differ per mode (tracked = Foundry's canvas)
+      // rebuild() is ASYNC and loadScene does its own default framing, which tramples the seat — so
+      // re-seat AFTER it settles, not synchronously (the same trap PlayTable hit with loadScene).
+      Promise.resolve(this.rebuild()).then(() => this._applySeatFraming(mode))
     }
     this._updateControlBar()
     this._syncControlState() // reflect the mode toggle in the 3D control group
@@ -3554,9 +3586,12 @@ export class Overlay3D {
     this._updateMoveRuler() // live movement path + distance (Top Down + Character)
     this._updateSelectionFx() // selection box + glow prism on the ground (controlled tokens)
     this._updateTargetReticle() // screen-space yellow corner arrows on targeted tokens
-    // Free Camera: the shared ViewerControls runs its own rAF loop (damping + input +
-    // render-on-change), so this ticker yields to it — no double update/render.
-    if (this._mode === 'orbit' && this._sharedControls) return
+    // Free Camera AND the Party/GM seats: the shared ViewerControls runs its own rAF loop (damping +
+    // input + render-on-change), so this ticker yields to it — no double update/render. Missing the
+    // seat modes here let the LEGACY OrbitControls below keep calling update(), which repositions the
+    // camera from its own stale spherical every frame (it does that even while `enabled` is false) and
+    // dragged the seat back off the table edge the moment it was applied.
+    if (this._sharedControlsOwnInput()) return
     if (this._mode === 'tracked') this._syncTrackedCamera()
     else if (this._mode === 'firstperson') this._fpStep(typeof performance !== 'undefined' ? performance.now() : 0)
     else this._controls?.update()

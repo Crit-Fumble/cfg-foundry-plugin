@@ -429,7 +429,12 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
     return { showRuler: t?.showRuler ?? null }
   }, tokenId)
   await key('w', 'keyup')
-  await page.waitForTimeout(500)
+  // Foundry's NATIVE walk animates, so the position + facing land asynchronously — poll until the
+  // token has actually settled instead of racing a fixed sleep.
+  await expect
+    .poll(async () => { const r = await read(tokenId); return Math.round(Math.hypot(r.x - b.x, r.y - b.y)) }, { timeout: 5_000 })
+    .toBeGreaterThan(gridSize * 0.1)
+  await page.waitForTimeout(400) // let the trailing rotation commit flush
   let a = await read(tokenId)
   console.log('[overlay-3d] character move W:', JSON.stringify({ b, a, early, midFlight, deprecationWarnings: deprecationWarnings.length }))
   const mdx = a.x - b.x
@@ -439,11 +444,13 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   // the token rather than teleporting it a whole cell per press. So assert that W moved it a real
   // distance in the camera-relative direction, not that it landed exactly one grid square away.
   expect(Math.round(Math.hypot(mdx, mdy)), 'W moves the token').toBeGreaterThan(gridSize * 0.1)
-  // Facing is NOT driven by movement — Foundry's native 2D is the baseline, and there WASD moves a
-  // token without rotating it (only the look/cursor turns). This assertion previously demanded the
-  // opposite, contradicting the comment at the top of this block; `moveHeading` is kept for the log.
-  void moveHeading
-  expect(a.rotation, 'movement leaves facing alone (2D-native baseline)').toBe(b.rotation)
+  // Facing follows TRAVEL, decoupled from where the camera looks — Foundry's native contract, gated by
+  // the world setting core.tokenAutoRotate (default on) and each token's lockRotation. The tolerance is
+  // wide because Foundry's native walk ANIMATES: `a` is sampled while the token is still gliding, so
+  // the heading derived from (b → a) trails the committed rotation slightly.
+  expect(a.rotation, 'movement turns the token (it no longer keeps its start facing)').not.toBe(b.rotation)
+  const facingErr = Math.abs((((a.rotation - moveHeading + 540) % 360) - 180))
+  expect(facingErr, 'the token faces (roughly) its direction of travel').toBeLessThan(35)
   expect(deprecationWarnings, 'no more {teleport:true} deprecation warning — using native "walk" movement').toHaveLength(0)
   expect(midFlight.showRuler, "Foundry's native ruler (Token#showRuler) is visible while the token is moving").toBe(true)
   expect(early.miniDist, 'the 3D mini is already advancing well before Foundry\'s own animation settles').toBeGreaterThan(5)
