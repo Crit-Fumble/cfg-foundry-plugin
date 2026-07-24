@@ -7,3 +7,5 @@
 export * from '@crit-fumble/shared/vtt-viewer/terrain-stamp'
 // Shared heightmap-performance warning COPY, so the caution reads identically in PlayTable and here.
 export * from '@crit-fumble/shared/constants/terrain-warnings'
+// Shared heightfield LATTICE helpers, so plugin/PlayTable/API all create the same sample density.
+export * from '@crit-fumble/shared/constants/heightfield'

@@ -32,6 +32,8 @@ import {
   HEIGHTMAP_WARNING_BODY,
   HEIGHTMAP_WARNING_CONFIRM,
   HEIGHTMAP_WARNING_ACK_KEY,
+  heightfieldDims,
+  flatHeightfield,
 } from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
@@ -812,6 +814,7 @@ export class Overlay3D {
           const speed = size * 3.5 // px/sec (~3.5 grids/sec)
           const dest = { x: this._fpCenter.x + (mx / len) * speed * dt, y: this._fpCenter.y + (mz / len) * speed * dt }
           if (!this._moveBlocked(this._fpCenter, dest)) {
+            this._fpFacing = this._facingFor(dest.x - this._fpCenter.x, dest.y - this._fpCenter.y)
             this._fpCenter = dest
             this._fpDirty = true
           }
@@ -1432,6 +1435,12 @@ export class Overlay3D {
    * every frame from `_fpCenter` (see `_fpStep`/`_fpSyncSubjectVisual`) — this call
    * is purely for persistence + multiplayer sync, decoupled from local smoothness.
    */
+  /** Foundry's facing convention for a movement vector (measured against canvas.tokens.moveMany):
+   *  0 = up, angle = atan2(dy, dx) - 90°, normalised to [0,360). */
+  _facingFor(dx, dy) {
+    return Math.round((((Math.atan2(dy, dx) * 180) / Math.PI - 90) % 360 + 360) % 360)
+  }
+
   _fpCommitNow(tok) {
     try {
       const doc = tok.document
@@ -1440,10 +1449,20 @@ export class Overlay3D {
       // follow `_fpCenter` every frame), so Foundry's native token animation is
       // redundant and, running underneath, fires mid-flight update hooks that fight
       // our per-frame sync. Commit the final cell position instantly instead.
-      doc.update(
-        { x: Math.round(this._fpCenter.x - w / 2), y: Math.round(this._fpCenter.y - h / 2), rotation: Math.round(this._fpHeading) },
-        { animate: false },
-      )
+      // Facing follows MOVEMENT, not the camera — Foundry's native 2D behaviour is the baseline, and
+      // there a moving token turns to face its direction of travel while the view stays independent.
+      // (Previously this wrote the camera heading, which welded the token's facing to where you LOOKED.)
+      // Per-token opt-out: `lockRotation` is Foundry's own per-token "don't rotate me" flag.
+      const nx = Math.round(this._fpCenter.x - w / 2)
+      const ny = Math.round(this._fpCenter.y - h / 2)
+      const update = { x: nx, y: ny }
+      const dx = nx - Number(doc.x || 0)
+      const dy = ny - Number(doc.y || 0)
+      // Prefer the direction we're TRAVELLING (set when the input/goal was chosen): in grid mode a
+      // single throttled commit is only a few px of the glide, too small to infer a heading from.
+      const facing = this._fpFacing ?? (Math.hypot(dx, dy) > 1 ? this._facingFor(dx, dy) : null)
+      if (!doc.lockRotation && facing != null) update.rotation = facing
+      doc.update(update, { animate: false })
     } catch {
       /* permission / movement rejected — ignore */
     }
@@ -1493,6 +1512,7 @@ export class Overlay3D {
         const oct = Math.round(Math.atan2(mz, mx) / (Math.PI / 4)) * (Math.PI / 4)
         const gdir = { x: Math.round(Math.cos(oct)), z: Math.round(Math.sin(oct)) }
         if (gdir.x || gdir.z) {
+          this._fpFacing = this._facingFor(gdir.x, gdir.z)
           const raw = { x: this._fpCenter.x + gdir.x * size, y: this._fpCenter.y + gdir.z * size }
           const dest = this._snapToGrid(raw, tok)
           if (!this._moveBlocked(this._fpCenter, dest) && Math.hypot(dest.x - this._fpCenter.x, dest.y - this._fpCenter.y) > 1) {
@@ -3614,78 +3634,34 @@ export class Overlay3D {
    * rock by colour, erode isolated rock-noise) into the heightfield flag. This is the base
    * terrain + a one-click way to recover from over-sculpting; the GM then shapes it by hand.
    */
-  async _generateTerrainFromMap() {
-    if (!this._canBuild()) return // terrain generation is GM / Assistant GM only
+  /**
+   * Create the scene's heightfield as a BLANK SLATE — a flat lattice the GM sculpts from (owner
+   * 2026-07-24). We deliberately do NOT try to infer heights from the map image: guessing land/water/
+   * rock from pixels produced terrain nobody wanted and was always easier to just re-flatten, so the
+   * honest starting point is flat. Also the one-click way to RESET over-sculpted terrain.
+   *
+   * Resolution comes from the shared lattice helper, so a field made here matches one made by
+   * PlayTable or the API: `samplesPerSquare` per grid square + 1 for the far edge, with edges shared
+   * between tiles — at the default of 2 that gives every tile its corners, edge midpoints and centre.
+   */
+  async _addTerrain() {
+    if (!this._canBuild()) return // terrain is GM / Assistant GM only
     const scene = canvas?.scene
-    const src = scene?.background?.src
-    if (!src) {
-      ui?.notifications?.warn?.('This scene has no background image to generate terrain from.')
-      return
-    }
+    if (!scene) return
     if (!(await this._confirmHeightmapWarning())) return // one-time performance caution, per user
     try {
-      // Grid-aligned resolution (corner lattice): an integer number of samples per grid square, +1 for
-      // the far corner — so `cols-1` is a multiple of the square count and the field lines up with the
-      // grid the Level Stamp + PlayTable use (matches the server's ensureSceneHeightfield convention).
-      // samples-per-square is chosen to keep ~96 samples across for image detail, clamped to the 256 store cap.
-      const gridSize = Number(scene?.grid?.size) || 100
-      const rect = canvas?.dimensions?.sceneRect || { width: scene?.width || 2000, height: scene?.height || 2000 }
+      const gridSize = Number(canvas?.dimensions?.size) || 100
+      const rect = this._sceneRect()
       const squaresX = Math.max(1, Math.round(rect.width / gridSize))
       const squaresY = Math.max(1, Math.round(rect.height / gridSize))
-      const maxSq = Math.max(squaresX, squaresY)
-      let spp = Math.max(1, Math.round(96 / maxSq))
-      while (spp > 1 && spp * maxSq + 1 > 256) spp--
-      const cols = Math.min(256, spp * squaresX + 1)
-      const rows = Math.min(256, spp * squaresY + 1)
-      const url = typeof foundry?.utils?.getRoute === 'function' ? foundry.utils.getRoute(src) : src
-      const img = await new Promise((ok, no) => {
-        const im = new Image()
-        im.crossOrigin = 'anonymous'
-        im.onload = () => ok(im)
-        im.onerror = () => no(new Error('image load failed'))
-        im.src = url
-      })
-      const cv = document.createElement('canvas')
-      cv.width = cols
-      cv.height = rows
-      const g2 = cv.getContext('2d', { willReadFrequently: true })
-      g2.drawImage(img, 0, 0, cols, rows)
-      const px = g2.getImageData(0, 0, cols, rows).data
-      const T = new Array(cols * rows) // 0 water · 1 beach · 2 grass · 3 rock
-      for (let k = 0; k < cols * rows; k++) {
-        const r = px[k * 4]
-        const gr = px[k * 4 + 1]
-        const b = px[k * 4 + 2]
-        if (b > r + 15 && b > 95 && gr > r) T[k] = 0
-        else if (r > 165 && gr > 145 && b < 165 && r >= gr - 10) T[k] = 1
-        else if (Math.abs(r - gr) < 20 && Math.abs(gr - b) < 20 && r > 100 && r < 200) T[k] = 3
-        else T[k] = 2
-      }
-      const T2 = T.slice() // erode isolated rock (noise) — keep connected ridges
-      for (let j = 0; j < rows; j++) {
-        for (let i = 0; i < cols; i++) {
-          const k = j * cols + i
-          if (T[k] !== 3) continue
-          let n = 0
-          for (let dj = -1; dj <= 1; dj++) {
-            for (let di = -1; di <= 1; di++) {
-              if (!di && !dj) continue
-              const ii = i + di
-              const jj = j + dj
-              if (ii >= 0 && ii < cols && jj >= 0 && jj < rows && T[jj * cols + ii] === 3) n++
-            }
-          }
-          if (n < 2) T2[k] = 2
-        }
-      }
-      const HT = { 0: -4, 1: 0, 2: 6, 3: 30 } // shallow water · flat beach · raised grass · tall rock
+      const { cols, rows, samplesPerSquare } = heightfieldDims(squaresX, squaresY)
       this._sculptPushUndo(scene.flags?.['crit-fumble-core']?.heightfield?.heights) // undoable
-      await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: T2.map((t) => HT[t]) })
-      ui?.notifications?.info?.('Generated 3D terrain from the map — sculpt from here.')
+      await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: flatHeightfield(cols, rows) })
+      ui?.notifications?.info?.(`Added flat 3D terrain (${cols}×${rows} points, ${samplesPerSquare} per tile) — sculpt from here.`)
       this._syncTerrainPanel() // hasTerrain flipped → the panel swaps "Add terrain" for the tools
     } catch (e) {
-      console.warn('CFG Core | generate terrain from map failed', e)
-      ui?.notifications?.error?.('Terrain generation failed (see console).')
+      console.warn('CFG Core | add terrain failed', e)
+      ui?.notifications?.error?.('Could not add terrain (see console).')
     }
   }
 
@@ -3862,7 +3838,7 @@ export class Overlay3D {
       unitLabel: canvas?.scene?.grid?.units || 'ft',
       labelSide: 'right', // left-edge rail → labels open right, toward the scene
       onSelectTool: (t) => this._selectTerrainTool(t),
-      onAddTerrain: () => this._generateTerrainFromMap(),
+      onAddTerrain: () => this._addTerrain(),
       onSetShape: (s) => { this._sculptSquare = s === 'square'; if (this._stamp) this._stamp.setShape(s); this._syncTerrainPanel() },
       onToggleSnap: () => { this._sculptSnap = !this._sculptSnap; this._syncTerrainPanel() },
       onToggleSnapHalf: () => { this._sculptSnapHalf = !this._sculptSnapHalf; this._syncTerrainPanel() },
@@ -4156,10 +4132,10 @@ export class Overlay3D {
           terrainGenerate: {
             name: 'terrainGenerate',
             order: 9,
-            title: 'Generate 3D terrain from the map — a base heightmap you sculpt from (also resets over-sculpted terrain)',
+            title: 'Add 3D terrain — a FLAT heightmap you sculpt from (also resets over-sculpted terrain)',
             icon: 'fa-solid fa-mountain-sun',
             button: true,
-            onChange: () => this._generateTerrainFromMap(),
+            onChange: () => this._addTerrain(),
           },
           terrainUndo: {
             name: 'terrainUndo',

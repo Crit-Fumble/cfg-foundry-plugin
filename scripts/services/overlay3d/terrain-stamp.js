@@ -175,10 +175,33 @@ var HEIGHTMAP_WARNING_TITLE = "Add 3D terrain to this scene?";
 var HEIGHTMAP_WARNING_BODY = "Heightmaps add a 3D terrain mesh to this scene. Players on lower-end machines may see slower rendering, and the cost grows with the size of the scene. We recommend skipping heightmaps on very large scenes with a lot of walls \u2014 those are the heaviest to render. You can remove the terrain later if it causes trouble.";
 var HEIGHTMAP_WARNING_CONFIRM = "Add terrain";
 var HEIGHTMAP_WARNING_ACK_KEY = "cfg.heightmapWarningAcknowledged";
+
+// ../cfg-shared/dist/constants/heightfield.js
+var DEFAULT_SAMPLES_PER_SQUARE = 2;
+var MAX_HEIGHTFIELD_DIM = 256;
+function heightfieldDims(squaresX, squaresY, samplesPerSquare = DEFAULT_SAMPLES_PER_SQUARE) {
+  const sx = Math.max(1, Math.floor(squaresX) || 1);
+  const sy = Math.max(1, Math.floor(squaresY) || 1);
+  let spp = Math.max(1, Math.floor(samplesPerSquare) || 1);
+  while (spp > 1 && spp * Math.max(sx, sy) + 1 > MAX_HEIGHTFIELD_DIM)
+    spp--;
+  return {
+    cols: Math.min(MAX_HEIGHTFIELD_DIM, spp * sx + 1),
+    rows: Math.min(MAX_HEIGHTFIELD_DIM, spp * sy + 1),
+    samplesPerSquare: spp
+  };
+}
+function flatHeightfield(cols, rows) {
+  return new Array(Math.max(0, cols * rows)).fill(0);
+}
 export {
+  DEFAULT_SAMPLES_PER_SQUARE,
   HEIGHTMAP_WARNING_ACK_KEY,
   HEIGHTMAP_WARNING_BODY,
   HEIGHTMAP_WARNING_CONFIRM,
   HEIGHTMAP_WARNING_TITLE,
-  TerrainStampController
+  MAX_HEIGHTFIELD_DIM,
+  TerrainStampController,
+  flatHeightfield,
+  heightfieldDims
 };
