@@ -1512,6 +1512,10 @@ export class Overlay3D {
       // Foundry's own rotate-on-move contract: the WORLD setting core.tokenAutoRotate (default true)
       // gates it, and a token opts out individually with lockRotation.
       if (this._tokenAutoRotate() && !doc.lockRotation && facing != null) update.rotation = facing
+      // Plain update() — deliberately NOT doc.move(). Routing through the v13+ movement API was tried
+      // to get Foundry's measuring ruler (Token#showRuler) and did NOT produce it, while its own
+      // pathing walked the token straight THROUGH a wall our _moveBlocked check had already rejected.
+      // See fp#48 for the outstanding ruler-parity work.
       doc.update(update)
     } catch {
       /* permission / movement rejected — ignore */
@@ -1899,6 +1903,11 @@ export class Overlay3D {
     if (this._controls) this._controls.enabled = false
     // Free + the Party/GM tabletop seats all run on the SHARED ViewerControls.
     const sharedMode = m === 'orbit' ? 'free' : m === 'tabletop' || m === 'tabletop-gm' ? m : null
+    // Restore world-up BEFORE the shared controller is built or re-seated. Top-Down repoints
+    // camera.up to a HORIZONTAL axis for its straight-down shot, and OrbitControls captures its orbit
+    // axis from object.up when constructed — so a controller born while Top-Down was active orbits
+    // around a sideways axis forever, which is what left the seats resolving to nonsense positions.
+    if (m !== 'tracked' && this._orbitCamera) this._orbitCamera.up.set(0, 1, 0)
     if (sharedMode) this._ensureSharedControls(sharedMode)
     else this._teardownSharedControls()
     if (this._container) this._container.style.pointerEvents = 'auto'
