@@ -44,6 +44,7 @@ import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
 import { MacroPullSync } from './services/macro-pull-sync.js'
+import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
 
@@ -102,6 +103,8 @@ let _compendiumPullSync = null
 let _actorPullSync = null
 /** @type {MacroPullSync|null} */
 let _macroPullSync = null
+/** @type {ScenePullSync|null} */
+let _scenePullSync = null
 
 /** @type {Overlay3D|null} 3D view-skin over the canvas (DRAFT). */
 let _overlay3D = null
@@ -663,6 +666,12 @@ Hooks.once('ready', async () => {
     // actor + journal syncs.
     _macroPullSync = new MacroPullSync(_api, heartbeatInstallId)
     _macroPullSync.start()
+
+    // Core→Foundry scene sync (dt#246) — platform-authored scenes reach the table,
+    // creates included. `active` is never synced: it is writable through a plain update(),
+    // so pushing it would change which scene every connected player is looking at.
+    _scenePullSync = new ScenePullSync(_api, heartbeatInstallId)
+    _scenePullSync.start()
   }
 
   // Core→Foundry party-journal sync (#184) — pull the platform journal entries

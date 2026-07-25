@@ -112,6 +112,12 @@ export function withRemovals(fields, removedPaths) {
  * @property {(api, inst, world, system, results) => Promise<any>} ack
  * @property {Array<{name: string, field: string, of: (live: any) => any[]}>} [embedded]
  *           embedded collections to reconcile, e.g. Item/`items`, ActiveEffect/`effects`
+ * @property {string[]} [stripFields] top-level fields this document class must NEVER write,
+ *           whatever the server sends. Belt-and-braces for fields that are dangerous rather
+ *           than merely wrong: `Scene.active` is writable through a plain create/update, so
+ *           a doc carrying it changes which scene every connected player is looking at. The
+ *           server already strips it; a live spec proved the plugin must too, because
+ *           trusting the payload is exactly how that reaches a player's screen.
  */
 
 export class DocPullSync {
@@ -215,6 +221,10 @@ export class DocPullSync {
     if (cfg.checkSystem && systemId && game.system?.id && systemId !== game.system.id) {
       throw new ApplyRefusal('system_mismatch', `${cfg.noun} is for ${systemId}, world runs ${game.system.id}`)
     }
+
+    // Strip the never-write fields BEFORE anything reads the doc, so create and update
+    // cannot diverge on it.
+    for (const field of cfg.stripFields ?? []) delete docData[field]
 
     const live = cfg.collection().get(foundryDocId)
 

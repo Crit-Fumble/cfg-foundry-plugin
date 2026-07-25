@@ -453,4 +453,26 @@ export class CoreAPIClient {
   ackMacroSync(installationId, worldId, results) {
     return this.post(`/api/v1/installations/${installationId}/foundry/macro-sync/ack`, { world: worldId, results })
   }
+
+  // ── Scene sync (platform → this world) — dt#246 ───────────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/scene-sync?world={worldId}
+   * Platform-authored scenes whose doc differs from what this world last held — creates
+   * included. Empty is the normal steady state.
+   *
+   * NB the docs never carry `active`: it is writable through a plain update(), so pushing
+   * it would change which scene every connected player is looking at. The server strips it.
+   */
+  getSceneSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/scene-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/scene-sync/ack
+   * @param {Array<{ sceneId: string|null, foundrySceneId: string, ok: boolean, docData?: object, error?: string, code?: string }>} results
+   */
+  ackSceneSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/scene-sync/ack`, { world: worldId, results })
+  }
 }
