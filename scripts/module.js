@@ -56,7 +56,7 @@ const MODULE_ID = 'crit-fumble-core'
 // `window.CFGCore.version` reports and what the boot log prints; module.json is
 // what Foundry reads. They had silently drifted a release apart (2.13.0 vs
 // 2.14.0) until fp#47, so every consumer read a stale version.
-const MODULE_VERSION = '2.28.0'
+const MODULE_VERSION = '2.33.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
