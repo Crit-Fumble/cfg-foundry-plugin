@@ -1,4 +1,4 @@
-// ../cfg-shared/dist/code-editor/json-document.js
+// node_modules/@crit-fumble/shared/dist/code-editor/json-document.js
 function parseJson(text) {
   try {
     return { ok: true, value: JSON.parse(text) };
@@ -85,7 +85,7 @@ function canSaveDocument(text, rules = {}) {
   return !checkFoundryDoc(parsed.value, rules).some((i) => i.severity === "error");
 }
 
-// ../cfg-shared/dist/code-editor/system-schema.js
+// node_modules/@crit-fumble/shared/dist/code-editor/system-schema.js
 var DEFAULT_IGNORED = [];
 function checkAgainstSystemSchema(value, descriptor, opts = {}) {
   if (!descriptor)

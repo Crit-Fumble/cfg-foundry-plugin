@@ -1,4 +1,4 @@
-// ../cfg-shared/dist/vtt-viewer/terrain-stamp.js
+// node_modules/@crit-fumble/threejs/dist/terrain-stamp.js
 var TerrainStampController = class {
   host;
   cfg;
@@ -170,13 +170,13 @@ var TerrainStampController = class {
   }
 };
 
-// ../cfg-shared/dist/constants/terrain-warnings.js
+// node_modules/@crit-fumble/shared/dist/constants/terrain-warnings.js
 var HEIGHTMAP_WARNING_TITLE = "Add 3D terrain to this scene?";
 var HEIGHTMAP_WARNING_BODY = "Heightmaps add a 3D terrain mesh to this scene. Players on lower-end machines may see slower rendering, and the cost grows with the size of the scene. We recommend skipping heightmaps on very large scenes with a lot of walls \u2014 those are the heaviest to render. You can remove the terrain later if it causes trouble.";
 var HEIGHTMAP_WARNING_CONFIRM = "Add terrain";
 var HEIGHTMAP_WARNING_ACK_KEY = "cfg.heightmapWarningAcknowledged";
 
-// ../cfg-shared/dist/constants/heightfield.js
+// node_modules/@crit-fumble/shared/dist/constants/heightfield.js
 var DEFAULT_SAMPLES_PER_SQUARE = 2;
 var MAX_HEIGHTFIELD_DIM = 256;
 function heightfieldDims(squaresX, squaresY, samplesPerSquare = DEFAULT_SAMPLES_PER_SQUARE) {

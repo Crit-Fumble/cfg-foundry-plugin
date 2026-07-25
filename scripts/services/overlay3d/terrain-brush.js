@@ -1,4 +1,4 @@
-// ../cfg-shared/dist/vtt-viewer/terrain-brush.js
+// node_modules/@crit-fumble/threejs/dist/terrain-brush.js
 var FLAT_INNER = 0.7;
 function profileFalloff(t, profile) {
   if (profile === "plateau")
