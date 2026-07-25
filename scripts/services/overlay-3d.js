@@ -676,11 +676,31 @@ export class Overlay3D {
    *  re-frames the camera for its own reasons and otherwise leaves the seat stranded mid-table. */
   _applySeatFraming(mode) {
     if (mode !== 'tabletop' && mode !== 'tabletop-gm') return
+    const sc = this._sharedControls
+    const cam = this._viewer?.camera
+    if (!sc || !cam) return
     try {
-      // setSeat() UNCONDITIONALLY re-applies the seat position. reframe()/setMode() both early-return
-      // when the controller thinks it is already in this mode, which silently left the Party seat
-      // wherever the previous camera happened to be. Home: Party south (0), GM north (π).
-      this._sharedControls?.setSeat?.(mode === 'tabletop-gm' ? Math.PI : 0)
+      // Ask the shared controller first (keeps PlayTable parity), then ENFORCE the seat ourselves.
+      // Its setSeat()/reframe() proved unreliable from here — the seat silently never landed, leaving
+      // the camera wherever the previous mode left it — so we place the camera and hand the result to
+      // OrbitControls, whose update() then maintains it. Same seat geometry the shared controller uses.
+      sc.setSeat?.(mode === 'tabletop-gm' ? Math.PI : 0)
+      const r = this._sceneRect()
+      const cx = r.x + r.width / 2
+      const cz = r.y + r.height / 2
+      const span = Math.max(r.width, r.height)
+      const dist = span * 0.9
+      const horiz = dist * 0.57
+      const seat = mode === 'tabletop-gm' ? Math.PI : 0 // Party sits south (+z), GM north (-z)
+      cam.up.set(0, 1, 0)
+      cam.position.set(cx + horiz * Math.sin(seat), dist * 0.82, cz + horiz * Math.cos(seat))
+      cam.lookAt(cx, 0, cz)
+      cam.updateProjectionMatrix()
+      // Re-seed OrbitControls from the new pose, or its next update() snaps the camera back to the
+      // spherical it still holds from the previous mode.
+      sc.orbit3d.target.set(cx, 0, cz)
+      sc.orbit3d.update()
+      this._render()
     } catch (err) {
       console.warn('CFG Core | seat framing failed:', err)
     }
