@@ -2635,7 +2635,7 @@ export class Overlay3D {
     line.renderOrder = 891
     grp.add(line)
     // --- glow prism: draped side walls, alpha peaking at the ground and fading toward the
-    // extremities (RGBA vertex colours). Height follows the token's elevation: up to the mini
+    // extremities (RGBA vertex colors). Height follows the token's elevation: up to the mini
     // when it flies (+elev), down to it when it's below the floor (-elev). Winding gives
     // INWARD-facing normals; with FrontSide only the far (behind-token) walls render, so the
     // glow never washes over the token art. ---
@@ -2936,7 +2936,7 @@ export class Overlay3D {
           indices: Array.from(tri.indices),
           rings: this._regionRings(doc),
           // Default: drape the scene map over the raised top (lifted island content). An
-          // explicit colour flag overrides to a flat-coloured tier instead.
+          // explicit color flag overrides to a flat-colored tier instead.
           src: cfg.color ? undefined : mapUrl,
           color: parseHexColor(cfg.color, null) ?? (Number.isFinite(Number(doc.color)) ? Number(doc.color) : undefined),
         })
@@ -2960,7 +2960,7 @@ export class Overlay3D {
     return buildTerrainJson(field, {
       pxPerUnit: this._pxPerUnit(),
       src: bg ? this._assetUrl(bg) : undefined,
-      // No background image → tint the terrain with the scene's OWN letterbox colour, so 3D matches
+      // No background image → tint the terrain with the scene's OWN letterbox color, so 3D matches
       // the 2D canvas instead of falling back to the shared core's hardcoded grass-green (0x6a7f52).
       color: this._sceneBackgroundColor(),
     })
@@ -3348,7 +3348,7 @@ export class Overlay3D {
   /**
    * Resolved 3D wall defaults for a segment: the wall's own level default wins
    * over the scene-wide default. buildWallsJson applies these only as fallbacks
-   * under the wall's OWN flag, so a GM sets a texture/colour once per level (or
+   * under the wall's OWN flag, so a GM sets a texture/color once per level (or
    * once per scene) instead of on every segment. Returns null-valued fields when
    * no default is set (the producer then uses the core's default palette).
    */
@@ -3367,7 +3367,7 @@ export class Overlay3D {
    * pair: a hemisphere ambient from Foundry's computed daylight/darkness colors
    * (modulated by the darkness level), a soft directional sun for form (the core
    * positions/frames it from `bounds`, matching this file's own prior math), and
-   * a point light for each AmbientLight placeable + token-emitted light (colour +
+   * a point light for each AmbientLight placeable + token-emitted light (color +
    * radius from its config).
    */
   _buildLightsJson() {
@@ -3536,7 +3536,7 @@ export class Overlay3D {
     })
   }
 
-  /** The current user's colour as a 0xRRGGBB number (for the target reticle), or undefined. */
+  /** The current user's color as a 0xRRGGBB number (for the target reticle), or undefined. */
   _targetColor() {
     const c = game?.user?.color
     if (c == null) return undefined
@@ -3728,7 +3728,7 @@ export class Overlay3D {
 
   /**
    * Generate a STARTING height field from the scene's map image (classify land/water/beach/
-   * rock by colour, erode isolated rock-noise) into the heightfield flag. This is the base
+   * rock by color, erode isolated rock-noise) into the heightfield flag. This is the base
    * terrain + a one-click way to recover from over-sculpting; the GM then shapes it by hand.
    */
   /**

@@ -190,7 +190,7 @@ test('grid-lock: raise snaps a flat tile plateau, quantised to whole/half grid-u
   expect(h1.max, 'a half-unit grid step lifts the tile to 0.5').toBeCloseTo(0.5, 5)
 })
 
-test('image-less scene: 3D terrain uses the scene background colour, not hardcoded green', async ({ page }) => {
+test('image-less scene: 3D terrain uses the scene background color, not hardcoded green', async ({ page }) => {
   test.setTimeout(90_000)
   await openFlatTerrain(page)
   const t = await page.evaluate(() => {
@@ -200,9 +200,9 @@ test('image-less scene: 3D terrain uses the scene background colour, not hardcod
   })
   console.log('[terrain] terrain json color=%s sceneBg=%s src=%s', t.color, t.bg, t.src)
   // The CFG Terrain Test scene has no background IMAGE, so the terrain tints with the scene's own
-  // letterbox colour — NOT the shared core's grass-green fallback (0x6a7f52).
-  expect(t.color, 'terrain carries a colour so core.ts does not fall back to green').not.toBeUndefined()
-  expect(t.color, 'terrain colour == the scene background colour (3D matches 2D)').toBe(t.bg)
+  // letterbox color — NOT the shared core's grass-green fallback (0x6a7f52).
+  expect(t.color, 'terrain carries a color so core.ts does not fall back to green').not.toBeUndefined()
+  expect(t.color, 'terrain color == the scene background color (3D matches 2D)').toBe(t.bg)
   expect(t.color, 'not the hardcoded grass-green').not.toBe(0x6a7f52)
 })
 

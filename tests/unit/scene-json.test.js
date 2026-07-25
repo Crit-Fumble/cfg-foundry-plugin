@@ -98,10 +98,10 @@ describe('buildWallsJson', () => {
     expect(w3).toMatchObject({ tileX: 2, tileY: 2 })
   })
 
-  it('no texture → optional flat wall colour from the flag (no color = default palette)', () => {
+  it('no texture → optional flat wall color from the flag (no color = default palette)', () => {
     expect(buildWallsJson([wall({ flags: { 'crit-fumble-core': { color: '#ff8800' } } })], ctx)[0].color).toBe(0xff8800)
     expect(buildWallsJson([wall()], ctx)[0].color).toBeUndefined()
-    // a texture wins over colour: textured wall carries no flat colour
+    // a texture wins over color: textured wall carries no flat color
     const [w] = buildWallsJson([wall({ flags: { 'crit-fumble-core': { texture: 't.png', color: '#ff8800' } } })], ctx)
     expect(w.texture).toBe('ABS:t.png')
     expect(w.color).toBeUndefined()
@@ -119,9 +119,9 @@ describe('buildWallsJson', () => {
     expect(withDflt({ tileScale: 2 }, { flags: { 'crit-fumble-core': { texture: 'own.png' } } })).toMatchObject({ tileX: 2, tileY: 2 })
     // a BLANK own tileScale inherits the default (not shadow it with 1)
     expect(withDflt({ tileScale: 3 }, { flags: { 'crit-fumble-core': { texture: 'own.png', tileScale: '' } } })).toMatchObject({ tileX: 3, tileY: 3 })
-    // default colour applies to an untextured wall; a texture default would instead win
+    // default color applies to an untextured wall; a texture default would instead win
     expect(withDflt({ color: '#00ff00' }, {}).color).toBe(0x00ff00)
-    // the wall's own colour beats the default colour
+    // the wall's own color beats the default color
     expect(withDflt({ color: '#00ff00' }, { flags: { 'crit-fumble-core': { color: '#0000ff' } } }).color).toBe(0x0000ff)
   })
 
@@ -149,7 +149,7 @@ describe('parseHexColor', () => {
 })
 
 describe('buildGridJson', () => {
-  it('mirrors Foundry grid colour (hex string) + alpha floor', () => {
+  it('mirrors Foundry grid color (hex string) + alpha floor', () => {
     expect(buildGridJson({ type: 1, color: '#999999', alpha: 0.1 }, 100)).toEqual({ size: 100, showHelper: true, color: 0x999999, opacity: 0.25 })
   })
   it('gridless (type 0) → no helper; default grey when unset', () => {
@@ -354,7 +354,7 @@ describe('buildTokenJson', () => {
     const noRing = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: false, subject: { texture: 'subject.png' } }, flags: {} }
     expect(buildTokenJson(noRing, kctx).texture).toBe('ABS:raw.png')
   })
-  it('Dynamic Token Ring: carries ring/background colours + subject scale (off → all undefined)', () => {
+  it('Dynamic Token Ring: carries ring/background colors + subject scale (off → all undefined)', () => {
     const doc = { id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: true, colors: { ring: '#ff0000', background: 0x00ff00 }, subject: { texture: 'subject.png', scale: 1.5 } }, flags: {} }
     expect(buildTokenJson(doc, kctx)).toMatchObject({ ringColor: 0xff0000, ringBackground: 0x00ff00, artScale: 1.5 })
     const off = buildTokenJson({ id: 'k', x: 0, y: 0, texture: { src: 'raw.png' }, ring: { enabled: false }, flags: {} }, kctx)
@@ -372,7 +372,7 @@ describe('buildTokenJson', () => {
     expect(buildTokenJson({ id: 'k', x: 0, y: 0, texture: { src: 'k.png' }, flags: {} }, kctx).fit).toBe('contain')
     expect(buildTokenJson({ id: 'k', x: 0, y: 0, flags: {} }, kctx).fit).toBe('contain')
   })
-  it('emits the PARTY colour for a player-owned friendly token via ctx.hasPlayerOwner', () => {
+  it('emits the PARTY color for a player-owned friendly token via ctx.hasPlayerOwner', () => {
     const doc = { id: 'k', x: 0, y: 0, disposition: 1, flags: {} }
     expect(buildTokenJson(doc, { ...kctx, hasPlayerOwner: true }).color).toBe(0x33bc4e) // PARTY
     expect(buildTokenJson(doc, { ...kctx, hasPlayerOwner: false }).color).toBe(0x43dfdf) // FRIENDLY

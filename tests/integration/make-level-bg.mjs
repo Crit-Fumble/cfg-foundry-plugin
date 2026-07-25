@@ -49,7 +49,7 @@ function encodePNG(width, height, rgba) {
   ihdr.writeUInt32BE(width, 0)
   ihdr.writeUInt32BE(height, 4)
   ihdr[8] = 8 // bit depth
-  ihdr[9] = 6 // colour type: RGBA
+  ihdr[9] = 6 // color type: RGBA
   const stride = 1 + width * 4
   const raw = Buffer.alloc(height * stride)
   for (let y = 0; y < height; y++) {

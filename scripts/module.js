@@ -336,7 +336,7 @@ Hooks.on('renderWallConfig', (app, element) => {
 /*  Scene / Level 3D wall DEFAULTS              */
 /* -------------------------------------------- */
 
-// Scene-wide and per-level default wall texture/colour/tiling for the 3D view, so a GM
+// Scene-wide and per-level default wall texture/color/tiling for the 3D view, so a GM
 // sets them once instead of on every segment. Stored in the same module flag namespace
 // on the Scene and Level documents (`wallTexture`/`wallColor`/`wallTileScale`); the 3D
 // producer resolves the cascade wall-flag → level default → scene default.
@@ -348,7 +348,7 @@ function cfg3dDefaultsFieldset(cfg) {
   fs.className = 'cfg-3d-defaults'
   fs.innerHTML =
     '<legend>3D Wall Defaults</legend>' +
-    '<p class="hint">Applied to walls that have no 3D texture/colour of their own. A per-level default overrides the scene default.</p>' +
+    '<p class="hint">Applied to walls that have no 3D texture/color of their own. A per-level default overrides the scene default.</p>' +
     '<div class="form-group"><label>Wall Texture</label><div class="form-fields">' +
     `<file-picker name="flags.crit-fumble-core.wallTexture" type="imagevideo" value="${tex}"></file-picker>` +
     '</div></div>' +
@@ -400,7 +400,7 @@ Hooks.on('renderSceneConfig', (app, element) => {
 
 // Region → 3D terrain. A region renders as a flat-topped terrain tier in the 3D view when
 // "Render as 3D terrain" is on. All fields are OPTIONAL: surface defaults to the region's
-// native Elevation → Bottom, base to sea level (0), colour to the region's own colour.
+// native Elevation → Bottom, base to sea level (0), color to the region's own color.
 // Injected into the Placement tab (which already holds Elevation).
 Hooks.on('renderRegionConfig', (app, element) => {
   try {
@@ -429,7 +429,7 @@ Hooks.on('renderRegionConfig', (app, element) => {
       '</div><p class="hint">The skirt drops (or rises) to here. Blank = 0 (sea level).</p></div>' +
       '<div class="form-group"><label>Terrain Color</label><div class="form-fields">' +
       `<color-picker name="flags.crit-fumble-core.color" value="${cfg.color || ''}"></color-picker>` +
-      '</div><p class="hint">Blank = the region\'s own colour.</p></div>'
+      '</div><p class="hint">Blank = the region\'s own color.</p></div>'
     tab.appendChild(fs)
   } catch (e) {
     console.warn('CFG Core | region 3D-terrain injection failed', e)
