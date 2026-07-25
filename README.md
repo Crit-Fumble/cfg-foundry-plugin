@@ -4,7 +4,7 @@ Core platform integration for [Crit-Fumble](https://crit-fumble.com)–hosted Fo
 
 - **Module ID:** `crit-fumble-core`
 - **Compatibility:** FoundryVTT v13–v14
-- **Manifest:** `https://core.crit-fumble.com/foundry/modules/crit-fumble-core/module.json`
+- **Manifest:** `https://raw.githubusercontent.com/Crit-Fumble/cfg-foundry-plugin/main/module.json`
 
 ## Documentation
 
@@ -33,25 +33,24 @@ fill it in before running `npm run test:foundry:up`.
 
 ## Self-hosting / forking
 
-The default `module.json` points at the CFG-hosted manifest endpoint. If you're
-running your own Crit-Fumble Core stack and want Foundry's update check to pull
-your build (not ours), edit the manifest URLs before packaging:
+The default `module.json` self-distributes from this GitHub repo (`manifest` →
+`raw.githubusercontent.com/.../main/module.json`, `download` → the repo archive
+zip). If you're running your own Crit-Fumble Core stack and want Foundry's update
+check to pull your build (not ours), edit these fields in `module.json` before
+packaging:
 
-1. **`module.json` (line ~9):** `authors[0].url` is `https://crit-fumble.com` —
-   point it at your own site if you want.
-2. **`module.json` (line ~27):** `url` is `https://crit-fumble.com` — same idea.
-3. **`module.json` (line ~28):** `manifest` is
-   `https://core.crit-fumble.com/foundry/modules/crit-fumble-core/module.json`.
-   This is the URL Foundry hits to check for updates and **must** point at your
-   domain so self-hosted Foundry instances install your zip, not ours.
-4. **`scripts/build-zip.js` (line ~199):** the `download` URL written into the
-   public `module.json` is hardcoded to `https://core.crit-fumble.com/...`.
-   Edit the `download` template to match your domain, or post-process the
-   generated `module.json` after `npm run build:zip`.
+1. **`manifest`:** the URL Foundry polls for updates — point it at your fork's
+   `raw.githubusercontent.com/<you>/.../main/module.json` (or your own host).
+   This **must** be your domain so self-hosted Foundry instances install your
+   zip, not ours.
+2. **`download`:** the zip Foundry fetches on install — your fork's archive URL.
+3. **`url`** and **`authors[0].url`:** `https://crit-fumble.com` — point them at
+   your own site if you want.
 
-Then run `npm run build:zip` to produce a distributable zip + manifest pair in
-`public/` — host both files behind the URLs you set above and Foundry's "Install
-Module" flow will pick them up.
+`npm run build:zip` copies these URLs verbatim into the generated
+`dist/module.json` (it no longer hardcodes any endpoint), so once you've edited
+`module.json` there's nothing else to change — Foundry's "Install Module" flow
+picks up whatever you set.
 
 There is **no `MANIFEST_URL` env var override today** — forks edit the JSON and
 `scripts/build-zip.js` directly. Trademark restrictions still apply: see
