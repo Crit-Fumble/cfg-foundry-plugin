@@ -62,6 +62,47 @@ class ApplyRefusal extends Error {
   }
 }
 
+/**
+ * Merge the server's dotted `removedPaths` into the update payload as Foundry's `-=`
+ * deletion markers (fp#49).
+ *
+ * Foundry marks a deletion by prefixing the FINAL path segment with `-=`, so
+ * `system.details.biography` becomes `system: { details: { '-=biography': null } }`.
+ *
+ * MARKERS ARE NESTED INTO THE PAYLOAD, NOT SENT AS FLAT DOTTED KEYS. Verified against
+ * Foundry v14.361: a flat `system.details.-=biography` key sent ALONGSIDE a nested
+ * `system` object is silently dropped — the two collide when Foundry expands the payload
+ * and the nested object wins. One coherent tree is the only form that applies.
+ *
+ * Returns a copy; the caller's `fields` is never mutated.
+ */
+export function withRemovals(fields, removedPaths) {
+  if (!Array.isArray(removedPaths) || removedPaths.length === 0) return fields
+
+  const out = { ...fields }
+  for (const path of removedPaths) {
+    if (typeof path !== 'string' || !path) continue
+    const segments = path.split('.')
+    const leaf = segments.pop()
+    if (!leaf) continue
+
+    // Walk down, cloning as we go so we never mutate a shared sub-object.
+    let cursor = out
+    let ok = true
+    for (const segment of segments) {
+      const next = cursor[segment]
+      if (next !== undefined && (typeof next !== 'object' || next === null || Array.isArray(next))) {
+        ok = false // the platform put a non-object here; a marker under it is meaningless
+        break
+      }
+      cursor[segment] = next === undefined ? {} : { ...next }
+      cursor = cursor[segment]
+    }
+    if (ok) cursor[`-=${leaf}`] = null
+  }
+  return out
+}
+
 export class ActorPullSync {
   /**
    * @param {import('../clients/api-client.js').CoreAPIClient} apiClient
@@ -193,26 +234,22 @@ export class ActorPullSync {
     // it, so they are reconciled explicitly — exactly like journal pages.
     const { items, effects, _id: _ignoredId, ...fields } = docData
 
-    // PLAIN MERGE — deliberately NOT document-apply.js's `withDeletions`.
+    // Deletion markers come from the SERVER's `removedPaths`, never from diffing the live
+    // document (fp#49). This is deliberate and load-bearing.
     //
-    // That helper is right for the compendium write-back and the JSON editor, where the
-    // desired state is a COMPLETE Foundry document. An actor doc from the platform is
-    // not: it carries what the sheet models and nothing else. Diffing it against
-    // `live.toObject()` therefore reads every field we simply don't represent as
-    // "removed" and emits a `-=` marker for it.
+    // `document-apply.js`'s `withDeletions` is right for the compendium write-back and
+    // the JSON editor, where the desired state is a COMPLETE Foundry document. An actor
+    // doc from the platform is not — it carries what the sheet models and nothing else.
+    // Diffing it against `live.toObject()` asks Foundry to delete everything we don't
+    // represent (`_stats`, `prototypeToken`, most of a system's DataModel), and on
+    // dnd5e 5.3.3 / Foundry v14.361 that makes the ENTIRE update a silent no-op: the
+    // promise resolves, nothing throws, and the change we wanted never lands. It would
+    // be data loss even if it worked.
     //
-    // Verified against dnd5e 5.3.3 on Foundry v14.361 — the failure is SILENT and TOTAL:
-    // the generated payload asked to delete `_stats`, `prototypeToken`, `img`, `folder`
-    // and `sort`, and the whole `update()` became a no-op. The promise resolved, nothing
-    // threw, and the hp change we actually wanted never landed. An identical payload
-    // without markers applied it correctly. Caught only by driving a real world; the
-    // mocked unit test passed either way, because a stub agrees with anything.
-    //
-    // The cost is explicit and accepted for v1: a field REMOVED platform-side does not
-    // propagate — it stays at its last value in the world until something overwrites it.
-    // That is strictly better than a sync that silently stops working, and it matches
-    // what the journal sync next door already does.
-    await live.update(fields)
+    // `removedPaths` is computed against the server's own `lastPushedData`, so it can
+    // only ever name fields WE previously wrote. A field the platform never modelled was
+    // never in that baseline and therefore cannot be proposed for deletion.
+    await live.update(withRemovals(fields, item.removedPaths))
     await this._reconcileEmbedded(live, 'Item', live.items, items)
     await this._reconcileEmbedded(live, 'ActiveEffect', live.effects, effects)
   }

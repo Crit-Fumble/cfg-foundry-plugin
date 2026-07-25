@@ -41,6 +41,7 @@ function planItem(over = {}) {
     everPushed: false,
     systemId: 'dnd5e',
     claimedAt: null,
+    removedPaths: [],
     docData: {
       _id: ACTOR_ID,
       name: 'Aria Brightwood',
@@ -167,6 +168,45 @@ test.describe('Actor pull-sync against real Foundry', () => {
     expect(res.id).toBe(ACTOR_ID) // same id — keepId held across the recreate
     expect(res.type).toBe('npc')
     expect(res.sourceCount).toBe(1)
+  })
+
+  test('honours removedPaths — a custom field deleted platform-side is REMOVED (fp#49)', async ({ page }) => {
+    // The thing a mock cannot answer: does real Foundry apply the marker we generate,
+    // sent in the same update as the merged desired fields? Probed one level at a time
+    // (see the REMOVABLE_ROOTS note server-side) — `flags` is where removals actually
+    // work; markers under `system` are accepted and silently ignored by the DataModel.
+    await runTick(page, [
+      planItem({ docData: { flags: { playtable: { sourceCharacterId: 'char_live_1', customFields: { grit: 3, luck: 1 } } } } }),
+    ])
+    const before = await page.evaluate(
+      (id) => foundry.utils.deepClone(game.actors.get(id)?.toObject()?.flags?.playtable?.customFields ?? null),
+      ACTOR_ID,
+    )
+    expect(before).toEqual({ grit: 3, luck: 1 })
+
+    // The player deletes `luck`; the server names it in removedPaths.
+    const res = await runTick(page, [
+      planItem({
+        everPushed: true,
+        removedPaths: ['flags.playtable.customFields.luck'],
+        docData: {
+          system: { attributes: { hp: { value: 7, max: 14 } } },
+          flags: { playtable: { sourceCharacterId: 'char_live_1', customFields: { grit: 3 } } },
+        },
+      }),
+    ])
+
+    const after = await page.evaluate(
+      (id) => foundry.utils.deepClone(game.actors.get(id)?.toObject()?.flags?.playtable?.customFields ?? null),
+      ACTOR_ID,
+    )
+
+    // The removal landed — a plain merge would have left `luck` behind forever.
+    expect(after).toEqual({ grit: 3 })
+    // ...and the rest of the update still applied. The failure mode fp#49 guards against
+    // is a marker silently voiding the WHOLE update, which is what diffing the live
+    // document used to do.
+    expect(res.hp).toMatchObject({ value: 7 })
   })
 
   test('reports world_deleted rather than resurrecting a GM-deleted actor', async ({ page }) => {

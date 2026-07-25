@@ -16,7 +16,7 @@
  */
 
 import { jest } from '@jest/globals'
-import { ActorPullSync } from '../../scripts/services/actor-pull-sync.js'
+import { ActorPullSync, withRemovals } from '../../scripts/services/actor-pull-sync.js'
 
 /** Array-backed game.users collection that also exposes Foundry's `.get(id)`. */
 function makeUsers(list) {
@@ -33,6 +33,7 @@ const planItem = (over = {}) => ({
   everPushed: false,
   systemId: 'dnd5e',
   claimedAt: null,
+  removedPaths: [],
   docData: {
     _id: ACTOR_ID,
     name: 'Aria Brightwood',
@@ -174,22 +175,38 @@ describe('ActorPullSync — update', () => {
     expect(live.deleteEmbeddedDocuments).toHaveBeenCalledWith('Item', ['itemOLD00000000A'])
   })
 
-  it('does NOT emit deletion markers — they silently void the whole update', async () => {
-    // Verified against real dnd5e 5.3.3 (specs/actor-pull-sync.spec.js): a payload
-    // carrying `-=` markers for fields the platform doc doesn't model (`_stats`,
-    // `prototypeToken`, `img`, `folder`, `sort`) makes update() a SILENT no-op — it
-    // resolves, nothing throws, and the change we wanted never lands. The trade is
-    // stated in the service header: a platform-side removal does not propagate.
+  it('emits `-=` markers ONLY for the server-supplied removedPaths (fp#49)', async () => {
+    // Never from diffing the live doc: that asks Foundry to delete every field the
+    // platform doesn't model (`_stats`, `prototypeToken`, …), which makes the whole
+    // update a silent no-op on dnd5e. removedPaths comes from the server's own baseline.
     const live = liveActor()
     live.toObject = () => ({ _id: ACTOR_ID, name: 'Stale', type: 'character', system: { gone: 1 }, items: [], effects: [], _stats: { modifiedTime: 1 } })
     seedActors({ [ACTOR_ID]: live })
-    const a = api([planItem({ everPushed: true, docData: { _id: ACTOR_ID, name: 'Aria', type: 'character', system: {}, items: [] } })])
+    const a = api([
+      planItem({
+        everPushed: true,
+        removedPaths: ['system.gone', 'img'],
+        docData: { _id: ACTOR_ID, name: 'Aria', type: 'character', system: {}, items: [] },
+      }),
+    ])
     await new ActorPullSync(a, 'inst-1').tick()
 
     const payload = live.update.mock.calls[0][0]
-    expect(Object.keys(payload).some((k) => k.startsWith('-='))).toBe(false)
-    expect(JSON.stringify(payload)).not.toContain('-=')
+    expect(payload.system['-=gone']).toBeNull()
+    expect(payload['-=img']).toBeNull()
+    // The fields the platform never modelled are untouched — no marker for them anywhere.
+    expect(JSON.stringify(payload)).not.toContain('_stats')
+    expect(JSON.stringify(payload)).not.toContain('prototypeToken')
     expect(payload.name).toBe('Aria')
+  })
+
+  it('sends no markers at all when the server names no removals', async () => {
+    const live = liveActor()
+    seedActors({ [ACTOR_ID]: live })
+    const a = api([planItem({ everPushed: true })]) // removedPaths defaults to []
+    await new ActorPullSync(a, 'inst-1').tick()
+
+    expect(JSON.stringify(live.update.mock.calls[0][0])).not.toContain('-=')
   })
 
   it('recreates with keepId when the type changed — update() cannot change type', async () => {
@@ -277,5 +294,39 @@ describe('ActorPullSync — the ack contract', () => {
     expect(a.getActorSyncPlan).toHaveBeenCalledTimes(1)
     release()
     await first
+  })
+})
+
+describe('withRemovals — marker syntax (fp#49)', () => {
+  it('nests the marker into the payload tree, prefixing the FINAL segment', () => {
+    // NOT a flat `system.attributes.-=ac` key: verified against Foundry v14.361, a flat
+    // dotted marker sent alongside a nested `system` object is silently dropped.
+    expect(withRemovals({}, ['system.attributes.ac'])).toEqual({ system: { attributes: { '-=ac': null } } })
+  })
+
+  it('handles a top-level path', () => {
+    expect(withRemovals({}, ['img'])).toEqual({ '-=img': null })
+  })
+
+  it('merges into the desired value at the same level without clobbering it', () => {
+    const out = withRemovals({ name: 'A', system: { hp: 1 } }, ['system.ac'])
+    expect(out.name).toBe('A')
+    expect(out.system).toEqual({ hp: 1, '-=ac': null })
+  })
+
+  it('does not mutate the caller’s payload', () => {
+    const fields = { system: { hp: 1 } }
+    withRemovals(fields, ['system.ac'])
+    expect(fields.system).toEqual({ hp: 1 })
+  })
+
+  it('skips a path whose parent the platform set to a non-object', () => {
+    expect(withRemovals({ system: 'scalar' }, ['system.ac'])).toEqual({ system: 'scalar' })
+  })
+
+  it('returns the payload untouched when there is nothing to remove', () => {
+    const fields = { name: 'A' }
+    expect(withRemovals(fields, [])).toBe(fields)
+    expect(withRemovals(fields, undefined)).toBe(fields)
   })
 })
