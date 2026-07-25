@@ -664,18 +664,31 @@ export class Overlay3D {
       },
     })
     // Foundry scenes can be enormous — don't clamp the zoom-out; keep orbit above ground.
-    const o = this._sharedControls.orbit3d
-    o.maxDistance = 5_000_000
-    o.maxPolarAngle = Math.PI * 0.495
     // Created WITH this mode, so setMode() would early-return and the seat would never be applied.
     this._applySeatFraming(mode)
+  }
+
+  /**
+   * Plugin-specific camera limits, RE-APPLIED after every mode change. These used to be set once at
+   * controller construction, where the next applyMode() silently overwrote them — which left the
+   * FIRST seat entered (Party) tilting to ~89° instead of the shared 74° clamp, and let Free Camera
+   * drop below the ground plane. The shared TABLETOP clamps are deliberately untouched: that pitch
+   * range is PlayTable's tuned feel and the plugin should match it, not widen it.
+   */
+  _applyControlLimits(mode) {
+    const o = this._sharedControls?.orbit3d
+    if (!o) return
+    o.maxDistance = 5_000_000 // Foundry scenes can be enormous — never clamp the zoom-out
+    if (mode === 'free') o.maxPolarAngle = Math.PI * 0.495 // keep the free orbit above the ground plane
   }
 
   /** Sit the camera at its seat. reframe() re-runs the controller's mode framing, which is what puts a
    *  Party/GM seat at the correct side of the table — and must be re-applied after rebuild(), which
    *  re-frames the camera for its own reasons and otherwise leaves the seat stranded mid-table. */
   _applySeatFraming(mode) {
-    if (mode !== 'tabletop' && mode !== 'tabletop-gm') return
+    const shared = mode === 'orbit' ? 'free' : mode
+    this._applyControlLimits(shared)
+    if (shared !== 'tabletop' && shared !== 'tabletop-gm') return
     const sc = this._sharedControls
     const cam = this._viewer?.camera
     if (!sc || !cam) return
