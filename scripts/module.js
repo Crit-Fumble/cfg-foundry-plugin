@@ -40,6 +40,7 @@ import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
 import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
+import { WorldJournalSnapshot } from './services/world-journal-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
@@ -92,6 +93,8 @@ let _worldActorSnapshot = null
 let _worldMacroSnapshot = null
 /** @type {WorldSceneSnapshot|null} */
 let _worldSceneSnapshot = null
+/** @type {WorldJournalSnapshot|null} */
+let _worldJournalSnapshot = null
 
 /** @type {WorldPackSnapshot|null} */
 let _worldPackSnapshot = null
@@ -631,6 +634,14 @@ Hooks.once('ready', async () => {
     // read is locked then.
     _worldSceneSnapshot = new WorldSceneSnapshot(_api)
     _worldSceneSnapshot.start()
+
+    // World→platform JOURNAL leg (dt#247, closes cs#186). NOT a mirror: the platform stores
+    // nothing from this for viewing. It carries the two facts the push log structurally
+    // cannot supply — is the entry still there (reconcile), and did the world edit it more
+    // recently than we did (`_stats.modifiedTime`). Without it a GM's Foundry-side delete
+    // is never noticed and a Foundry-side edit silently wins.
+    _worldJournalSnapshot = new WorldJournalSnapshot(_api)
+    _worldJournalSnapshot.start()
 
     // World-authored compendium packs (dt#185). Gated identically — same reporter election, same
     // linked-world requirement. Only packs Foundry marks packageType 'world' are sent; module

@@ -454,6 +454,20 @@ export class CoreAPIClient {
     return this.post(`/api/v1/installations/${installationId}/foundry/macro-sync/ack`, { world: worldId, results })
   }
 
+  /**
+   * POST /api/v1/foundry/worlds/{worldId}/journal — the world→platform journal leg (dt#247).
+   *
+   * NOT a mirror store: nothing is persisted for offline viewing. This exists solely so the
+   * platform can answer the two questions its own push log cannot — is the entry still
+   * there, and did the world edit it more recently than we did (cs#186).
+   *
+   * @param {string} worldId
+   * @param {{ entries?: Array<object>, reconcile?: boolean, keepEntryIds?: string[] }} body
+   */
+  pushWorldJournal(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${worldId}/journal`, body)
+  }
+
   // ── Scene sync (platform → this world) — dt#246 ───────────────────────────
 
   /**
