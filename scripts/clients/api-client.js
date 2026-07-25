@@ -172,52 +172,17 @@ export class CoreAPIClient {
     return this.get(`/api/v1/player/campaigns/${id}/characters${qs ? `?${qs}` : ''}`)
   }
 
-  // ── Foundry character sync ────────────────────────────────────────────────
-
-  /**
-   * GET /api/v1/player/campaigns/{id}/foundry/sync
-   * Returns all FoundryActorSync records for the campaign (GM only). Each record
-   * carries `{ id, foundryActorId, syncStatus, lastSyncFrom, character: { id, name,
-   * characterRole, ownerId } }` — the pull-loop reads `syncStatus === 'pending'`
-   * with `lastSyncFrom === 'core'` to find platform edits awaiting apply.
-   * @param {string} id — campaign ID
-   * @returns {Promise<{ syncs: Array }>}
-   */
-  getSyncRecords(id) {
-    return this.get(`/api/v1/player/campaigns/${id}/foundry/sync`)
-  }
-
-  /**
-   * POST /api/v1/player/campaigns/{id}/foundry/sync/actors
-   * Register a Core character ↔ Foundry actor mapping.
-   * Called once after creating a new Foundry actor from a Core character so that
-   * future Foundry→Core pushes can match by foundryActorId.
-   *
-   * Returns the initial systemUpdate + itemUpdates the plugin should apply
-   * to the actor to seed it with Core's current values.
-   *
-   * @param {string} id                — campaign ID
-   * @param {string} characterId       — Core character ID (crit-fumble-core.characterId flag)
-   * @param {string} foundryActorId    — Foundry actor._id
-   * @returns {Promise<{ syncId: string, characterId: string, foundryActorId: string, systemUpdate: object, itemUpdates: Array }>}
-   */
-  registerActorMapping(id, characterId, foundryActorId) {
-    return this.post(`/api/v1/player/campaigns/${id}/foundry/sync/actors`, { characterId, foundryActorId })
-  }
-
-  /**
-   * POST /api/v1/player/campaigns/{id}/foundry/sync
-   * Push updated actor data from Foundry to Core.
-   * Core detects conflicts and either applies the changes or returns conflict records
-   * for the GM to resolve.
-   *
-   * @param {string} id                — campaign ID
-   * @param {Array}  actors            — array of FoundryActorData objects
-   * @returns {Promise<{ synced: number, conflict: number, unmapped: number, errors: number, results: Array }>}
-   */
-  pushActorSync(id, actors) {
-    return this.post(`/api/v1/player/campaigns/${id}/foundry/sync`, { actors })
-  }
+  // ── Foundry character sync — REMOVED (fp#46) ──────────────────────────────
+  //
+  // getSyncRecords / registerActorMapping / pushActorSync drove the campaign-keyed
+  // FoundryActorSync pull-loop. That loop could only UPDATE an actor that already
+  // existed, so a PlayTable-created character never reached the table; it was replaced
+  // by the world-keyed desired-state sync in actor-pull-sync.js (getActorSyncPlan /
+  // ackActorSync below).
+  //
+  // The server still SERVES those routes for plugin versions in the field, which carry
+  // their own copy of this client. They retire together once no old-endpoint traffic
+  // remains.
 
   // ── Whole-world actor mirror (cfs#17) ───────────────────────────────────────
 
@@ -410,6 +375,51 @@ export class CoreAPIClient {
   ackJournalSync(installationId, worldId, results) {
     return this.post(`/api/v1/installations/${installationId}/foundry/journal-sync/ack`, {
       world: worldId,
+      results,
+    })
+  }
+
+  // ── Actor sync (platform → this world) — fp#46 ────────────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/actor-sync?world={worldId}&system={systemId}
+   * The platform characters whose actor doc DIFFERS from what this world was last
+   * confirmed to hold — creates included. Empty is the normal steady state.
+   *
+   * `system` is REQUIRED and is `game.system.id`: an Actor carries a `system` block that
+   * fails validation in a world running a different system, so the server needs to know
+   * which world it is planning for. A JournalEntry has no equivalent, which is why the
+   * journal endpoint next door takes no system.
+   *
+   * @param {string} installationId
+   * @param {string} worldId — Foundry world folder (`game.world.id`)
+   * @param {string} systemId — `game.system.id`
+   * @returns {Promise<{ data: Array<{ characterId: string|null, foundryActorId: string, everPushed: boolean, systemId: string, claimedAt: string|null, docData: object }> }>}
+   */
+  getActorSyncPlan(installationId, worldId, systemId) {
+    return this.get(
+      `/api/v1/installations/${installationId}/foundry/actor-sync` +
+        `?world=${encodeURIComponent(worldId)}&system=${encodeURIComponent(systemId)}`,
+    )
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/actor-sync/ack
+   * Report what was actually written. `docData` MUST be the doc we wrote, not the one we
+   * planned to: the server baselines against it, and if the sheet changed platform-side
+   * between the pull and this ack, echoing keeps the baseline honest.
+   *
+   * `code` carries the machine-readable refusal: `world_deleted` parks the row (the GM
+   * deleted the actor — do not resurrect it), `system_mismatch` marks it errored.
+   * `claimedAt` is echoed so the server only drains a GM platform-edit claim that has not
+   * been re-staked since the plan was pulled.
+   *
+   * @param {Array<{ characterId: string|null, foundryActorId: string, ok: boolean, docData?: object, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackActorSync(installationId, worldId, systemId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/actor-sync/ack`, {
+      world: worldId,
+      system: systemId,
       results,
     })
   }

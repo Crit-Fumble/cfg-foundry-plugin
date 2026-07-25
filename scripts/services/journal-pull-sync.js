@@ -22,7 +22,7 @@
  * GM's in-Foundry edit to a synced entry is overwritten on the next tick. Nothing
  * flows back yet.
  *
- * Single-reporter election mirrors CharacterPullSync/ProvisionDrain: the human GM
+ * Single-reporter election mirrors ActorPullSync/ProvisionDrain: the human GM
  * with the smallest id does the work; the service-GM only when it is the sole GM.
  * A GM is required — creating documents and setting ownership are GM-only.
  *
@@ -35,7 +35,7 @@
 
 const LOG = 'CFG Core | JournalPull |'
 
-const PULL_MS = 30_000 // matches CharacterPullSync — "edit, then see it in Foundry"
+const PULL_MS = 30_000 // matches ActorPullSync — "edit, then see it in Foundry"
 
 // Matches SERVICE_GM_NATIVE_ID in cfg-core-server. Preferred reporter is a human
 // GM; the service-GM only reports when it is the sole connected GM.

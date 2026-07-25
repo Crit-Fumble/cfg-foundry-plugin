@@ -42,8 +42,7 @@ import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
 import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
-import { CharacterSyncManager } from './services/character-sync.js'
-import { CharacterPullSync } from './services/character-pull-sync.js'
+import { ActorPullSync } from './services/actor-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
 
@@ -98,8 +97,8 @@ let _worldPackSnapshot = null
 /** @type {CompendiumPullSync|null} */
 let _compendiumPullSync = null
 
-/** @type {CharacterPullSync|null} */
-let _characterPullSync = null
+/** @type {ActorPullSync|null} */
+let _actorPullSync = null
 
 /** @type {Overlay3D|null} 3D view-skin over the canvas (DRAFT). */
 let _overlay3D = null
@@ -639,15 +638,20 @@ Hooks.once('ready', async () => {
     _compendiumPullSync.start()
   }
 
-  // Core→Foundry character write-back (cfs#17 #147) — pull the platform's
-  // pending+core FoundryActorSync records for each linked campaign and apply the
-  // edited sheet to the live actor, then push it back to mark the record synced.
-  // GM-only (only a GM can write actors with full data); the single-reporter
-  // election lives in the class. Gated identically to the world-actor mirror —
-  // a linked installation (cfg-hosted) OR a paired key (self-hosted).
-  if ((heartbeatInstallId || apiKey) && game.user.isGM) {
-    _characterPullSync = new CharacterPullSync(_api, new CharacterSyncManager(_api), () => _linkedCampaignIds)
-    _characterPullSync.start()
+  // Core→Foundry actor write-back (fp#46) — pull the platform characters whose actor
+  // doc differs from what this world last held and write them in, CREATING the ones
+  // that aren't here yet. That create is the fix: the predecessor this replaced
+  // (CharacterPullSync + CharacterSyncManager) was update-only, so a character made in
+  // PlayTable never appeared at the table at all.
+  //
+  // Gated on the INSTALLATION id, like the journal sync below and unlike the old
+  // character sync, which also accepted a paired key. These endpoints are
+  // installation-scoped and resolve the world by (hostingInstallationId,
+  // nativeIdentifier), which a paired self-hosted world has no row for — so a key-only
+  // gate would just 404 every tick. Self-hosted rides the #184 follow-up.
+  if (heartbeatInstallId && game.user.isGM) {
+    _actorPullSync = new ActorPullSync(_api, heartbeatInstallId)
+    _actorPullSync.start()
   }
 
   // Core→Foundry party-journal sync (#184) — pull the platform journal entries

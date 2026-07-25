@@ -1,6 +1,6 @@
 /**
  * CFG Compendium Pull-Sync (dt#185 slice 3) — the Core→Foundry write-back for world compendium
- * packs. Sibling of character-pull-sync.js.
+ * packs. Sibling of actor-pull-sync.js.
  *
  * When a GM edits a mirrored entry in PlayTable, the server stamps `platformEditedAt` on that row.
  * That claim does two things: it stops the next mirror sweep from overwriting the edit with the
