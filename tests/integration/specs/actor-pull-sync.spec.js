@@ -170,7 +170,7 @@ test.describe('Actor pull-sync against real Foundry', () => {
     expect(res.sourceCount).toBe(1)
   })
 
-  test('honours removedPaths — a custom field deleted platform-side is REMOVED (fp#49)', async ({ page }) => {
+  test('honors removedPaths — a custom field deleted platform-side is REMOVED (fp#49)', async ({ page }) => {
     // The thing a mock cannot answer: does real Foundry apply the marker we generate,
     // sent in the same update as the merged desired fields? Probed one level at a time
     // (see the REMOVABLE_ROOTS note server-side) — `flags` is where removals actually

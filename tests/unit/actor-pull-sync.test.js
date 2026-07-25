@@ -194,7 +194,7 @@ describe('ActorPullSync — update', () => {
     const payload = live.update.mock.calls[0][0]
     expect(payload.system['-=gone']).toBeNull()
     expect(payload['-=img']).toBeNull()
-    // The fields the platform never modelled are untouched — no marker for them anywhere.
+    // The fields the platform never modeled are untouched — no marker for them anywhere.
     expect(JSON.stringify(payload)).not.toContain('_stats')
     expect(JSON.stringify(payload)).not.toContain('prototypeToken')
     expect(payload.name).toBe('Aria')

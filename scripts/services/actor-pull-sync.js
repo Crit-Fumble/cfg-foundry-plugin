@@ -16,7 +16,7 @@
  *   · `game.actors` / `Actor` / `CONFIG.Actor.documentClass`
  *   · `checkSystem: true` — an Actor carries a `system` block that fails validation in a
  *     world running a different system. A JournalEntry has no equivalent, which is why
- *     this is a flag rather than engine behaviour.
+ *     this is a flag rather than engine behavior.
  *   · two embedded collections: Items and ActiveEffects
  *
  * Direction is platform→Foundry. A GM's in-world edit is not clobbered blindly: the
