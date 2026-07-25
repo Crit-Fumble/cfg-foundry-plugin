@@ -48,6 +48,7 @@ import { MacroPullSync } from './services/macro-pull-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
+import { registerSourcebookShelfButton } from './views/sourcebook-shelf.js'
 
 /* -------------------------------------------- */
 /*  Module-level State                           */
@@ -715,6 +716,12 @@ Hooks.once('ready', async () => {
   // PlayTable runs. GM-only; injected via the generic renderDocumentSheetV2 hook.
   try {
     registerJsonEditorHeaderButton()
+
+  // Sourcebook shelf (dt#253): the Foundry shell for compendium PDF entries. Render is a
+  // deliberate stub — the page renderer is cs#212's and is not completed here. Listed for
+  // any user (reading a shared book is a player feature); the API's own pack-read-level
+  // gating decides what each caller actually sees.
+  registerSourcebookShelfButton(_api, () => _linkedCampaignIds)
   } catch (err) {
     console.warn('CFG Core | JSON editor button registration failed (non-fatal):', err)
   }
