@@ -395,7 +395,15 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   //     keydown, so this shrinks the mini's visible lag from ~90ms to ~1 frame
   //     rather than animating a gradual glide (that's fine-movement's job instead).
   await page.evaluate(() => game.settings.set('crit-fumble-core', 'overlay3dFineMovement', false))
-  await reset(tokenId) // uses its own {teleport:true} for instant test setup — not the plugin's commit path
+  // Same instant {teleport:true} setup as reset(), but starting from a facing NO direction maps to.
+  // reset() leaves rotation 0, and 0 is Foundry's correct facing for travelling SOUTH (measured on
+  // 14.361: N 180, NE 225, E 270, SE 315, S 0, SW 45, W 90, NW 135) — which is the way the Character
+  // camera happens to look here. So "rotation changed" was unprovable: the correct answer equalled the
+  // start value, making a genuinely correct facing write indistinguishable from no write at all. 279
+  // is not the answer for any of the 8 directions, so any correct commit must move it.
+  // Folded into the SAME teleport as the position reset on purpose — a second update re-anchors the
+  // first-person state (_syncExternalMove), and the 3D mini then misses its 60ms sampling window below.
+  await page.evaluate(async (id) => canvas.scene.tokens.get(id).update({ x: 1450, y: 1450, rotation: 279 }, { teleport: true }), tokenId)
   await page.waitForTimeout(300)
   let b = await read(tokenId)
   // Only listen from here — reset()'s own teleport-based update would otherwise
@@ -418,16 +426,18 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
     },
     { id: tokenId, sc: startCenter },
   )
-  // Foundry's own animation takes its own sweet time (~200-500ms for one grid step,
-  // confirmed live) — `Token#showRuler` (a real getter, not the `_rulerPaths` PIXI
-  // container, which Foundry redraws in place rather than adding/removing children)
-  // only flips true partway in. Sample mid-window, well after our own instant local
-  // state has already settled.
-  await page.waitForTimeout(240)
-  const midFlight = await page.evaluate((id) => {
-    const t = canvas.tokens.get(id)
-    return { showRuler: t?.showRuler ?? null }
-  }, tokenId)
+  // Foundry's native measuring ruler (fp#48). `Token#showRuler` is a real getter (not the
+  // `_rulerPaths` PIXI container, which Foundry redraws in place rather than adding/removing
+  // children) and it is true only WHILE a movement is in flight. Each first-person commit is a
+  // short throttled hop, so that window is tens of milliseconds — POLL for it instead of
+  // single-sampling at a guessed offset. A fixed sample at ~240ms is exactly what made this look
+  // permanently broken: the update round-trip alone lands at ~300-650ms, so the old sample fired
+  // before the movement had even started and reported a flat false.
+  const rulerSeen = await page
+    .waitForFunction((id) => canvas.tokens.get(id)?.showRuler === true, tokenId, { timeout: 8_000, polling: 20 })
+    .then(() => true)
+    .catch(() => false)
+  const midFlight = { showRuler: rulerSeen }
   await key('w', 'keyup')
   // Foundry's NATIVE walk animates, so the position + facing land asynchronously — poll until the
   // token has actually settled instead of racing a fixed sleep.
@@ -452,12 +462,13 @@ test('3D controls — iterate the menu view modes + first-person WASD', async ({
   const facingErr = Math.abs((((a.rotation - moveHeading + 540) % 360) - 180))
   expect(facingErr, 'the token faces (roughly) its direction of travel').toBeLessThan(35)
   expect(deprecationWarnings, 'no more {teleport:true} deprecation warning — using native "walk" movement').toHaveLength(0)
-  // PENDING PARITY (fp#48): the native measuring ruler does not appear for programmatic movement —
-  // not with a plain update(), and not through the v13+ movement API (doc.move()). It likely requires
-  // a drag-initiated movement action, and per the owner it should be gated by a VTT config setting
-  // once we map one (no core.*ruler* setting exists on 14.361). Movement + facing ARE verified above;
-  // this records the gap instead of asserting behaviour we don't yet produce.
-  console.log('[overlay-3d] PENDING fp#48 — native ruler during programmatic movement:', midFlight.showRuler)
+  // RULER PARITY (fp#48, closed). Foundry derives the ruler in TokenDocument##preUpdateMovement from
+  // the movement METHOD: a bare update() is method "api", whose branch defaults `showRuler` to false.
+  // That default — not doc.move(), not a drag-only movement action — is the whole reason no ruler ever
+  // appeared. `showRuler` is an explicitly writeable movement option, so the commit path just asks for
+  // it, gated by the per-USER client setting overlay3dMovementRuler (each player decides for their own
+  // view). Verified live on 14.361 by A/B: bare update → showRuler false, {showRuler:true} → true.
+  expect(midFlight.showRuler, 'Foundry’s native measuring ruler shows while the 3D view moves the token').toBe(true)
   expect(early.miniDist, 'the 3D mini is already advancing well before Foundry\'s own animation settles').toBeGreaterThan(5)
   await hideChrome(page)
   await page.screenshot({ path: join(SHOTS, '09-character-after-move.png') })

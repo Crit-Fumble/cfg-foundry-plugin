@@ -1503,6 +1503,20 @@ export class Overlay3D {
     return Math.round((((Math.atan2(dy, dx) * 180) / Math.PI - 90) % 360 + 360) % 360)
   }
 
+  /**
+   * Per-USER preference (owner 2026-07-24: a player's own view setting, never a GM/world one) for
+   * showing Foundry's native measuring ruler while the 3D view moves a token. Defaults on, matching
+   * the 2D canvas that players already know.
+   */
+  _showMovementRuler() {
+    try {
+      const v = game?.settings?.get?.('crit-fumble-core', 'overlay3dMovementRuler')
+      return v === undefined ? true : !!v
+    } catch {
+      return true // not registered in this build — follow the 2D-canvas default
+    }
+  }
+
   _fpCommitNow(tok) {
     try {
       const doc = tok.document
@@ -1526,10 +1540,14 @@ export class Overlay3D {
       // gates it, and a token opts out individually with lockRotation.
       if (this._tokenAutoRotate() && !doc.lockRotation && facing != null) update.rotation = facing
       // Plain update() — deliberately NOT doc.move(). Routing through the v13+ movement API was tried
-      // to get Foundry's measuring ruler (Token#showRuler) and did NOT produce it, while its own
-      // pathing walked the token straight THROUGH a wall our _moveBlocked check had already rejected.
-      // See fp#48 for the outstanding ruler-parity work.
-      doc.update(update)
+      // to get Foundry's measuring ruler and did NOT produce it, while its own pathing walked the token
+      // straight THROUGH a wall our _moveBlocked check had already rejected.
+      //
+      // The ruler needs neither (fp#48). Foundry derives it in TokenDocument##preUpdateMovement from
+      // the movement METHOD: a bare update() is method "api", whose branch defaults `showRuler` to
+      // false — which is why nothing we did to the call shape ever produced one. But `showRuler` is an
+      // explicit, writeable movement option that overrides that default, so we simply ask for it.
+      doc.update(update, { showRuler: this._showMovementRuler() })
     } catch {
       /* permission / movement rejected — ignore */
     }
@@ -2436,7 +2454,9 @@ export class Overlay3D {
     this._moveTokenId = tok.id // bind the ruler to this token so a later selection doesn't hijack it
     this._moveLastAt = typeof performance !== 'undefined' ? performance.now() : 0
     const { w, h } = this._tokenSizePx(tok.document)
-    tok.document.update({ x: Math.round(center.x - w / 2), y: Math.round(center.y - h / 2) })
+    // Same ruler opt-in as the first-person commit (fp#48): click-to-move is a user-initiated move
+    // from the 3D view too, so it honours the same per-user preference.
+    tok.document.update({ x: Math.round(center.x - w / 2), y: Math.round(center.y - h / 2) }, { showRuler: this._showMovementRuler() })
   }
 
   /** Live movement ruler: a 3D path from where the current movement started to the
@@ -4412,6 +4432,16 @@ export class Overlay3D {
       config: true,
       type: Boolean,
       default: false,
+    })
+    // 'client' = per USER, which is the point: each player decides whether their own moves draw a
+    // ruler. A GM/world setting would impose one player's preference on the table.
+    reg('overlay3dMovementRuler', {
+      name: '3D View — Show the measuring ruler while moving',
+      hint: 'Draw Foundry’s native measuring ruler (distance travelled) while you move a token from the 3D view, the same as dragging one on the 2D canvas. Affects only your own view.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: true,
     })
   }
 
