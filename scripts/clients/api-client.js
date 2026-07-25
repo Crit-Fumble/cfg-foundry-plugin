@@ -423,4 +423,34 @@ export class CoreAPIClient {
       results,
     })
   }
+
+  // ── Macro write-back (platform → this world) — dt#245 ─────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/macro-sync?world={worldId}
+   * The macros a GM edited in PlayTable that no write-back has drained yet. Empty is the
+   * normal steady state.
+   *
+   * No `system` parameter, unlike the actor endpoint: a Macro carries no `system` block, so
+   * there is no foreign-system doc to refuse.
+   *
+   * @returns {Promise<{ data: Array<{ foundryDocId: string, everPushed: boolean, claimedAt: string|null, docData: object, removedPaths: string[] }> }>}
+   */
+  getMacroSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/macro-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/macro-sync/ack
+   *
+   * `claimedAt` is echoed so the server only drains a claim that has not been re-staked
+   * since the plan was pulled — a GM who edited the macro again mid-tick must not lose it.
+   * `code: 'world_deleted'` releases the claim instead of retrying into a macro that no
+   * longer exists.
+   *
+   * @param {Array<{ foundryMacroId: string, ok: boolean, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackMacroSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/macro-sync/ack`, { world: worldId, results })
+  }
 }

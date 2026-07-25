@@ -43,6 +43,7 @@ import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
+import { MacroPullSync } from './services/macro-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
 
@@ -99,6 +100,8 @@ let _compendiumPullSync = null
 
 /** @type {ActorPullSync|null} */
 let _actorPullSync = null
+/** @type {MacroPullSync|null} */
+let _macroPullSync = null
 
 /** @type {Overlay3D|null} 3D view-skin over the canvas (DRAFT). */
 let _overlay3D = null
@@ -652,6 +655,14 @@ Hooks.once('ready', async () => {
   if (heartbeatInstallId && game.user.isGM) {
     _actorPullSync = new ActorPullSync(_api, heartbeatInstallId)
     _actorPullSync.start()
+
+    // Core→Foundry macro write-back (dt#245). The platform has staked a platformEditedAt
+    // claim on GM macro edits since dt#214 and the mirror has dutifully HELD it against the
+    // next snapshot — but nothing ever carried the edit into the world, so it was held and
+    // then silently discarded. This is the missing half. Same installation gate as the
+    // actor + journal syncs.
+    _macroPullSync = new MacroPullSync(_api, heartbeatInstallId)
+    _macroPullSync.start()
   }
 
   // Core→Foundry party-journal sync (#184) — pull the platform journal entries

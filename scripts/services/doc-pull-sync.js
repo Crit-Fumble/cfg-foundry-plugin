@@ -228,9 +228,14 @@ export class DocPullSync {
       return
     }
 
-    // `update()` resolves and silently KEEPS the old type, so a type change has to be a
-    // delete + create (the same rule document-apply.js encodes for compendium docs).
-    if (docData.type && live.type && docData.type !== live.type) {
+    // For some document classes `update()` resolves and silently KEEPS the old type, so a
+    // type change must be delete + create (the rule document-apply.js encodes for
+    // compendium docs). For others it just works. Which is which is MEASURED per type —
+    // Actor needs the recreate, Macro does not — and recreating unnecessarily is real
+    // churn: the document briefly stops existing, and anything holding a live reference
+    // to it drops.
+    const typeIsImmutable = cfg.typeIsImmutable !== false
+    if (typeIsImmutable && docData.type && live.type && docData.type !== live.type) {
       await this._probe(docData)
       await live.delete()
       await this._create(docData, { probed: true })
