@@ -64,8 +64,15 @@ function seedJournal(byId = {}) {
 
 beforeEach(() => {
   globalThis.JournalEntry = { create: jest.fn(async (d) => ({ id: d._id })) }
+  // The engine health-probes through CONFIG.<Doc>.documentClass and deep-clones
+  // via foundry.utils — both are ambient globals in a real Foundry client.
+  globalThis.CONFIG = { JournalEntry: { documentClass: function JournalEntryClass() {} } }
+  globalThis.foundry = { utils: { deepClone: (v) => JSON.parse(JSON.stringify(v)) } }
   globalThis.game = {
     world: { id: 'world-folder' },
+    // The engine reads game.system.id (every real world has one); journals are
+    // system-agnostic so the value never matters here.
+    system: { id: 'cfg-test-system' },
     user: { id: 'gm-a', isGM: true },
     users: makeUsers([{ id: 'gm-a', active: true, isGM: true }]),
   }
@@ -105,10 +112,12 @@ describe('JournalPullSync', () => {
     await new JournalPullSync(a, 'inst-1').tick()
 
     expect(JournalEntry.create).not.toHaveBeenCalled()
-    // Entry-level fields only — pages are reconciled separately.
+    // Entry-level fields only — pages are reconciled separately, and the engine
+    // strips `_id` from an in-place update (it keys the lookup, not the write).
     expect(existing.update).toHaveBeenCalledWith(
-      expect.objectContaining({ _id: ENTRY_ID, name: 'The Sunken Library' }),
+      expect.objectContaining({ name: 'The Sunken Library' }),
     )
+    expect(existing.update.mock.calls[0][0]).not.toHaveProperty('_id')
     expect(existing.update.mock.calls[0][0]).not.toHaveProperty('pages')
   })
 
