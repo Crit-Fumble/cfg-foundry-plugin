@@ -34,6 +34,7 @@
     "build:code-editor": "esbuild scripts/lib/code-editor-core.entry.mjs --bundle --format=esm --legal-comments=none --outfile=scripts/lib/code-editor-core.js"
   },
   "overrides": {
+    "mathjs": "^15.2.0",
     "picomatch": "^4.0.2",
     "js-yaml": "^4.2.0"
   },
