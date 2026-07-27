@@ -510,6 +510,31 @@ Hooks.on('renderTokenHUD', (hud, element, _data) => {
 /*  Ready Hook — Main Initialization            */
 /* -------------------------------------------- */
 
+/**
+ * Cold-load stagger (cs#153 lever 3). A cold world load streams ~250 asset
+ * requests through core-server's vtt-proxy (prod evidence: 105–125 req/5s
+ * bursts), and the `ready` hook used to pile every sync service's initial
+ * sweep on top of that same window. Spreading the starts a few seconds apart
+ * keeps the plugin's own callbacks out of the flood.
+ *
+ * Safe to defer: every staggered service has its own periodic safety-net
+ * sweep/tick (10–15 min sweeps, 30–60s pull ticks), so a delayed start only
+ * postpones first convergence by seconds — nothing is lost. Services whose
+ * first call is load-bearing (activity heartbeat, provision drain, the
+ * world-load report) are NOT staggered.
+ */
+const BOOT_STAGGER_BASE_MS = 3_000
+const BOOT_STAGGER_STEP_MS = 2_000
+let _bootStaggerSlot = 0
+function _staggerStart(label, fn) {
+  const delay = BOOT_STAGGER_BASE_MS + BOOT_STAGGER_STEP_MS * _bootStaggerSlot++
+  setTimeout(() => {
+    Promise.resolve()
+      .then(fn)
+      .catch((err) => console.warn(`CFG Core | deferred start failed (${label}):`, err?.message || err))
+  }, delay)
+}
+
 Hooks.once('ready', async () => {
   console.log(`CFG Core | Ready`)
 
@@ -586,18 +611,19 @@ Hooks.once('ready', async () => {
   // those flows just skip.
   _linkedCampaignIds = await _resolveLinkedCampaigns()
 
-  // Report system to each linked campaign and check recommended modules
-  // for each. Link this Foundry user to their platform account in parallel.
-  await Promise.allSettled([
-    _resolveFeatureMode(),
+  // Report system to each linked campaign and link this Foundry user to their
+  // platform account in parallel. These two stay on the critical path: feature
+  // mode gates what mounts below, and the user link is what SSO'd players wait on.
+  await Promise.allSettled([_resolveFeatureMode(), _linkPlatformUser(apiUrl, apiKey)])
+
+  if (game.user.isGM) {
     // #339 — POST `game.modules` to CFG so the platform UI can list what's
-    // installed in this Foundry world. GM-only; non-fatal on failure.
-    game.user.isGM ? syncInstalledModules() : Promise.resolve(),
+    // installed in this Foundry world. Non-fatal on failure.
+    _staggerStart('modules-sync', () => syncInstalledModules())
     // dt#212 — introspect the system's own DataModels and push them, so the platform's JSON
-    // editor can warn before Foundry silently discards a field. GM-only; non-fatal on failure.
-    game.user.isGM ? syncSystemSchemas() : Promise.resolve(),
-    _linkPlatformUser(apiUrl, apiKey),
-  ])
+    // editor can warn before Foundry silently discards a field. Non-fatal on failure.
+    _staggerStart('system-schema-sync', () => syncSystemSchemas())
+  }
 
   // Active-user heartbeat (cfs#109) — reports game.users.active to Core so
   // server-side idle-shutdown automation has a real signal. Only runs when
@@ -626,19 +652,19 @@ Hooks.once('ready', async () => {
   // paired key (self-hosted), which is what makes self-hosted sheets viewable.
   if ((heartbeatInstallId || apiKey) && game.user.isGM) {
     _worldActorSnapshot = new WorldActorSnapshot(_api)
-    _worldActorSnapshot.start()
+    _staggerStart('actor-snapshot', () => _worldActorSnapshot.start())
 
     // World Macros (dt#214). Same reporter election + linked-world gate. Tiny documents; the whole
     // collection ships each sweep so PlayTable can list/edit/hotbar them. Chat macros run in
     // PlayTable's chat; script macros are edit-here / run-in-Foundry.
     _worldMacroSnapshot = new WorldMacroSnapshot(_api)
-    _worldMacroSnapshot.start()
+    _staggerStart('macro-snapshot', () => _worldMacroSnapshot.start())
 
     // World Scenes (fp#48). Same reporter election + linked-world gate. Batched (scenes can be
     // large). The push is what lets the platform show scenes WHILE the world runs — the LevelDB
     // read is locked then.
     _worldSceneSnapshot = new WorldSceneSnapshot(_api)
-    _worldSceneSnapshot.start()
+    _staggerStart('scene-snapshot', () => _worldSceneSnapshot.start())
 
     // World→platform JOURNAL leg (dt#247, closes cs#186). NOT a mirror: the platform stores
     // nothing from this for viewing. It carries the two facts the push log structurally
@@ -646,18 +672,18 @@ Hooks.once('ready', async () => {
     // recently than we did (`_stats.modifiedTime`). Without it a GM's Foundry-side delete
     // is never noticed and a Foundry-side edit silently wins.
     _worldJournalSnapshot = new WorldJournalSnapshot(_api)
-    _worldJournalSnapshot.start()
+    _staggerStart('journal-snapshot', () => _worldJournalSnapshot.start())
 
     // World-authored compendium packs (dt#185). Gated identically — same reporter election, same
     // linked-world requirement. Only packs Foundry marks packageType 'world' are sent; module
     // packs belong to their publisher and are never ingested.
     _worldPackSnapshot = new WorldPackSnapshot(_api)
-    _worldPackSnapshot.start()
+    _staggerStart('pack-snapshot', () => _worldPackSnapshot.start())
 
     // Core→Foundry write-back for those packs (dt#185 slice 3). Without it a platform edit is
     // held on the platform forever — visible in PlayTable, absent from the world.
     _compendiumPullSync = new CompendiumPullSync(_api)
-    _compendiumPullSync.start()
+    _staggerStart('compendium-pull', () => _compendiumPullSync.start())
   }
 
   // Core→Foundry actor write-back (fp#46) — pull the platform characters whose actor
@@ -673,7 +699,7 @@ Hooks.once('ready', async () => {
   // gate would just 404 every tick. Self-hosted rides the #184 follow-up.
   if (heartbeatInstallId && game.user.isGM) {
     _actorPullSync = new ActorPullSync(_api, heartbeatInstallId)
-    _actorPullSync.start()
+    _staggerStart('actor-pull', () => _actorPullSync.start())
 
     // Core→Foundry macro write-back (dt#245). The platform has staked a platformEditedAt
     // claim on GM macro edits since dt#214 and the mirror has dutifully HELD it against the
@@ -681,20 +707,20 @@ Hooks.once('ready', async () => {
     // then silently discarded. This is the missing half. Same installation gate as the
     // actor + journal syncs.
     _macroPullSync = new MacroPullSync(_api, heartbeatInstallId)
-    _macroPullSync.start()
+    _staggerStart('macro-pull', () => _macroPullSync.start())
 
     // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
     // (the free SRD packages) from this world into a scoped compendium. The licensing
     // allowlist is enforced server-side on every push; this client is a courier. Same
     // installation gate + reporter election as the syncs above.
     _modulePackImportSync = new ModulePackImportSync(_api, heartbeatInstallId)
-    _modulePackImportSync.start()
+    _staggerStart('module-pack-import', () => _modulePackImportSync.start())
 
     // Core→Foundry scene sync (dt#246) — platform-authored scenes reach the table,
     // creates included. `active` is never synced: it is writable through a plain update(),
     // so pushing it would change which scene every connected player is looking at.
     _scenePullSync = new ScenePullSync(_api, heartbeatInstallId)
-    _scenePullSync.start()
+    _staggerStart('scene-pull', () => _scenePullSync.start())
   }
 
   // Core→Foundry party-journal sync (#184) — pull the platform journal entries
@@ -707,7 +733,7 @@ Hooks.once('ready', async () => {
   // has no row for. Self-hosted journal sync needs its own path (#184 follow-up).
   if (heartbeatInstallId && game.user.isGM) {
     _journalPullSync = new JournalPullSync(_api, heartbeatInstallId)
-    _journalPullSync.start()
+    _staggerStart('journal-pull', () => _journalPullSync.start())
   }
 
   // 3D overlay (DRAFT — cfs 3D-VTT slice 1) — a three.js view-skin over the
