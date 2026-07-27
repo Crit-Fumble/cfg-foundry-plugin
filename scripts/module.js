@@ -59,7 +59,7 @@ const MODULE_ID = 'crit-fumble-core'
 // `window.CFGCore.version` reports and what the boot log prints; module.json is
 // what Foundry reads. They had silently drifted a release apart (2.13.0 vs
 // 2.14.0) until fp#47, so every consumer read a stale version.
-const MODULE_VERSION = '2.33.0'
+const MODULE_VERSION = '2.41.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -716,14 +716,18 @@ Hooks.once('ready', async () => {
   // PlayTable runs. GM-only; injected via the generic renderDocumentSheetV2 hook.
   try {
     registerJsonEditorHeaderButton()
-
-  // Sourcebook shelf (dt#253): the Foundry shell for compendium PDF entries. Render is a
-  // deliberate stub — the page renderer is cs#212's and is not completed here. Listed for
-  // any user (reading a shared book is a player feature); the API's own pack-read-level
-  // gating decides what each caller actually sees.
-  registerSourcebookShelfButton(_api, () => _linkedCampaignIds)
   } catch (err) {
     console.warn('CFG Core | JSON editor button registration failed (non-fatal):', err)
+  }
+
+  // Sourcebook shelf (dt#253 shell + cs#212 renderer): compendium PDF entries read
+  // page-by-page as server-rastered images — the file itself never reaches this client.
+  // Listed for any user (reading a shared book is a player feature); the API's own
+  // pack-read-level gating decides what each caller actually sees.
+  try {
+    registerSourcebookShelfButton(_api, () => _linkedCampaignIds)
+  } catch (err) {
+    console.warn('CFG Core | Sourcebook shelf registration failed (non-fatal):', err)
   }
 
   // NB the CFG sidebar rail that used to mount here is GONE (fp#47). It was

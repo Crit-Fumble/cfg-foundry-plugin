@@ -331,3 +331,55 @@ describe('pushWorldActors', () => {
     )
   })
 })
+
+// ── Binary fetch (cs#212 sourcebook pages) ────────────────────────────────────
+
+describe('getBinary', () => {
+  let api
+
+  function makeBinaryResponse(status, blob) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      blob: jest.fn(async () => blob),
+      json: jest.fn(async () => ({ error: 'not_found' })),
+    }
+  }
+
+  beforeEach(() => {
+    api = new CoreAPIClient('https://core.crit-fumble.com')
+  })
+
+  test('returns the response blob on 200', async () => {
+    const fakeBlob = { size: 42, type: 'image/webp' }
+    mockFetch.mockResolvedValue(makeBinaryResponse(200, fakeBlob))
+    const blob = await api.getBinary('/api/v1/pages/1.webp')
+    expect(blob).toBe(fakeBlob)
+  })
+
+  test('omits Content-Type (a preflight trigger cross-origin) and sends Accept', async () => {
+    mockFetch.mockResolvedValue(makeBinaryResponse(200, {}))
+    await api.getBinary('/api/v1/pages/1.webp')
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(opts.headers['Content-Type']).toBeUndefined()
+    expect(opts.headers['Accept']).toBe('image/webp,*/*')
+  })
+
+  test('core-hosted still rides the session cookie', async () => {
+    mockFetch.mockResolvedValue(makeBinaryResponse(200, {}))
+    await api.getBinary('/api/v1/pages/1.webp')
+    expect(mockFetch.mock.calls[0][1].credentials).toBe('include')
+  })
+
+  test('self-hosted sends the Bearer key', async () => {
+    const keyed = new CoreAPIClient('https://core.crit-fumble.com', 'cfk_secret')
+    mockFetch.mockResolvedValue(makeBinaryResponse(200, {}))
+    await keyed.getBinary('/api/v1/pages/1.webp')
+    expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe('Bearer cfk_secret')
+  })
+
+  test('maps non-2xx through the friendly error path', async () => {
+    mockFetch.mockResolvedValue(makeBinaryResponse(404, null))
+    await expect(api.getBinary('/api/v1/pages/9.webp')).rejects.toThrow('Resource not found.')
+  })
+})

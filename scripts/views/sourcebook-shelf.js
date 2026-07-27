@@ -1,16 +1,13 @@
 /**
- * CFG Sourcebook Shelf — the FoundryVTT shell for compendium PDF entries (dt#253).
+ * CFG Sourcebook Shelf — the FoundryVTT shell for compendium PDF entries (dt#253),
+ * painting cs#212's non-download reader.
  *
- * Lists the PDF sourcebooks in the linked campaigns' scoped compendiums and opens each in
- * a reader window whose render is DELIBERATELY STUBBED: the page renderer belongs to
- * cfg-core-server#212 (license-friendly, non-download — pages raster server-side and only
- * images ever reach a client), and the owner's instruction is "don't complete" that work.
- *
- * What this ships is the CONTRACT: a real <canvas> that cs#212 paints pages onto. The
- * canvas sizing/clear/redraw path is exercised now so the renderer slots in without
- * re-plumbing the surface. Nothing here fetches PDF bytes, and no URL exists to leak —
- * the server exposes metadata only ({ fileName, byteSize, pageCount }); the read presign
- * is server-side, for the rasterizer.
+ * Pages arrive as server-rastered WebP streamed through the platform endpoint
+ * (`…/pdf/pages/:n.webp`) and are drawn into a <canvas> — there is never an <img src> to
+ * right-click-save, never a bucket URL, and the source PDF never reaches this client.
+ * Search calls the per-book endpoint (`…/pdf/search?q=`); the server searches its cached
+ * text layer, so no text is bulk-shipped either. This is the ApplicationV2 twin of
+ * cfg-core-browser's SourcebookReader.tsx — behaviour changes should land in both.
  *
  * Follows CfgJsonEditor's ApplicationV2 pattern; reached from a DOM-injected button on
  * the Journal directory (the header-control API dispatches named actions to the owning
@@ -33,6 +30,17 @@ export class CfgSourcebookShelf extends ApplicationV2 {
     this._api = apiClient
     this._campaignIds = campaignIds
     this._books = null // null = loading; [] = none
+
+    // Reader state — one open book at a time.
+    this._book = null // { campaignId, packId, entryId, name } once opened
+    this._page = 1
+    this._pageCount = null
+    this._bitmap = null // current page ImageBitmap
+    this._loading = false
+    this._error = null
+    this._pending = false // upload never completed — no pages exist to render
+    this._loadSeq = 0 // stale-response guard for page fetches
+    this._resizeObserver = null
   }
 
   static DEFAULT_OPTIONS = {
@@ -61,6 +69,13 @@ export class CfgSourcebookShelf extends ApplicationV2 {
     meta.style.cssText = 'font-size:0.8rem; opacity:0.8; min-height:1.2em;'
     meta.textContent = 'Select a sourcebook.'
 
+    const toolbar = this._buildToolbar()
+
+    const hits = document.createElement('div')
+    hits.dataset.role = 'search-hits'
+    hits.style.cssText =
+      'display:none; max-height:9rem; overflow-y:auto; border:1px solid rgba(255,255,255,0.1); border-radius:4px; background:rgba(255,255,255,0.05);'
+
     const canvasHost = document.createElement('div')
     canvasHost.style.cssText = 'flex:1; min-height:0; overflow-y:auto; background:rgba(0,0,0,0.25); border-radius:4px; padding:0.5rem;'
     const canvas = document.createElement('canvas')
@@ -68,15 +83,102 @@ export class CfgSourcebookShelf extends ApplicationV2 {
     canvas.style.cssText = 'display:block; margin:0 auto; border-radius:2px; box-shadow:0 2px 8px rgba(0,0,0,0.4);'
     canvasHost.appendChild(canvas)
 
-    readerWrap.append(meta, canvasHost)
+    const footer = document.createElement('p')
+    footer.style.cssText = 'margin:0; font-size:0.7rem; opacity:0.5;'
+    footer.textContent = 'Shared with this table for reading only — the file itself never leaves the library.'
+
+    readerWrap.append(meta, toolbar, hits, canvasHost, footer)
     root.append(list, readerWrap)
 
     this._listEl = list
     this._metaEl = meta
+    this._hitsEl = hits
     this._canvas = canvas
+    this._canvasHost = canvasHost
 
     void this._loadBooks()
     return root
+  }
+
+  /** Prev/next + page label + go-to + per-book search. Disabled until a book opens. */
+  _buildToolbar() {
+    const bar = document.createElement('div')
+    bar.dataset.role = 'reader-toolbar'
+    bar.style.cssText = 'display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;'
+
+    const btn = (label, role, onClick) => {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.dataset.role = role
+      b.textContent = label
+      b.disabled = true
+      b.style.cssText = 'flex:0 0 auto; width:auto; padding:0.15rem 0.5rem; font-size:0.75rem; line-height:1.4;'
+      b.addEventListener('click', onClick)
+      return b
+    }
+
+    const prev = btn('‹ Prev', 'page-prev', () => this._go(this._page - 1))
+    const label = document.createElement('span')
+    label.dataset.role = 'page-label'
+    label.style.cssText = 'font-size:0.75rem; opacity:0.7; font-variant-numeric:tabular-nums;'
+    label.textContent = '—'
+    const next = btn('Next ›', 'page-next', () => this._go(this._page + 1))
+
+    const jump = document.createElement('input')
+    jump.type = 'text'
+    jump.inputMode = 'numeric'
+    jump.placeholder = 'Go to…'
+    jump.setAttribute('aria-label', 'Go to page')
+    jump.dataset.role = 'page-jump'
+    jump.disabled = true
+    jump.style.cssText = 'flex:0 0 4rem; width:4rem; font-size:0.75rem;'
+    jump.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter') return
+      const n = Number.parseInt(jump.value, 10)
+      if (Number.isFinite(n)) this._go(n)
+      jump.value = ''
+    })
+
+    const search = document.createElement('input')
+    search.type = 'search'
+    search.placeholder = 'Search this book…'
+    search.setAttribute('aria-label', 'Search this book')
+    search.dataset.role = 'search-input'
+    search.disabled = true
+    search.style.cssText = 'flex:1 1 8rem; min-width:0; font-size:0.75rem;'
+    search.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') void this._runSearch()
+    })
+
+    const go = btn('Search', 'search-go', () => void this._runSearch())
+
+    bar.append(prev, label, next, jump, search, go)
+    this._prevBtn = prev
+    this._nextBtn = next
+    this._pageLabelEl = label
+    this._jumpEl = jump
+    this._searchEl = search
+    this._searchBtn = go
+    return bar
+  }
+
+  /** Post-connect: watch the canvas host so page renders track window resizes. */
+  _onRender(context, options) {
+    super._onRender?.(context, options)
+    this._resizeObserver?.disconnect()
+    if (this._canvasHost && typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver(() => this._paint())
+      this._resizeObserver.observe(this._canvasHost)
+    }
+    this._paint()
+  }
+
+  _onClose(options) {
+    this._resizeObserver?.disconnect()
+    this._resizeObserver = null
+    this._bitmap?.close?.()
+    this._bitmap = null
+    super._onClose?.(options)
   }
 
   _replaceHTML(result, content) {
@@ -136,37 +238,192 @@ export class CfgSourcebookShelf extends ApplicationV2 {
       this._metaEl.textContent = pdf
         ? `${entry.name} — ${pdf.fileName} · ${mb} MB${pdf.pageCount != null ? ` · ${pdf.pageCount} pages` : ''}`
         : entry?.name ?? book.name
-      this._paintStub()
+
+      this._book = pdf ? { campaignId: book.campaignId, packId: book.packId, entryId: book.id, name: entry.name } : null
+      this._page = 1
+      this._pageCount = pdf?.pageCount ?? null
+      this._pending = !!pdf?.pending
+      this._error = pdf ? null : 'This entry has no PDF attached.'
+      this._bitmap?.close?.()
+      this._bitmap = null
+      this._clearHits()
+      this._updateToolbar()
+
+      if (!this._book || this._pending) {
+        this._paint()
+        return
+      }
+      // Entries that predate their first render have no pageCount yet — the meta
+      // endpoint computes and persists it on first ask.
+      if (this._pageCount == null) {
+        void this._api
+          .get(`${this._base()}/meta`)
+          .then((m) => {
+            if (typeof m?.pageCount === 'number') {
+              this._pageCount = m.pageCount
+              this._updateToolbar()
+            }
+          })
+          .catch(() => {})
+      }
+      void this._loadPage()
     } catch (err) {
       this._metaEl.textContent = `Could not open: ${err?.message || err}`
     }
   }
 
+  _base() {
+    const b = this._book
+    return `/api/v1/player/campaigns/${b.campaignId}/compendiums/${b.packId}/entries/${b.entryId}/pdf`
+  }
+
+  _go(n) {
+    if (!this._book || this._pending) return
+    const max = this._pageCount ?? Number.MAX_SAFE_INTEGER
+    const target = Math.max(1, Math.min(max, Math.floor(n)))
+    if (!Number.isFinite(target) || target === this._page) return
+    this._page = target
+    void this._loadPage()
+  }
+
+  /** Fetch the current page's WebP and swap it in. Stale responses are discarded. */
+  async _loadPage() {
+    const seq = ++this._loadSeq
+    this._loading = true
+    this._error = null
+    this._updateToolbar()
+    this._paint()
+    try {
+      const blob = await this._api.getBinary(`${this._base()}/pages/${this._page}.webp`)
+      const bmp = await createImageBitmap(blob)
+      if (seq !== this._loadSeq) {
+        bmp.close()
+        return
+      }
+      this._bitmap?.close?.()
+      this._bitmap = bmp
+      this._loading = false
+    } catch (err) {
+      if (seq !== this._loadSeq) return
+      this._bitmap?.close?.()
+      this._bitmap = null
+      this._loading = false
+      this._error = err?.message || 'Page failed to load'
+    }
+    this._updateToolbar()
+    this._paint()
+
+    // Warm the neighbours into the browser cache (the endpoint serves
+    // Cache-Control: private) — fire-and-forget, rate-limit friendly.
+    const total = this._pageCount ?? Infinity
+    for (const n of [this._page - 1, this._page + 1]) {
+      if (n >= 1 && n <= total) void this._api.getBinary(`${this._base()}/pages/${n}.webp`).catch(() => {})
+    }
+  }
+
+  _updateToolbar() {
+    const noBook = !this._book || this._pending
+    if (this._prevBtn) this._prevBtn.disabled = noBook || this._loading || this._page <= 1
+    if (this._nextBtn)
+      this._nextBtn.disabled = noBook || this._loading || (this._pageCount != null && this._page >= this._pageCount)
+    if (this._jumpEl) this._jumpEl.disabled = noBook
+    if (this._searchEl) this._searchEl.disabled = noBook
+    if (this._searchBtn) this._searchBtn.disabled = noBook || this._searching
+    if (this._pageLabelEl)
+      this._pageLabelEl.textContent = noBook
+        ? '—'
+        : `Page ${this._page}${this._pageCount != null ? ` / ${this._pageCount}` : ''}`
+  }
+
   /**
-   * The "coming soon" page — painted IN the canvas so the exact element and draw path
-   * cs#212 will use is exercised from day one. The renderer replaces this method's body
-   * with a server-rastered page image; everything around it stays.
+   * DPR-aware page paint — the stub's original canvas path, now drawing a real
+   * server-rastered bitmap. With no bitmap it shows the loading/error/pending state.
    */
-  _paintStub() {
+  _paint() {
     const canvas = this._canvas
-    const host = canvas?.parentElement
+    const host = this._canvasHost
     if (!canvas || !host) return
+    const bmp = this._bitmap
+    const dpr = globalThis.devicePixelRatio || 1
     const w = Math.max(320, host.clientWidth - 16)
-    const h = Math.round(w * 1.294) // US-letter-ish
-    canvas.width = w
-    canvas.height = h
+    const aspect = bmp ? bmp.height / bmp.width : 1.294 // US-letter-ish until a page lands
+    const h = Math.max(120, Math.round(w * aspect))
+    canvas.width = Math.round(w * dpr)
+    canvas.height = Math.round(h * dpr)
+    canvas.style.width = `${w}px`
+    canvas.style.height = `${h}px`
     const g = canvas.getContext('2d')
     if (!g) return
+    g.scale(dpr, dpr)
     g.fillStyle = '#f5f2ea'
     g.fillRect(0, 0, w, h)
-    g.strokeStyle = 'rgba(0,0,0,0.15)'
-    g.strokeRect(0.5, 0.5, w - 1, h - 1)
+    if (bmp) {
+      g.drawImage(bmp, 0, 0, w, h)
+      return
+    }
     g.fillStyle = 'rgba(30,30,40,0.6)'
     g.textAlign = 'center'
-    g.font = '600 15px system-ui, sans-serif'
-    g.fillText('Sourcebook reader coming soon', w / 2, h / 2 - 10)
-    g.font = '400 12px system-ui, sans-serif'
-    g.fillText('Pages will render here without downloading the file', w / 2, h / 2 + 12)
+    g.font = '400 13px system-ui, sans-serif'
+    const message = this._pending
+      ? 'This upload never finished — re-upload the book to read it here.'
+      : this._loading
+        ? 'Loading page…'
+        : (this._error ?? (this._book ? 'No page loaded' : 'Select a sourcebook.'))
+    g.fillText(message, w / 2, h / 2)
+  }
+
+  /* ── Search ──────────────────────────────────────── */
+
+  async _runSearch() {
+    if (!this._book || this._pending) return
+    const q = this._searchEl?.value.trim()
+    if (!q) {
+      this._clearHits()
+      return
+    }
+    this._searching = true
+    this._updateToolbar()
+    try {
+      const body = await this._api.get(`${this._base()}/search?q=${encodeURIComponent(q)}`)
+      this._renderHits(body?.hits ?? [])
+    } catch (err) {
+      this._renderHits(null, err?.message || 'Search failed')
+    } finally {
+      this._searching = false
+      this._updateToolbar()
+    }
+  }
+
+  _clearHits() {
+    if (!this._hitsEl) return
+    this._hitsEl.replaceChildren()
+    this._hitsEl.style.display = 'none'
+  }
+
+  _renderHits(hits, errorMessage = null) {
+    const el = this._hitsEl
+    if (!el) return
+    el.replaceChildren()
+    el.style.display = 'block'
+    if (errorMessage || !hits?.length) {
+      const p = document.createElement('p')
+      p.style.cssText = 'margin:0; padding:0.4rem 0.5rem; font-size:0.75rem; opacity:0.6;'
+      p.textContent = errorMessage ?? 'No matches.'
+      el.appendChild(p)
+      return
+    }
+    for (const h of hits) {
+      const row = document.createElement('button')
+      row.type = 'button'
+      row.style.cssText =
+        'display:block; width:100%; text-align:left; padding:0.3rem 0.5rem; font-size:0.75rem; line-height:1.4; border:0; border-bottom:1px solid rgba(255,255,255,0.05); border-radius:0; background:transparent;'
+      row.textContent = `p.${h.page}${h.count > 1 ? ` ×${h.count}` : ''} — ${h.snippet}`
+      row.addEventListener('click', () => {
+        this._go(h.page)
+        this._clearHits()
+      })
+      el.appendChild(row)
+    }
   }
 }
 

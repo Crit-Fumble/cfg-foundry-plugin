@@ -48,10 +48,13 @@ export class CoreAPIClient {
     const url = `${this.baseUrl}${endpoint}`
     const timeout = options.timeout ?? DEFAULT_TIMEOUT
     const retries = options.retries ?? MAX_RETRIES
-    const { timeout: _t, retries: _r, ...fetchOpts } = options
+    const { timeout: _t, retries: _r, binary: _b, ...fetchOpts } = options
 
+    // Binary requests (sourcebook page images) carry no JSON Content-Type — on a
+    // self-hosted (cross-origin) install that header forces a CORS preflight for
+    // every page flip, and there is no body for it to describe.
     const headers = {
-      'Content-Type': 'application/json',
+      ...(options.binary ? {} : { 'Content-Type': 'application/json' }),
       ...(fetchOpts.headers ?? {}),
     }
 
@@ -133,6 +136,22 @@ export class CoreAPIClient {
   }
   async del(endpoint, opts = {}) {
     return this._parse(await this._request(endpoint, { ...opts, method: 'DELETE' }))
+  }
+
+  /**
+   * GET an endpoint that streams bytes (sourcebook page WebPs, cs#212) and return the
+   * Blob. Errors still flow through the friendly JSON error path — the server answers
+   * non-2xx with a JSON body even on binary routes.
+   */
+  async getBinary(endpoint, opts = {}) {
+    const res = await this._request(endpoint, {
+      ...opts,
+      method: 'GET',
+      binary: true,
+      headers: { Accept: 'image/webp,*/*', ...(opts.headers ?? {}) },
+    })
+    if (!res.ok) return this._parse(res)
+    return res.blob()
   }
 
   // ── Campaign endpoints ────────────────────────────────────────────────────
