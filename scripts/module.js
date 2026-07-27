@@ -45,6 +45,7 @@ import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
 import { MacroPullSync } from './services/macro-pull-sync.js'
+import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
@@ -59,7 +60,7 @@ const MODULE_ID = 'crit-fumble-core'
 // `window.CFGCore.version` reports and what the boot log prints; module.json is
 // what Foundry reads. They had silently drifted a release apart (2.13.0 vs
 // 2.14.0) until fp#47, so every consumer read a stale version.
-const MODULE_VERSION = '2.41.0'
+const MODULE_VERSION = '2.42.0'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -105,6 +106,9 @@ let _compendiumPullSync = null
 
 /** @type {ActorPullSync|null} */
 let _actorPullSync = null
+/** @type {ModulePackImportSync|null} */
+let _modulePackImportSync = null
+
 /** @type {MacroPullSync|null} */
 let _macroPullSync = null
 /** @type {ScenePullSync|null} */
@@ -678,6 +682,13 @@ Hooks.once('ready', async () => {
     // actor + journal syncs.
     _macroPullSync = new MacroPullSync(_api, heartbeatInstallId)
     _macroPullSync.start()
+
+    // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
+    // (the free SRD packages) from this world into a scoped compendium. The licensing
+    // allowlist is enforced server-side on every push; this client is a courier. Same
+    // installation gate + reporter election as the syncs above.
+    _modulePackImportSync = new ModulePackImportSync(_api, heartbeatInstallId)
+    _modulePackImportSync.start()
 
     // Core→Foundry scene sync (dt#246) — platform-authored scenes reach the table,
     // creates included. `active` is never synced: it is writable through a plain update(),

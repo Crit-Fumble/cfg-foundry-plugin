@@ -145,6 +145,8 @@ describe('syncInstalledModules', () => {
     const body = JSON.parse(init.body)
     expect(body).toEqual({
       modules: [{ id: 'mod-1', title: 'Mod One', version: '1.0.0' }],
+      // No game.packs in this fixture → an empty pack index still rides along (dt#185).
+      packIndex: [],
     })
 
     // Authorization header is set by fetchCfg.
@@ -199,6 +201,38 @@ describe('syncInstalledModules', () => {
     expect(result).toEqual({ ok: true, count: 0 })
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
-    expect(body).toEqual({ modules: [] })
+    expect(body).toEqual({ modules: [], packIndex: [] })
+  })
+})
+
+describe('readPackIndex (dt#185)', () => {
+  beforeEach(() => {
+    game.user = { isGM: true, id: 'test-gm-id', name: 'Test GM' }
+  })
+
+  it('projects module/system packs and EXCLUDES world packs', async () => {
+    game.packs = {
+      contents: [
+        { metadata: { packageName: 'dnd5e', packageType: 'system', name: 'classes24', label: 'Classes', type: 'Item', system: 'dnd5e' } },
+        { metadata: { packageName: 'dnd-tashas-cauldron', packageType: 'module', name: 'tcoe-spells', label: 'TCoE Spells', type: 'Item' } },
+        // World packs belong to the MIRROR, never the import index.
+        { metadata: { packageName: 'my-world', packageType: 'world', name: 'character-classes', label: 'House Classes', type: 'Item' } },
+        // Malformed rows are skipped, not thrown on.
+        { metadata: null },
+        {},
+      ],
+    }
+
+    const { readPackIndex } = await loadModulesSync()
+    expect(readPackIndex()).toEqual([
+      { packageId: 'dnd-tashas-cauldron', packageType: 'module', name: 'tcoe-spells', label: 'TCoE Spells', type: 'Item' },
+      { packageId: 'dnd5e', packageType: 'system', name: 'classes24', label: 'Classes', type: 'Item', system: 'dnd5e' },
+    ])
+  })
+
+  it('returns [] when game.packs is absent', async () => {
+    game.packs = undefined
+    const { readPackIndex } = await loadModulesSync()
+    expect(readPackIndex()).toEqual([])
   })
 })

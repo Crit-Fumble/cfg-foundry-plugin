@@ -35,6 +35,9 @@ export async function syncInstalledModules() {
   }
 
   const modules = readWorldModules()
+  // Pack index (dt#185): a compact game.packs listing so PlayTable can offer module/system
+  // packs for import (allowlist-gated server-side) without reading any pack CONTENT here.
+  const packIndex = readPackIndex()
   // On a cfg-hosted world `fetchCfg` authenticates with the same-origin SESSION cookie and
   // deliberately never the paired key (#43). A cookie identifies a user, not an installation, so
   // name the installation explicitly or the server cannot bind the push — which is what made this
@@ -43,7 +46,7 @@ export async function syncInstalledModules() {
   const installationId = getInstallationRef()
   const res = await fetchCfg('/api/v1/foundry/modules', {
     method: 'POST',
-    body: JSON.stringify(installationId ? { modules, installationId } : { modules }),
+    body: JSON.stringify(installationId ? { modules, packIndex, installationId } : { modules, packIndex }),
   })
 
   if (res.ok) {
@@ -107,5 +110,41 @@ export function readWorldModules() {
   // Stable order for reproducibility — server sorts by title on read, but
   // reading by id is what the wire shape promises and what tests assert on.
   out.sort((a, b) => a.id.localeCompare(b.id))
+  return out
+}
+
+/**
+ * Read `game.packs` metadata and project the non-world packs to the wire shape the server
+ * stores as the install's pack index (dt#185). World packs are excluded — the world
+ * compendium mirror owns those; this index feeds the module/system IMPORT path.
+ *
+ * @returns {Array<{packageId: string, packageType: string, name: string, label?: string, type?: string, system?: string|null}>}
+ */
+export function readPackIndex() {
+  const out = []
+  const packs = game?.packs
+  if (!packs) return out
+  const iterable = Array.isArray(packs.contents)
+    ? packs.contents
+    : typeof packs[Symbol.iterator] === 'function'
+      ? Array.from(packs)
+      : []
+  for (const p of iterable) {
+    const md = p?.metadata
+    if (!md || !md.name || !md.packageName) continue
+    const packageType = String(md.packageType ?? '')
+    if (packageType === 'world') continue
+    if (packageType !== 'module' && packageType !== 'system') continue
+    const row = {
+      packageId: String(md.packageName),
+      packageType,
+      name: String(md.name),
+    }
+    if (md.label != null) row.label = String(md.label)
+    if (md.type != null) row.type = String(md.type)
+    if (md.system != null) row.system = String(md.system)
+    out.push(row)
+  }
+  out.sort((a, b) => a.packageId.localeCompare(b.packageId) || a.name.localeCompare(b.name))
   return out
 }

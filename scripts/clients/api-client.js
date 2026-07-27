@@ -459,6 +459,34 @@ export class CoreAPIClient {
     return this.get(`/api/v1/installations/${installationId}/foundry/macro-sync?world=${encodeURIComponent(worldId)}`)
   }
 
+  // ── Module-pack import queue (dt#185) ─────────────────────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/module-pack-import?world={worldId}
+   * The GM's pending import requests for this world — module/system packs to read via
+   * `game.packs` and push back. Empty is the normal steady state.
+   *
+   * @returns {Promise<{ data: Array<{ requestId: string, packageId: string, packName: string }> }>}
+   */
+  getModulePackImportPlan(installationId, worldId) {
+    return this.get(
+      `/api/v1/installations/${installationId}/foundry/module-pack-import?world=${encodeURIComponent(worldId)}`,
+    )
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/module-pack-import/push
+   * One batch of a pack's documents (max 500 per push; `done: true` on the final batch
+   * completes the request). Pass `error` instead to park a request whose pack cannot be
+   * read (missing in this world, etc.). The server re-checks the licensing allowlist on
+   * every push — this client is a courier, not the gate.
+   *
+   * @param {{ world: string, requestId: string, entries: Array, folders?: Array, done: boolean, error?: string|null }} body
+   */
+  pushModulePackImport(installationId, body) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/module-pack-import/push`, body)
+  }
+
   /**
    * POST /api/v1/installations/{installationId}/foundry/macro-sync/ack
    *
