@@ -158,6 +158,8 @@ function buildTilesJson(docs, ctx) {
         color: elev > 0 ? 8022610 : 5331819
         // no texture → tint by elevation
       };
+      if (num(d.rotation) !== 0)
+        tile.rotation = num(d.rotation);
       const levelIds = levelMembership(d.levels);
       if (levelIds)
         tile.levelIds = levelIds;
@@ -167,7 +169,7 @@ function buildTilesJson(docs, ctx) {
   }
   return out;
 }
-function buildNotesJson(notes, assetUrl) {
+function buildNotesJson(notes, assetUrl, opts) {
   const out = [];
   for (const note of notes || []) {
     try {
@@ -180,6 +182,9 @@ function buildNotesJson(notes, assetUrl) {
         marker.entryId = doc.entryId;
       if (doc.text)
         marker.text = doc.text;
+      const elevation = Number(doc.elevation);
+      if (opts?.pxPerUnit && Number.isFinite(elevation) && elevation !== 0)
+        marker.elevation = elevation * opts.pxPerUnit;
       const levelIds = levelMembership(doc.levels);
       if (levelIds)
         marker.levelIds = levelIds;
@@ -403,17 +408,23 @@ function buildLightsJson(lightDocs, tokenDocs, ctx) {
     const castShadow = shadowBudget > 0;
     if (castShadow)
       shadowBudget--;
+    const alphaScale = cfg.alpha != null && Number.isFinite(Number(cfg.alpha)) ? Math.min(2, Math.max(0, Number(cfg.alpha)) / 0.5) : 1;
     const light = {
       x,
       y,
       elevation: elevPx + size * 0.6,
       color,
       radius,
-      intensity: 1.3 + num(cfg.luminosity),
+      intensity: (1.3 + num(cfg.luminosity)) * alphaScale,
       castShadow,
       shadowNear: size * 0.2,
       shadowNormalBias: size * 0.05
     };
+    const angle = Number(cfg.angle);
+    if (Number.isFinite(angle) && angle > 0 && angle < 360) {
+      light.angle = angle;
+      light.rotation = Number(meta?.rotation) || 0;
+    }
     if (meta?.id)
       light.id = meta.id;
     if (meta?.levelIds)
@@ -424,7 +435,7 @@ function buildLightsJson(lightDocs, tokenDocs, ctx) {
     try {
       if (d?.hidden || !ctx.docInSlice(d))
         continue;
-      addPointLight(d.config, num(d.x), num(d.y), num(d.elevation) * pxPerUnit, { id: d.id ?? d._id, levelIds: levelMembership(d.levels) });
+      addPointLight(d.config, num(d.x), num(d.y), num(d.elevation) * pxPerUnit, { id: d.id ?? d._id, levelIds: levelMembership(d.levels), rotation: d.rotation });
     } catch {
     }
   }
