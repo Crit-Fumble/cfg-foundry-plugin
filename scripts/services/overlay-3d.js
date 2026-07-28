@@ -241,7 +241,15 @@ export class Overlay3D {
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
       // both so position + elevation stay live regardless of how it changed.
       this._on('moveToken', (doc) => this._onUpdateToken(doc))
-      this._on('updateScene', () => this._scheduleRebuild())
+      this._on('updateScene', (doc, changes) => {
+        // A heightfield-ONLY update (a sculpt/stamp commit — ours or another GM's) re-displaces
+        // the live terrain mesh in place instead of rebuilding the whole scene. The full rebuild
+        // per brush click flashed every mesh AND re-ran camera framing each time (see rebuild()'s
+        // epilogue) — the misalignment-per-click the owner reported. Falls through to the rebuild
+        // for anything else, including a lattice REBUILD (cols/rows change → mesh needs rebuilding).
+        if (this._applyHeightfieldDelta(changes)) return
+        this._scheduleRebuild()
+      })
       // Tracked mode follows Foundry's camera: re-sync on every pan/zoom.
       this._on('canvasPan', () => {
         if (this._visible && this._mode === 'tracked') {
@@ -608,7 +616,11 @@ export class Overlay3D {
     // Cache framing for the orbit camera; the tracked camera follows Foundry.
     this._frame = { cx, cz, span: Math.max(rect.width, rect.height) }
     if (this._mode === 'orbit') this.setView('default')
-    else this._syncTrackedCamera()
+    else if (this._mode === 'tracked') this._syncTrackedCamera()
+    // Seats + character view: HANDS OFF the camera. The shared OrbitControls / FP rig own it —
+    // the old unconditional _syncTrackedCamera() stomped camera.up to the top-down axis on EVERY
+    // rebuild (each sculpt commit!), corrupting the seat orbit frame a little more per stroke
+    // (owner 2026-07-28: "things get a little more out of alignment each time").
     this._ready = true
     this._render()
   }
@@ -2129,7 +2141,11 @@ export class Overlay3D {
         ? 'WASD move · right-drag look · left-drag target box · Q/E up-down · scroll zoom'
         : m === 'tracked'
           ? 'arrows pan · scroll zoom · click select/target'
-          : 'left-click select · right-drag orbit · WASD/arrows move · Q/E up-down · scroll zoom'
+          : m === 'tabletop'
+            ? 'right-drag or arrows orbit your seat · scroll zoom · left-click select'
+            : m === 'tabletop-gm'
+              ? 'right-drag orbit · middle-drag pan · arrows pan · scroll zoom · left-click select'
+              : 'left-click select · right-drag orbit · arrows pan · scroll zoom'
   }
 
   /** Full-screen "Loading 3D view…" overlay while the three.js bundle + first scene build
@@ -3815,7 +3831,7 @@ export class Overlay3D {
    * ceiling before the 256-sample storage cap starts coarsening large scenes anyway.
    */
   async _promptLatticeDensity(current = null) {
-    const options = [1, 2, 3, 4]
+    const options = [1, 2, 3, 4, 6]
       .map((n) => {
         const d = this._latticeDimsFor(n)
         const eff = d.samplesPerSquare // the cap may coarsen the request on huge scenes
@@ -3909,6 +3925,28 @@ export class Overlay3D {
   /** True while a sculpt tool is active — the drag sculpts instead of panning/picking. */
   _sculptActive() {
     return !!this._sculptMode && this._visible
+  }
+
+  /**
+   * If a scene update touches ONLY flags['crit-fumble-core'].heightfield (same lattice shape),
+   * apply it as an in-place terrain re-displacement and return true — no scene rebuild, no
+   * camera churn, and remote GMs see each other's strokes live. Anything else (other fields,
+   * other flags, a cols/rows lattice change) returns false → normal rebuild.
+   */
+  _applyHeightfieldDelta(changes) {
+    const cfgFlags = changes?.flags?.['crit-fumble-core']
+    if (!cfgFlags || !('heightfield' in cfgFlags)) return false
+    if (Object.keys(changes).some((k) => k !== '_id' && k !== '_stats' && k !== 'flags')) return false
+    if (Object.keys(changes.flags).some((k) => k !== 'crit-fumble-core')) return false
+    if (Object.keys(cfgFlags).some((k) => k !== 'heightfield')) return false
+    if (!this._visible || !this._viewer) return false
+    const hf = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    const live = this._viewer.getTerrainHeights?.()
+    if (!hf?.heights || !live || live.length !== hf.heights.length) return false // lattice changed / no mesh yet
+    const px = this._pxPerUnit()
+    this._viewer.updateTerrainHeights(hf.heights.map((h) => h * px))
+    this._render()
+    return true
   }
 
   /** Smallest brush the wheel allows: ONE lattice sample on the current field (owner 2026-07-28 —

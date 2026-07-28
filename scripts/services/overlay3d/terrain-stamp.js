@@ -207,7 +207,7 @@ var HEIGHTMAP_WARNING_ACK_KEY = "cfg.heightmapWarningAcknowledged";
 
 // node_modules/@crit-fumble/shared/dist/constants/heightfield.js
 var DEFAULT_SAMPLES_PER_SQUARE = 2;
-var MAX_HEIGHTFIELD_DIM = 256;
+var MAX_HEIGHTFIELD_DIM = 384;
 function heightfieldDims(squaresX, squaresY, samplesPerSquare = DEFAULT_SAMPLES_PER_SQUARE) {
   const sx = Math.max(1, Math.floor(squaresX) || 1);
   const sy = Math.max(1, Math.floor(squaresY) || 1);
