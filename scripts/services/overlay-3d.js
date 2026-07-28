@@ -326,6 +326,7 @@ export class Overlay3D {
         this._updateControlBar()
         this._mountTerrainPanel() // PlayTable-style terrain rail (GM only) — React, lifecycle-bound
         this._mountCameraSwitcher() // camera modes live above the hotbar while 3D is up
+        this._mountZoomRail() // right-edge elevation/zoom slider — zoom stays reachable while a tool owns the wheel
         this._startLoop()
         this._hideLoading()
       } else {
@@ -337,6 +338,7 @@ export class Overlay3D {
         this._wasMoving = false
         this._disarmStamp() // flush any pending stamp commit + drop the reticle
         this._unmountCameraSwitcher() // camera bar belongs to the 3D session
+        this._unmountZoomRail() // elevation/zoom rail too
         this._teardownSharedControls() // stop the shared controller's rAF while hidden
         document.body.classList.remove('cfg-3d-active')
         if (this._container) this._container.style.display = 'none'
@@ -1741,8 +1743,10 @@ export class Overlay3D {
    */
   _onWheel(event) {
     if (!this._visible) return
-    // Level Stamp: the wheel resizes the stamp footprint (whole grid squares).
-    if (this._stampActive()) {
+    // With a terrain tool armed, SHIFT+wheel resizes the brush/stamp footprint; the PLAIN wheel
+    // keeps ZOOMING the camera (owner 2026-07-28 — the tool used to eat the wheel entirely, so
+    // adjusting zoom meant disarming the tool).
+    if (this._stampActive() && event.shiftKey) {
       event.preventDefault?.()
       event.stopImmediatePropagation?.()
       const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
@@ -1750,8 +1754,7 @@ export class Overlay3D {
       this._stamp.setRadiusFrac(this._sculptRadius)
       return
     }
-    // Sculpting: the wheel sizes the brush instead of zooming the camera.
-    if (this._sculptActive()) {
+    if (this._sculptActive() && event.shiftKey) {
       event.preventDefault?.()
       event.stopImmediatePropagation?.()
       const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
@@ -2034,6 +2037,9 @@ export class Overlay3D {
       this._fpGoal = null
       this._subjectElev = undefined
     }
+    // Entering Top-Down FROM the flat canvas inherits Foundry's current pan/zoom — arming a
+    // terrain tool used to reframe to the scene default, losing the user's focus (owner 2026-07-28).
+    if (cam === 'tracked' && !this._visible) this._seedTrackedFromCanvas()
     if (!this._visible) {
       this._mode = cam
       await this.setVisible(true)
@@ -2042,6 +2048,24 @@ export class Overlay3D {
     }
     this._updateControlBar()
     this._syncControlState()
+    this._syncZoomRail()
+  }
+
+  /**
+   * Inherit the 2D canvas view for the Top-Down camera: focus = the stage pivot (the point the
+   * user is looking at), height chosen so the ground plane spans the same world height the 2D
+   * viewport shows (visibleWorldH = clientH / stageScale = 2·h·tan(fov/2), fov 50 — matching
+   * _syncTrackedCamera). Clamped to the wheel-zoom range.
+   */
+  _seedTrackedFromCanvas() {
+    const pivot = canvas?.stage?.pivot
+    const scale = Number(canvas?.stage?.scale?.x)
+    if (!pivot || !Number.isFinite(scale) || scale <= 0) return
+    const size = canvas?.dimensions?.size || 100
+    const H = this._container?.clientHeight || window.innerHeight || 900
+    const h = H / scale / (2 * Math.tan((50 / 2) * (Math.PI / 180)))
+    this._trackFocus = { x: pivot.x, z: pivot.y }
+    this._trackDist = Math.max(size * 3, Math.min(size * 40, h))
   }
 
   /** The current user-facing view mode (for the menu + hint). */
@@ -4109,7 +4133,8 @@ export class Overlay3D {
     if (gm) modes.push({ key: 'topdown', label: 'Top Down', title: 'Overhead 3D — arrows pan · scroll zoom' })
     modes.push({ key: 'tabletop', label: 'Party View', title: 'Seated at the table (player side)' })
     if (gm) modes.push({ key: 'tabletop-gm', label: 'GM View', title: "Seated at the GM's side of the table" })
-    if (gm) modes.push({ key: 'free', label: 'Free Camera', title: 'Orbit freely — right-drag rotates, scroll zooms' })
+    // Free Camera retired from the bar (owner 2026-07-28): too easy to get lost in, and GM View
+    // already covers the roaming-builder need. The orbit rig stays reachable via API for debugging.
     modes.push({ key: 'character', label: 'Character', title: 'Look through your token' })
     return modes
   }
@@ -4153,6 +4178,116 @@ export class Overlay3D {
     this._cameraSwitcher = null
     try { this._cameraBar?.remove?.() } catch { /* */ }
     this._cameraBar = null
+  }
+
+  // ── Elevation/zoom rail (owner 2026-07-28) ────────────────────────────────────────────────────
+  // In 3D, camera height IS the zoom — one vertical slider on the right (mirroring PlayTable's
+  // bottom SEAT slider) drives it in every 3D mode, so zoom stays reachable while a terrain tool
+  // owns the pointer/wheel. Top = high (zoomed out), bottom = ground level.
+
+  /** The active camera-distance range + current value for the rail, per mode. */
+  _zoomState() {
+    const size = canvas?.dimensions?.size || 100
+    const span = this._frame ? Math.max(1, this._frame.span) : size * 40
+    if (this._mode === 'tracked') {
+      return { min: size * 3, max: size * 40, value: this._trackDist || size * 12 }
+    }
+    if (this._mode === 'firstperson') {
+      return { min: 0, max: size * 10, value: this._charDist ?? size * 4 }
+    }
+    // Seats (shared ViewerControls) + the API-only orbit rig: distance from the orbit pivot.
+    const oc = (this._mode === 'tabletop' || this._mode === 'tabletop-gm') && this._sharedControls ? this._sharedControls.orbit3d : this._controls
+    const cam = this._orbitCamera
+    if (!oc || !cam) return null
+    const min = Number.isFinite(oc.minDistance) && oc.minDistance > 0 ? oc.minDistance : size * 3
+    const max = Number.isFinite(oc.maxDistance) && oc.maxDistance < span * 4 ? oc.maxDistance : span * 1.8
+    return { min, max, value: cam.position.distanceTo(oc.target), orbit: oc }
+  }
+
+  _applyZoomValue(value) {
+    const s = this._zoomState()
+    if (!s) return
+    const d = Math.max(s.min, Math.min(s.max, value))
+    if (this._mode === 'tracked') {
+      this._trackDist = d
+      this._syncTrackedCamera()
+    } else if (this._mode === 'firstperson') {
+      const tok = this._firstPersonToken()
+      if (!tok?.document) return
+      if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
+      this._charDist = d
+      this._fpPositionCamera(tok)
+      this._maybeResliceOnFpZoom()
+    } else if (s.orbit && this._orbitCamera && this._THREE) {
+      const cam = this._orbitCamera
+      const dir = new this._THREE.Vector3().subVectors(cam.position, s.orbit.target)
+      if (dir.lengthSq() < 1e-6) dir.set(0, 1, 0)
+      dir.normalize().multiplyScalar(d)
+      cam.position.copy(s.orbit.target).add(dir)
+      s.orbit.update?.()
+    }
+    this._render()
+  }
+
+  _mountZoomRail() {
+    if (this._zoomRail || !this._container) return
+    const rail = document.createElement('div')
+    rail.id = 'cfg-3d-zoom-rail'
+    Object.assign(rail.style, {
+      position: 'fixed', top: '50%', transform: 'translateY(-50%)', zIndex: '31',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
+      padding: '8px 4px', background: 'rgba(11,14,19,0.7)', border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: '8px', pointerEvents: 'auto',
+    })
+    const label = document.createElement('span')
+    label.textContent = 'ELEV'
+    Object.assign(label.style, { font: '9px/1 system-ui, sans-serif', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.55)' })
+    const input = document.createElement('input')
+    input.type = 'range'
+    input.min = '0'
+    input.max = '1000'
+    input.step = '1'
+    input.title = 'Elevation / zoom'
+    // Vertical, max at the TOP (up = higher/farther) — writing-mode is the modern vertical-range form.
+    Object.assign(input.style, { writingMode: 'vertical-lr', direction: 'rtl', height: '180px', width: '18px', cursor: 'pointer' })
+    input.addEventListener('input', () => {
+      const s = this._zoomState()
+      if (!s) return
+      this._zoomRailDragging = true
+      this._applyZoomValue(s.min + (Number(input.value) / 1000) * (s.max - s.min))
+    })
+    input.addEventListener('change', () => { this._zoomRailDragging = false })
+    rail.append(label, input)
+    this._container.appendChild(rail)
+    this._zoomRail = rail
+    this._zoomRailInput = input
+    // Follow wheel/drag zoom changes (and sidebar collapse) — light poll, PlayTable's seat-slider pattern.
+    this._zoomRailTimer = setInterval(() => this._syncZoomRail(), 400)
+    this._syncZoomRail()
+  }
+
+  _unmountZoomRail() {
+    if (this._zoomRailTimer) clearInterval(this._zoomRailTimer)
+    this._zoomRailTimer = null
+    try { this._zoomRail?.remove?.() } catch { /* */ }
+    this._zoomRail = null
+    this._zoomRailInput = null
+  }
+
+  /** Position the rail clear of Foundry's right sidebar + mirror the live camera distance. */
+  _syncZoomRail() {
+    if (!this._zoomRail) return
+    const show = this._visible
+    this._zoomRail.style.display = show ? 'flex' : 'none'
+    if (!show) return
+    const sidebar = document.getElementById('sidebar')
+    const w = sidebar ? Math.ceil(sidebar.getBoundingClientRect().width) : 0
+    this._zoomRail.style.right = `${w + 16}px`
+    if (this._zoomRailDragging) return // don't fight the user's drag with the poll
+    const s = this._zoomState()
+    if (!s || !this._zoomRailInput) return
+    const frac = s.max > s.min ? (s.value - s.min) / (s.max - s.min) : 0
+    this._zoomRailInput.value = String(Math.round(Math.max(0, Math.min(1, frac)) * 1000))
   }
 
   _cameraSwitcherProps() {
