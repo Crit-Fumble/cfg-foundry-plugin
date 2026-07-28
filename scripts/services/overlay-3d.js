@@ -657,6 +657,10 @@ export class Overlay3D {
         return { width: r.width, height: r.height, x: r.x, y: r.y }
       },
       onSelect: (id) => {
+        // While a terrain tool is armed, the left button belongs to the tool — never token
+        // selection (owner 2026-07-28: "unbind selected tools while sculpting"). The shared
+        // controls fire this on their own bare-click detection, so gate it here too.
+        if (this._sculptMode || this._stamp) return
         if (!id) return
         try {
           canvas?.tokens?.get(id)?.control({ releaseOthers: true })
@@ -1173,21 +1177,25 @@ export class Overlay3D {
    */
   _onCharDown(event) {
     if (!this._visible) return
-    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
-    this._hideTokenHud() // a new scene interaction dismisses an open token HUD
-    // Level Stamp: a left-click imprints the ghost at the cursor's grid square (WASD walks it; Q/E height).
+    // An ARMED terrain tool owns the left button in EVERY 3D mode — including Free + the seat
+    // cameras, where these branches used to sit below the shared-controls early return, so a
+    // left-click while sculpting fell through to token selection instead of the tool (owner
+    // 2026-07-28). Right-drag stays with the camera either way.
     if (this._stampActive() && event.button === 0) {
+      // Level Stamp: a left-click imprints the ghost at the cursor's grid square (WASD walks it; Q/E height).
       event.preventDefault?.()
       const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
       if (uv) this._stamp.placeAt(uv.u, uv.v)
       return
     }
-    // Sculpt: a left-drag paints the active terrain brush (raycast → height field).
     if (this._sculptActive() && event.button === 0) {
+      // Sculpt: a left-drag paints the active terrain brush (raycast → height field).
       event.preventDefault?.()
       this._sculptBegin(event)
       return
     }
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
+    this._hideTokenHud() // a new scene interaction dismisses an open token HUD
     // Top-Down (Foundry-like): LEFT-drag = marquee multi-select (bare left-click selects /
     // moves); RIGHT-drag = pan the map (bare right-click = token HUD). Resolve bare clicks on
     // mouseup so a drag doesn't fire the click.
@@ -1215,7 +1223,7 @@ export class Overlay3D {
 
   /** Mouse move: right-drag looks, left-drag draws the marquee, otherwise hover-pick. */
   _onCharMove(event) {
-    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
+    // Armed terrain tools track the cursor in every 3D mode (see _onCharDown on ordering).
     if (this._stampActive()) {
       // Ghost follows the cursor's grid square (no imprint until click / WASD while placed).
       const uv = this._viewer?.raycastTerrain?.(event.clientX, event.clientY)
@@ -1228,6 +1236,7 @@ export class Overlay3D {
       if (this._sculptDrag) this._sculptApply(event)
       return
     }
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     const d = this._charDrag
     if (d && d.mode === 'trackpan') {
       const dx = event.clientX - d.x
@@ -1262,11 +1271,12 @@ export class Overlay3D {
 
   /** Mouse up: finish the marquee (target the enclosed group) or resolve a bare click. */
   _onCharUp(event) {
-    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     if (this._sculptDrag) {
+      // Finish an in-flight sculpt stroke in ANY mode (see _onCharDown on ordering).
       this._sculptEnd()
       return
     }
+    if (this._sharedControlsOwnInput()) return // shared ViewerControls owns input in Free + the Party/GM seats
     const d = this._charDrag
     this._charDrag = null
     if (d && d.mode === 'trackpan') {
@@ -1790,8 +1800,9 @@ export class Overlay3D {
       this._sculptUndo()
       return
     }
-    // Level Stamp: WASD/arrows walk the ghost one grid square (seat-relative); Q/E lower/raise the
-    // target elevation. The controller returns false for any other key so Esc/etc. still fall through.
+    // Level Stamp: WASD walks the ghost one grid square (token-movement parity); Q/E lower/raise the
+    // target elevation (below grade allowed). The controller DECLINES arrows and any other key, so
+    // arrows fall through to the camera exactly as in 2D view.
     if (this._stampActive() && this._stamp.key(event.key)) {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -3970,7 +3981,7 @@ export class Overlay3D {
         const jR = this._cellRange(cy - gridSize / 2, cy + gridSize / 2, rect.y, rect.height, rows)
         if (!iR || !jR) continue
         const mid = Number(heights[Math.round((jR[0] + jR[1]) / 2) * cols + Math.round((iR[0] + iR[1]) / 2)]) || 0
-        const target = Math.max(0, Math.round(mid / step) * step + dir * step)
+        const target = Math.round(mid / step) * step + dir * step // below grade allowed — trenches/ditches
         for (let j = jR[0]; j <= jR[1]; j++) for (let i = iR[0]; i <= iR[1]; i++) heights[j * cols + i] = target
         this._sculptSnapTouched.add(key)
       }
