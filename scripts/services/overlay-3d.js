@@ -2061,6 +2061,7 @@ export class Overlay3D {
     this._updateControlBar()
     this._syncControlState()
     this._syncZoomRail()
+    this._syncTerrainPanel() // camera bar visibility + active pill track the mode (hidden in Character view)
   }
 
   /**
@@ -4184,7 +4185,9 @@ export class Overlay3D {
     if (gm) modes.push({ key: 'tabletop-gm', label: 'GM View', title: "Seated at the GM's side of the table" })
     // Free Camera retired from the bar (owner 2026-07-28): too easy to get lost in, and GM View
     // already covers the roaming-builder need. The orbit rig stays reachable via API for debugging.
-    modes.push({ key: 'character', label: 'Character', title: 'Look through your token' })
+    // Character view is NOT a bar mode either (owner 2026-07-28): it belongs to a specific token,
+    // so its only entry is the token right-click "3D View" option — and while it's active the whole
+    // bar hides (see _cameraSwitcherProps). Esc / the toolbar cube leave it.
     return modes
   }
 
@@ -4340,10 +4343,14 @@ export class Overlay3D {
   }
 
   _cameraSwitcherProps() {
+    // Hide the whole bar in Character view — that mode is entered per-token (right-click →
+    // 3D View) and exited with Esc / the toolbar cube; offering table-camera pills while looking
+    // through a token invited accidental mode churn (owner 2026-07-28).
+    if (this._cameraBar) this._cameraBar.style.display = this._currentViewMode() === 'firstperson' ? 'none' : 'flex'
     return {
       modes: this._cameraModes(),
-      active: this._currentViewMode() === 'firstperson' ? 'character' : this._currentViewMode(),
-      onSelect: (key) => void this.setViewMode(key === 'character' ? 'firstperson' : key),
+      active: this._currentViewMode(),
+      onSelect: (key) => void this.setViewMode(key),
     }
   }
 
