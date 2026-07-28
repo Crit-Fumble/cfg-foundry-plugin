@@ -733,6 +733,35 @@ export class Overlay3D {
       // spherical it still holds from the previous mode.
       sc.orbit3d.target.set(cx, 0, cz)
       sc.orbit3d.update()
+      // 2D-focus seed (GM seat only): entering 3D from the flat canvas slides the seat's pivot to
+      // the point the user was looking at and matches the dolly to their 2D zoom — same seat pose,
+      // their spot on the map. The GM seat pans freely, so a translated pivot is a legal state.
+      // The seed is TTL-scoped, NOT consume-once: the entry sequence frames the seat more than
+      // once (_ensureSharedControls seats on create, setVisible re-seats after rebuild), and a
+      // one-shot seed was eaten by the first pass and re-centred by the second. Every framing
+      // inside the window re-applies the same seed (idempotent); the timer then clears it so
+      // later re-framings (scene reloads, seat slider) behave normally.
+      const seed = mode === 'tabletop-gm' ? this._pendingSeatSeed : null
+      if (seed) {
+        if (!this._pendingSeatSeedTimer) {
+          this._pendingSeatSeedTimer = setTimeout(() => {
+            this._pendingSeatSeed = null
+            this._pendingSeatSeedTimer = null
+          }, 1500)
+        }
+        const H = this._container?.clientHeight || window.innerHeight || 900
+        const want = Math.max(sc.orbit3d.minDistance || 0, Math.min(sc.orbit3d.maxDistance || Infinity, H / seed.scale / (2 * Math.tan((25 * Math.PI) / 180))))
+        const dx = seed.x - cx
+        const dz = seed.y - cz
+        cam.position.x += dx
+        cam.position.z += dz
+        sc.orbit3d.target.set(seed.x, 0, seed.y)
+        const dir = cam.position.clone().sub(sc.orbit3d.target).normalize().multiplyScalar(want)
+        cam.position.copy(sc.orbit3d.target).add(dir)
+        cam.lookAt(sc.orbit3d.target)
+        cam.updateProjectionMatrix()
+        sc.orbit3d.update()
+      }
       this._render()
     } catch (err) {
       console.warn('CFG Core | seat framing failed:', err)
@@ -2049,9 +2078,15 @@ export class Overlay3D {
       this._fpGoal = null
       this._subjectElev = undefined
     }
-    // Entering Top-Down FROM the flat canvas inherits Foundry's current pan/zoom — arming a
-    // terrain tool used to reframe to the scene default, losing the user's focus (owner 2026-07-28).
+    // Entering 3D FROM the flat canvas inherits Foundry's current pan/zoom — arming a terrain
+    // tool used to reframe to the scene default, losing the user's focus (owner 2026-07-28).
+    // Top-Down seeds its tracked focus/height; the GM seat records a pending seed that
+    // _applySeatFraming applies AFTER the seat pose lands (its pan is free, so re-targeting the
+    // pivot is legal there — the anchored PARTY seat deliberately never does this).
     if (cam === 'tracked' && !this._visible) this._seedTrackedFromCanvas()
+    if (cam === 'tabletop-gm' && !this._visible && canvas?.stage?.pivot) {
+      this._pendingSeatSeed = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: Number(canvas.stage.scale?.x) || 1 }
+    }
     if (!this._visible) {
       this._mode = cam
       await this.setVisible(true)
@@ -3247,6 +3282,13 @@ export class Overlay3D {
     const scene = canvas?.scene
     const lvls = scene?.levels
     if (!lvls || !lvls.size) return null
+    // ELEV-rail level scroll (owner 2026-07-28): an explicit floor pick wins over the legacy
+    // resolution chain in every mode except Character view (there the SUBJECT's floor rules).
+    // A stale id (scene switched, level deleted) is ignored, not an error.
+    if (this._levelOverrideId && this._mode !== 'firstperson') {
+      const o = lvls.get?.(this._levelOverrideId)
+      if (o) return o
+    }
     // Delegate the precedence to the pure resolver. In firstperson (character) view the
     // SUBJECT's floor wins outright — regardless of the off-by-default focus-follow toggle
     // or where the GM navigated (canvas.level) — because the camera is anchored on the
@@ -4180,7 +4222,8 @@ export class Overlay3D {
   _cameraModes() {
     const gm = this._canBuild()
     const modes = [{ key: '2d', label: '2D', title: 'Leave 3D — back to the normal Foundry canvas' }]
-    if (gm) modes.push({ key: 'topdown', label: 'Top Down', title: 'Overhead 3D — arrows pan · scroll zoom' })
+    // Top Down unlisted for now (owner 2026-07-28): keep the bar simple — Party/GM seats are the
+    // 3D views. The tracked rig stays for a future render option (setViewMode('topdown') works).
     modes.push({ key: 'tabletop', label: 'Party View', title: 'Seated at the table (player side)' })
     if (gm) modes.push({ key: 'tabletop-gm', label: 'GM View', title: "Seated at the GM's side of the table" })
     // Free Camera retired from the bar (owner 2026-07-28): too easy to get lost in, and GM View
@@ -4281,6 +4324,26 @@ export class Overlay3D {
     this._render()
   }
 
+  /** Scene levels sorted bottom→top (by base elevation) — the ELEV rail's scroll order. */
+  _levelsSorted() {
+    const lvls = canvas?.scene?.levels
+    if (!lvls || !lvls.size) return []
+    return [...(lvls.contents || [])].sort((a, b) => this._levelBase(a) - this._levelBase(b))
+  }
+
+  /** Step the viewed floor up/down from the ELEV rail (±1 through _levelsSorted). */
+  _stepLevel(dir) {
+    const sorted = this._levelsSorted()
+    if (sorted.length < 2) return
+    const cur = this._activeLevel()
+    const idx = Math.max(0, sorted.findIndex((l) => l.id === cur?.id))
+    const next = sorted[Math.max(0, Math.min(sorted.length - 1, idx + dir))]
+    if (!next || next.id === cur?.id) return
+    this._levelOverrideId = next.id
+    this.rebuild() // the slice + per-floor rendering key off _activeLevel
+    this._syncZoomRail()
+  }
+
   _mountZoomRail() {
     if (this._zoomRail || !this._container) return
     const rail = document.createElement('div')
@@ -4290,6 +4353,25 @@ export class Overlay3D {
       display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
       padding: '8px 4px', background: 'rgba(11,14,19,0.7)', border: '1px solid rgba(255,255,255,0.1)',
       borderRadius: '8px', pointerEvents: 'auto',
+    })
+    const railBtn = (title, html, onClick) => {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.title = title
+      b.innerHTML = html
+      b.style.cssText = 'width:22px;height:20px;border:0;border-radius:4px;background:transparent;color:rgba(255,255,255,0.7);cursor:pointer;font:11px/1 system-ui;padding:0'
+      b.addEventListener('click', onClick)
+      return b
+    }
+    // Floor scroll + cutaway (moved here from the scene-control group, owner 2026-07-28): the
+    // ELEV rail owns everything vertical — camera height, the viewed floor, and the cutaway.
+    this._zoomLevelUp = railBtn('Floor up', '<i class="fa-solid fa-chevron-up"></i>', () => this._stepLevel(1))
+    this._zoomLevelLabel = document.createElement('span')
+    Object.assign(this._zoomLevelLabel.style, { font: '9px/1.2 system-ui, sans-serif', color: 'rgba(255,255,255,0.7)', maxWidth: '44px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' })
+    this._zoomLevelDown = railBtn('Floor down', '<i class="fa-solid fa-chevron-down"></i>', () => this._stepLevel(-1))
+    this._zoomSlice = railBtn('Floor cutaway — show the viewed floor + below, hide floors above', '<i class="fa-solid fa-layer-group"></i>', () => {
+      this.setSlice(this._sliceFloors === false)
+      this._syncZoomRail()
     })
     const label = document.createElement('span')
     label.textContent = 'ELEV'
@@ -4309,7 +4391,7 @@ export class Overlay3D {
       this._applyZoomValue(s.min + (Number(input.value) / 1000) * (s.max - s.min))
     })
     input.addEventListener('change', () => { this._zoomRailDragging = false })
-    rail.append(label, input)
+    rail.append(this._zoomLevelUp, this._zoomLevelLabel, this._zoomLevelDown, label, input, this._zoomSlice)
     this._container.appendChild(rail)
     this._zoomRail = rail
     this._zoomRailInput = input
@@ -4324,9 +4406,14 @@ export class Overlay3D {
     try { this._zoomRail?.remove?.() } catch { /* */ }
     this._zoomRail = null
     this._zoomRailInput = null
+    this._zoomLevelUp = null
+    this._zoomLevelLabel = null
+    this._zoomLevelDown = null
+    this._zoomSlice = null
   }
 
-  /** Position the rail clear of Foundry's right sidebar + mirror the live camera distance. */
+  /** Position the rail clear of Foundry's right sidebar + mirror the live camera distance,
+   *  floor scroll, and cutaway state. */
   _syncZoomRail() {
     if (!this._zoomRail) return
     const show = this._visible
@@ -4335,6 +4422,16 @@ export class Overlay3D {
     const sidebar = document.getElementById('sidebar')
     const w = sidebar ? Math.ceil(sidebar.getBoundingClientRect().width) : 0
     this._zoomRail.style.right = `${w + 16}px`
+    // Floor stepper only exists on multi-level scenes; the label shows the viewed floor.
+    const sorted = this._levelsSorted()
+    const multi = sorted.length > 1
+    const cur = multi ? this._activeLevel() : null
+    const idx = cur ? sorted.findIndex((l) => l.id === cur.id) : -1
+    for (const el of [this._zoomLevelUp, this._zoomLevelLabel, this._zoomLevelDown]) if (el) el.style.display = multi ? '' : 'none'
+    if (multi && this._zoomLevelLabel) this._zoomLevelLabel.textContent = cur?.name || `L${idx + 1}`
+    if (multi && this._zoomLevelUp) this._zoomLevelUp.style.opacity = idx >= sorted.length - 1 ? '0.3' : '1'
+    if (multi && this._zoomLevelDown) this._zoomLevelDown.style.opacity = idx <= 0 ? '0.3' : '1'
+    if (this._zoomSlice) this._zoomSlice.style.color = this._sliceFloors !== false ? '#ffb300' : 'rgba(255,255,255,0.7)'
     if (this._zoomRailDragging) return // don't fight the user's drag with the poll
     const s = this._zoomState()
     if (!s || !this._zoomRailInput) return
@@ -4367,9 +4464,9 @@ export class Overlay3D {
    *  Re-picking the armed tool toggles it off. */
   _selectTerrainTool(t) {
     // Sculpting is a 3D activity: picking any terrain tool ENTERS 3D (owner 2026-07-24) — the rail is
-    // mounted with the toolbar, so it's reachable from the flat canvas. GMs land in the Top-Down
-    // building camera; Character view is never a sculpting camera.
-    if (!this._visible || this._mode === 'firstperson') void this.setViewMode('topdown')
+    // mounted with the toolbar, so it's reachable from the flat canvas. Sculptors land at the GM
+    // seat (Top Down is a future render option); Character view is never a sculpting camera.
+    if (!this._visible || this._mode === 'firstperson') void this.setViewMode('tabletop-gm')
     if (t === 'stamp') {
       if (this._stamp) this._disarmStamp()
       else this._armStamp()
@@ -4393,7 +4490,7 @@ export class Overlay3D {
       ui?.notifications?.warn?.('No 3D terrain on this scene yet — add a heightfield first.')
       return
     }
-    if (this._mode === 'firstperson' || !this._visible) this.setViewMode('topdown')
+    if (this._mode === 'firstperson' || !this._visible) this.setViewMode('tabletop-gm')
     this._setSculptMode(null) // stamp + brush are mutually exclusive
     const cols = Math.floor(Number(field.cols))
     const rows = Math.floor(Number(field.rows))
@@ -4505,21 +4602,17 @@ export class Overlay3D {
           view3d: {
             name: 'view3d',
             order: 0,
-            title: '3D View — enter/leave 3D. Pick the camera (Top Down · Party · GM · Free · Character) above the hotbar.',
+            title: '3D View — enter/leave 3D. GMs land at the GM seat, players at the Party seat; switch above the hotbar.',
             icon: 'fa-solid fa-cube',
             toggle: true,
             active: this._visible,
-            onChange: (event, active) => this.setViewMode(active ? (this._canBuild() ? 'topdown' : 'tabletop') : '2d'),
+            // Straight to your ROLE's seat (owner 2026-07-28): Players/Trusted → Party View,
+            // Assistant GM/GM → GM View. Top Down is unlisted for now (future render option —
+            // the tracked rig stays API-reachable via setViewMode('topdown')).
+            onChange: (event, active) => this.setViewMode(active ? (this._canBuild() ? 'tabletop-gm' : 'tabletop') : '2d'),
           },
-          slice: {
-            name: 'slice',
-            order: 3,
-            title: 'Floor slice — show the current floor + below, hide floors above',
-            icon: 'fa-solid fa-layer-group',
-            toggle: true,
-            active: this._sliceFloors !== false,
-            onChange: (event, active) => this.setSlice(active),
-          },
+          // NOTE: the floor-slice cutaway moved OUT of this group onto the right-edge ELEV rail
+          // (owner 2026-07-28) — cutaway + level scrolling live with the elevation control.
           terrainGenerate: {
             name: 'terrainGenerate',
             order: 9,
