@@ -34,6 +34,8 @@ import {
   HEIGHTMAP_WARNING_ACK_KEY,
   heightfieldDims,
   flatHeightfield,
+  latticeAlignment,
+  resampleHeightfield,
 } from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
@@ -3745,13 +3747,14 @@ export class Overlay3D {
     if (!this._canBuild()) return // terrain is GM / Assistant GM only
     const scene = canvas?.scene
     if (!scene) return
+    // An EXISTING field routes to the non-destructive rebuild (resample-preserve + density choice).
+    // This tool used to flatten a sculpted field outright — rebuild keeps the terrain.
+    if (scene.flags?.['crit-fumble-core']?.heightfield?.heights?.length) return this._rebuildTerrainLattice()
     if (!(await this._confirmHeightmapWarning())) return // one-time performance caution, per user
+    const spp = await this._promptLatticeDensity()
+    if (!spp) return
     try {
-      const gridSize = Number(canvas?.dimensions?.size) || 100
-      const rect = this._sceneRect()
-      const squaresX = Math.max(1, Math.round(rect.width / gridSize))
-      const squaresY = Math.max(1, Math.round(rect.height / gridSize))
-      const { cols, rows, samplesPerSquare } = heightfieldDims(squaresX, squaresY)
+      const { cols, rows, samplesPerSquare } = this._latticeDimsFor(spp)
       this._sculptPushUndo(scene.flags?.['crit-fumble-core']?.heightfield?.heights) // undoable
       await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights: flatHeightfield(cols, rows) })
       ui?.notifications?.info?.(`Added flat 3D terrain (${cols}×${rows} points, ${samplesPerSquare} per tile) — sculpt from here.`)
@@ -3759,6 +3762,75 @@ export class Overlay3D {
     } catch (e) {
       console.warn('CFG Core | add terrain failed', e)
       ui?.notifications?.error?.('Could not add terrain (see console).')
+    }
+  }
+
+  /** Lattice dims for this scene at a chosen density, via the shared helper (respects the 256 cap). */
+  _latticeDimsFor(samplesPerSquare) {
+    const gridSize = Number(canvas?.dimensions?.size) || 100
+    const rect = this._sceneRect()
+    const squaresX = Math.max(1, Math.round(rect.width / gridSize))
+    const squaresY = Math.max(1, Math.round(rect.height / gridSize))
+    return { ...heightfieldDims(squaresX, squaresY, samplesPerSquare), squaresX, squaresY }
+  }
+
+  /**
+   * Points-per-tile picker (owner ask, 2026-07-28: adjustable heightmap density for detail work —
+   * trenches/pits need more than corner samples). 2 is the shared default; 4 is the practical detail
+   * ceiling before the 256-sample storage cap starts coarsening large scenes anyway.
+   */
+  async _promptLatticeDensity(current = null) {
+    const options = [1, 2, 3, 4]
+      .map((n) => {
+        const d = this._latticeDimsFor(n)
+        const eff = d.samplesPerSquare // the cap may coarsen the request on huge scenes
+        return `<option value="${n}" ${n === (current ?? 2) ? 'selected' : ''}>${n} per tile — ${d.cols}×${d.rows} points${eff !== n ? ' (capped)' : ''}</option>`
+      })
+      .join('')
+    try {
+      const DialogV2 = foundry?.applications?.api?.DialogV2
+      if (!DialogV2?.prompt) return current ?? 2 // headless/ancient builds: shared default
+      const picked = await DialogV2.prompt({
+        window: { title: 'Terrain detail' },
+        content: `<p>Height samples per grid tile. More points = finer trenches, pits and ramps; big scenes cost more to render.</p><select name="spp">${options}</select>`,
+        ok: { label: 'Continue', callback: (_ev, button) => Number(button.form?.elements?.spp?.value) || 2 },
+      })
+      return picked || null
+    } catch {
+      return null // cancelled
+    }
+  }
+
+  /**
+   * Rebuild the heightfield lattice at a chosen density, PRESERVING sculpted terrain (bilinear
+   * resample — the field spans the scene rect at any density). This is also the repair path for
+   * legacy OFF-lattice fields (e.g. a capped square 80×80 on a 59×55 scene) that the Level Stamp
+   * cannot address correctly. Undoable like any sculpt stroke.
+   */
+  async _rebuildTerrainLattice() {
+    if (!this._canBuild()) return
+    const scene = canvas?.scene
+    const field = scene?.flags?.['crit-fumble-core']?.heightfield
+    if (!field?.heights?.length) return
+    const d0 = this._latticeDimsFor(2)
+    const current = latticeAlignment(Math.floor(Number(field.cols)), Math.floor(Number(field.rows)), d0.squaresX, d0.squaresY)
+    const spp = await this._promptLatticeDensity(current.aligned ? current.sppX : null)
+    if (!spp) return
+    try {
+      const { cols, rows, samplesPerSquare } = this._latticeDimsFor(spp)
+      if (cols === Math.floor(Number(field.cols)) && rows === Math.floor(Number(field.rows))) {
+        ui?.notifications?.info?.('Terrain already has that lattice — nothing to rebuild.')
+        return
+      }
+      this._disarmStamp()
+      this._sculptPushUndo(field.heights) // dims-aware stack: undo restores the old lattice + heights together
+      const heights = resampleHeightfield({ cols: Math.floor(Number(field.cols)), rows: Math.floor(Number(field.rows)), heights: field.heights }, cols, rows)
+      await scene.setFlag('crit-fumble-core', 'heightfield', { cols, rows, heights })
+      ui?.notifications?.info?.(`Rebuilt terrain lattice: ${cols}×${rows} points (${samplesPerSquare} per tile) — sculpt preserved.`)
+      this._syncTerrainPanel()
+    } catch (e) {
+      console.warn('CFG Core | terrain lattice rebuild failed', e)
+      ui?.notifications?.error?.('Could not rebuild the terrain lattice (see console).')
     }
   }
 
@@ -4123,6 +4195,15 @@ export class Overlay3D {
     this._setSculptMode(null) // stamp + brush are mutually exclusive
     const cols = Math.floor(Number(field.cols))
     const rows = Math.floor(Number(field.rows))
+    // The stamp paints whole grid squares by index arithmetic, so it REQUIRES an integer
+    // samples-per-square lattice. A legacy off-lattice field (e.g. the capped square 80×80 on a
+    // 59×55 scene) would stamp the WRONG tiles — drift grows with distance from the origin. Gate it
+    // and route to the resample-preserving rebuild instead of showing a tool that misplaces edits.
+    const { squaresX, squaresY } = this._latticeDimsFor(2)
+    if (!latticeAlignment(cols, rows, squaresX, squaresY).aligned) {
+      ui?.notifications?.warn?.('This terrain uses an old lattice the Level Stamp cannot address square-by-square — rebuilding it (sculpt is preserved).')
+      return void this._rebuildTerrainLattice()
+    }
     const rect = this._sceneRect()
     const gridSize = canvas?.dimensions?.size || 100
     const step = Number(canvas?.scene?.grid?.distance) || 5
@@ -4165,26 +4246,37 @@ export class Overlay3D {
     }
   }
 
-  /** Push a height-field snapshot (units) onto the undo stack, capped at 24 strokes. */
+  /** Push a height-field snapshot (units) onto the undo stack, capped at 24 strokes. Dims are
+   *  captured WITH the snapshot (they default to the field's current shape at push time) so undoing
+   *  across a lattice REBUILD restores the old cols/rows along with the old heights. */
   _sculptPushUndo(heights) {
     if (!Array.isArray(heights)) return
-    this._sculptUndoStack.push(heights.slice())
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    const cols = Math.floor(Number(field?.cols)) || this._sculptCols
+    const rows = Math.floor(Number(field?.rows)) || this._sculptRows
+    this._sculptUndoStack.push({ cols, rows, heights: heights.slice() })
     if (this._sculptUndoStack.length > 24) this._sculptUndoStack.shift()
   }
 
-  /** Undo the last sculpt stroke (or Generate): restore the previous height field. Bound to
-   *  Cmd/Ctrl-Z in a 3D view + the Undo tool. */
+  /** Undo the last sculpt stroke (or Generate / lattice rebuild): restore the previous height field.
+   *  Bound to Cmd/Ctrl-Z in a 3D view + the Undo tool. */
   _sculptUndo() {
-    const heights = this._sculptUndoStack.pop()
+    const snap = this._sculptUndoStack.pop()
+    // Legacy bare-array snapshots (pre dims-aware stack) fall back to the current flag's shape.
+    const heights = Array.isArray(snap) ? snap : snap?.heights
     if (!heights) {
       ui?.notifications?.info?.('Nothing to undo')
       return
     }
     const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
-    const cols = Math.floor(Number(field?.cols)) || this._sculptCols
-    const rows = Math.floor(Number(field?.rows)) || this._sculptRows
-    const px = this._pxPerUnit()
-    this._viewer?.updateTerrainHeights?.(heights.map((v) => v * px)) // immediate in-place restore
+    const cols = (Array.isArray(snap) ? 0 : Math.floor(Number(snap.cols))) || Math.floor(Number(field?.cols)) || this._sculptCols
+    const rows = (Array.isArray(snap) ? 0 : Math.floor(Number(snap.rows))) || Math.floor(Number(field?.rows)) || this._sculptRows
+    // In-place mesh restore only when the snapshot matches the CURRENT lattice — across a rebuild the
+    // shapes differ, and the setFlag below triggers the full scene rebuild that remeshes correctly.
+    if (Math.floor(Number(field?.cols)) === cols && Math.floor(Number(field?.rows)) === rows) {
+      const px = this._pxPerUnit()
+      this._viewer?.updateTerrainHeights?.(heights.map((v) => v * px))
+    }
     try {
       canvas?.scene?.setFlag?.('crit-fumble-core', 'heightfield', { cols, rows, heights }) // persist + sync
     } catch {

@@ -1,4 +1,31 @@
 // node_modules/@crit-fumble/threejs/dist/terrain-stamp.js
+function latticeAlignment(cols, rows, squaresW, squaresH) {
+  const sppX = Math.max(1, Math.round((cols - 1) / Math.max(1, squaresW)));
+  const sppY = Math.max(1, Math.round((rows - 1) / Math.max(1, squaresH)));
+  const aligned = cols - 1 === sppX * squaresW && rows - 1 === sppY * squaresH;
+  return { sppX, sppY, aligned };
+}
+function resampleHeightfield(src, cols, rows) {
+  const sc = Math.max(2, Math.floor(src.cols));
+  const sr = Math.max(2, Math.floor(src.rows));
+  const out = new Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    const v = rows > 1 ? j / (rows - 1) * (sr - 1) : 0;
+    const j0 = Math.min(sr - 2, Math.floor(v));
+    const fv = v - j0;
+    for (let i = 0; i < cols; i++) {
+      const u = cols > 1 ? i / (cols - 1) * (sc - 1) : 0;
+      const i0 = Math.min(sc - 2, Math.floor(u));
+      const fu = u - i0;
+      const h00 = Number(src.heights[j0 * sc + i0]) || 0;
+      const h10 = Number(src.heights[j0 * sc + i0 + 1]) || 0;
+      const h01 = Number(src.heights[(j0 + 1) * sc + i0]) || 0;
+      const h11 = Number(src.heights[(j0 + 1) * sc + i0 + 1]) || 0;
+      out[j * cols + i] = h00 * (1 - fu) * (1 - fv) + h10 * fu * (1 - fv) + h01 * (1 - fu) * fv + h11 * fu * fv;
+    }
+  }
+  return out;
+}
 var TerrainStampController = class {
   host;
   cfg;
@@ -203,5 +230,7 @@ export {
   MAX_HEIGHTFIELD_DIM,
   TerrainStampController,
   flatHeightfield,
-  heightfieldDims
+  heightfieldDims,
+  latticeAlignment,
+  resampleHeightfield
 };

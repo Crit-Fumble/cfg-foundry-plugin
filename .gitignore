@@ -33,6 +33,10 @@ playwright/.cache/
 tests/.env.test
 tests/.auth/
 tests/fixtures/.worlds-runtime/
+# Local Foundry runtime assets for the compose mounts (FOUNDRY_SYSTEMS_DIR /
+# FOUNDRY_CACHE_DIR): downloaded game systems + the felddy release cache.
+tests/fixtures/.systems/
+tests/fixtures/.cache/
 tests/fixtures/worlds/README.txt
 tests/fixtures/worlds/*/data/
 tests/_*.mjs
