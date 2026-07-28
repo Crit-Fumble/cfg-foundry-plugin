@@ -1750,7 +1750,7 @@ export class Overlay3D {
       event.preventDefault?.()
       event.stopImmediatePropagation?.()
       const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
-      this._sculptRadius = Math.max(0.02, Math.min(0.5, this._sculptRadius * step))
+      this._sculptRadius = Math.max(this._minSculptRadius(), Math.min(0.5, this._sculptRadius * step))
       this._stamp.setRadiusFrac(this._sculptRadius)
       return
     }
@@ -1758,7 +1758,7 @@ export class Overlay3D {
       event.preventDefault?.()
       event.stopImmediatePropagation?.()
       const step = event.deltaY > 0 ? 1 / 1.15 : 1.15
-      this._sculptRadius = Math.max(0.02, Math.min(0.5, this._sculptRadius * step))
+      this._sculptRadius = Math.max(this._minSculptRadius(), Math.min(0.5, this._sculptRadius * step))
       return
     }
     const m = this._mode
@@ -3909,6 +3909,17 @@ export class Overlay3D {
   /** True while a sculpt tool is active — the drag sculpts instead of panning/picking. */
   _sculptActive() {
     return !!this._sculptMode && this._visible
+  }
+
+  /** Smallest brush the wheel allows: ONE lattice sample on the current field (owner 2026-07-28 —
+   *  fine elevation tuning needs a single-point brush). 0.5/n is the fraction where the brush
+   *  radius covers half a lattice cell — the shared terrain-brush floor — so a dab touches only
+   *  the sample under the cursor. The old hard 0.02 floor kept the brush ~5 samples wide, and even
+   *  a 0.006 floor still covered a 2×2 cluster on a dense (3–4/tile) lattice. */
+  _minSculptRadius() {
+    const field = canvas?.scene?.flags?.['crit-fumble-core']?.heightfield
+    const n = Math.max(Math.floor(Number(field?.cols)) || 0, Math.floor(Number(field?.rows)) || 0)
+    return n >= 2 ? Math.max(0.001, 0.5 / n) : 0.02
   }
 
   /** Start a sculpt stroke: snapshot the scene's height field into a live working copy. */

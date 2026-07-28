@@ -32,9 +32,13 @@ function applyTerrainBrush(heights, cols, rows, opts) {
   const v = Math.min(1, Math.max(0, Number(opts?.v)));
   if (!Number.isFinite(u) || !Number.isFinite(v))
     return out;
-  const ci = u * (cols - 1);
-  const cj = v * (rows - 1);
+  let ci = u * (cols - 1);
+  let cj = v * (rows - 1);
   const radiusCells = Math.max(0.5, (Number(opts?.radius) || 0.08) * Math.max(cols, rows));
+  if (radiusCells <= 0.75) {
+    ci = Math.round(ci);
+    cj = Math.round(cj);
+  }
   const strength = Number.isFinite(Number(opts?.strength)) ? Number(opts.strength) : 1;
   const level = Number(opts?.level) || 0;
   const shape = opts?.shape === "square" ? "square" : "circle";
