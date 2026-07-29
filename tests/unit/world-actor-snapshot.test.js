@@ -1,12 +1,12 @@
 /**
  * World Actor snapshot — live folder-edit hooks (cs#195 follow-up).
  *
- * The full sweep already mirrors Actor folders (see `_sweepFolders`), but a folder
- * rename/move/delete in a live world previously propagated ONLY on the next full
- * sweep (up to FULL_SWEEP_MS later) because no createFolder/updateFolder/deleteFolder
- * hooks existed. These tests pin the new behaviour: those hooks mark folders dirty
- * and a debounced delta flush re-sweeps folders — while an UNELECTED reporter still
- * stays silent, and non-Actor folder edits are ignored (only Actor folders mirror).
+ * The full sweep mirrors the world's folders (see `_sweepFolders`) — since dt#250
+ * for EVERY mirrored document type, not just Actor. A folder rename/move/delete in
+ * a live world rides the createFolder/updateFolder/deleteFolder hooks: they mark
+ * folders dirty and a debounced delta flush re-sweeps folders — while an UNELECTED
+ * reporter still stays silent, and a folder of an unmirrored type (e.g. the
+ * 'Compendium' sidebar grouping) is ignored.
  *
  * The live-Foundry facts (that the *Folder hooks fire with the Folder doc, and that
  * `folder.toObject()` behaves this way) are verified in-world; here Hooks + the
@@ -79,14 +79,45 @@ describe('WorldActorSnapshot — folder-edit hooks', () => {
     svc.stop()
   })
 
-  it('ignores non-Actor folder edits (only Actor folders mirror)', async () => {
+  it('a folder edit of ANY mirrored document type marks folders dirty (dt#250)', async () => {
+    setupGame({})
+    const { WorldActorSnapshot } = await loadSnapshot()
+    for (const type of ['Item', 'JournalEntry', 'Macro', 'Playlist', 'RollTable', 'Cards', 'Scene']) {
+      const svc = new WorldActorSnapshot(fakeApi([]))
+      svc._running = true
+      svc._onFolderChanged(folder('x1', type))
+      expect(svc._foldersDirty).toBe(true)
+      svc.stop()
+    }
+  })
+
+  it('ignores folder edits of unmirrored types (Compendium sidebar grouping)', async () => {
     setupGame({})
     const { WorldActorSnapshot } = await loadSnapshot()
     const svc = new WorldActorSnapshot(fakeApi([]))
     svc._running = true
-    svc._onFolderChanged(folder('i1', 'Item'))
+    svc._onFolderChanged(folder('c1', 'Compendium'))
     expect(svc._foldersDirty).toBe(false)
     expect(svc._debounceHandle).toBeNull()
+  })
+
+  it('the sweep pushes every mirrored type and skips unmirrored ones (dt#250)', async () => {
+    setupGame({
+      folders: [
+        folder('fa', 'Actor'),
+        folder('fj', 'JournalEntry'),
+        folder('fs', 'Scene'),
+        folder('fc', 'Compendium'), // sidebar pack grouping — never pushed
+      ],
+    })
+    const { WorldActorSnapshot } = await loadSnapshot()
+    const calls = []
+    const svc = new WorldActorSnapshot(fakeApi(calls))
+    svc._running = true
+    await svc._sweepFolders()
+
+    expect(calls[0].folders.map((f) => f._id)).toEqual(['fa', 'fj', 'fs'])
+    expect(calls[1]).toEqual({ reconcile: true, keepFolderIds: ['fa', 'fj', 'fs'] })
   })
 
   it('a delta flush with dirty folders re-sweeps folders (push + reconcile)', async () => {

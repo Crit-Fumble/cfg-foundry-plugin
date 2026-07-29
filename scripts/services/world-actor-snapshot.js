@@ -17,10 +17,13 @@
  *     reconciles (drops platform rows whose actor was deleted). Also re-converges
  *     after a reporter handoff.
  *   - Live deltas via createActor/updateActor/deleteActor hooks, debounced to
- *     coalesce rapid edits (combat HP ticks, etc.). Actor-folder create/update/delete
- *     ride the same debounce and re-sweep the (small, metadata-only) folder set, so a
+ *     coalesce rapid edits (combat HP ticks, etc.). Folder create/update/delete —
+ *     for EVERY mirrored document type, not just Actor (dt#250) — ride the same
+ *     debounce and re-sweep the (small, metadata-only) folder set, so a
  *     rename/move/delete shows on the web within DELTA_DEBOUNCE_MS instead of only on
- *     the next full sweep.
+ *     the next full sweep. The folder sweep lives here (not per entity snapshot)
+ *     because game.folders is ONE collection partitioned by type — a single
+ *     reporter pushing the whole set keeps reconcile trivially correct.
  *
  * Auth + transport: the shared CoreAPIClient attaches the world's installation
  * API key (cfg-hosted) or paired key (self-hosted), with a session-cookie
@@ -39,6 +42,13 @@ const BATCH_SIZE = 20 // actors per request — keeps each POST comfortably boun
 // Matches SERVICE_GM_NATIVE_ID in cfg-core-server. Preferred reporter is a human
 // GM; the service-GM only reports when it is the sole connected GM.
 const SERVICE_GM_ID = 'CFGServiceGM0000'
+
+// World folder types the platform mirrors (dt#250 — every synced document type,
+// matching MIRRORED_FOLDER_TYPES in cfg-core-server's world-folder-mirror.ts).
+// Foundry scopes folders per document type, so this is a flat metadata set the
+// server re-partitions by `type`. 'Compendium' folders (sidebar pack grouping)
+// are deliberately absent — pack-internal folders ride the compendium sync.
+const MIRRORED_FOLDER_TYPES = ['Actor', 'Item', 'JournalEntry', 'Macro', 'Playlist', 'RollTable', 'Cards', 'Scene']
 
 export class WorldActorSnapshot {
   /** @param {import('../clients/api-client.js').CoreAPIClient} apiClient */
@@ -73,7 +83,7 @@ export class WorldActorSnapshot {
     this._register('updateActor', (actor) => this._onActorChanged(actor))
     this._register('deleteActor', () => this._onActorDeleted())
 
-    // Actor-folder edits — re-sweep the folder set on the same debounce.
+    // Folder edits (all mirrored document types, dt#250) — re-sweep on the same debounce.
     this._register('createFolder', (folder) => this._onFolderChanged(folder))
     this._register('updateFolder', (folder) => this._onFolderChanged(folder))
     this._register('deleteFolder', (folder) => this._onFolderChanged(folder))
@@ -126,12 +136,13 @@ export class WorldActorSnapshot {
     this._scheduleFlush()
   }
 
-  /** A folder create/update/delete. Only Actor folders are mirrored (the platform
-   *  allowlist rejects other types), so ignore Item/Scene/etc. edits — a delete hook
-   *  still carries the doc, so its type is readable here too. */
+  /** A folder create/update/delete for ANY mirrored document type (dt#250) — the
+   *  folder sweep is the single push for the whole world's folder tree, so it
+   *  rides this service's debounce regardless of which sidebar the edit hit. A
+   *  delete hook still carries the doc, so its type is readable here too. */
   _onFolderChanged(folder) {
     if (!this._running) return
-    if (folder?.type && folder.type !== 'Actor') return
+    if (folder?.type && !MIRRORED_FOLDER_TYPES.includes(folder.type)) return
     this._foldersDirty = true
     this._scheduleFlush()
   }
@@ -195,13 +206,14 @@ export class WorldActorSnapshot {
     await this._sweepFolders()
   }
 
-  /** Serialize the world's ACTOR folders and reconcile in one pass. Folders are
-   *  metadata-only and few, so no batching is warranted. Never throws into the
-   *  caller: a folder failure must not abort an otherwise-good actor sweep. */
+  /** Serialize the world's folders — EVERY mirrored document type, not just Actor
+   *  (dt#250) — and reconcile in one pass. Folders are metadata-only and few, so
+   *  no batching is warranted. Never throws into the caller: a folder failure
+   *  must not abort an otherwise-good actor sweep. */
   async _sweepFolders() {
     try {
       const folders = (game.folders?.contents ?? [])
-        .filter((f) => f?.type === 'Actor')
+        .filter((f) => MIRRORED_FOLDER_TYPES.includes(f?.type))
         .map((f) => {
           try {
             return f.toObject()
