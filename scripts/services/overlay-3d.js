@@ -4263,11 +4263,14 @@ export class Overlay3D {
     btn.id = 'cfg-3d-nav-toggle'
     btn.type = 'button'
     btn.title = '3D View — you sit at your seat (players: Party side · GMs: GM side)'
-    btn.innerHTML = '<i class="fa-solid fa-cube"></i>'
+    // Bold "3D"/"2D" destination label — the same convention as the token-HUD character-view
+    // button (owner 2026-07-28: preferred over the cube icon).
+    btn.textContent = '3D'
     btn.style.cssText =
       'position:absolute;left:calc(100% + 8px);top:0;width:32px;height:32px;pointer-events:all;' +
       'border:1px solid rgba(255,255,255,0.22);border-radius:4px;background:rgba(0,0,0,0.6);' +
-      'color:rgba(255,255,255,0.85);cursor:pointer;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);'
+      'color:rgba(255,255,255,0.85);cursor:pointer;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);' +
+      'font:700 12px/1 system-ui, sans-serif;letter-spacing:0.02em;'
     btn.addEventListener('click', () => {
       void this.setViewMode(this._visible ? '2d' : this._canBuild() ? 'tabletop-gm' : 'tabletop')
     })
@@ -4288,6 +4291,7 @@ export class Overlay3D {
 
   _syncNavToggle() {
     if (!this._navToggle) return
+    this._navToggle.textContent = this._visible ? '2D' : '3D' // label = where the click takes you
     this._navToggle.style.borderColor = this._visible ? '#ffb300' : 'rgba(255,255,255,0.22)'
     this._navToggle.style.color = this._visible ? '#ffb300' : 'rgba(255,255,255,0.85)'
   }
@@ -4410,9 +4414,23 @@ export class Overlay3D {
       this.setSlice(this._sliceFloors === false)
       this._syncZoomRail()
     })
+    // Collapsible (owner 2026-07-28): on smaller screens the rail overlays the scene, so it folds
+    // to just this header button. Preference persists per user; short viewports start collapsed.
+    try {
+      const saved = globalThis.localStorage?.getItem('cfg3d.elevRailCollapsed')
+      this._zoomRailCollapsed = saved != null ? saved === '1' : (window.innerHeight || 900) < 800
+    } catch {
+      this._zoomRailCollapsed = false
+    }
+    this._zoomRailCollapse = railBtn('Collapse / expand the elevation controls', '', () => {
+      this._zoomRailCollapsed = !this._zoomRailCollapsed
+      try { globalThis.localStorage?.setItem('cfg3d.elevRailCollapsed', this._zoomRailCollapsed ? '1' : '0') } catch { /* storage blocked */ }
+      this._syncZoomRail()
+    })
     const label = document.createElement('span')
     label.textContent = 'ELEV'
     Object.assign(label.style, { font: '9px/1 system-ui, sans-serif', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.55)' })
+    this._zoomRailLabel = label
     // The active Foundry Level's authored elevation BOUNDS (level doc `elevation.bottom/top`,
     // owner 2026-07-28) bracket the slider — the band you're viewing/cutting, in scene units.
     const bound = () => {
@@ -4438,7 +4456,7 @@ export class Overlay3D {
       this._applyZoomValue(s.invert ? s.max - frac * (s.max - s.min) : s.min + frac * (s.max - s.min))
     })
     input.addEventListener('change', () => { this._zoomRailDragging = false })
-    rail.append(label, this._zoomBoundTop, input, this._zoomBoundBottom, this._zoomSlice)
+    rail.append(this._zoomRailCollapse, label, this._zoomBoundTop, input, this._zoomBoundBottom, this._zoomSlice)
     this._zoomRail = rail
     this._zoomRailInput = input
     this._attachNavToggle() // parent the rail (and the toggle) into the scene nav
@@ -4456,6 +4474,8 @@ export class Overlay3D {
     this._zoomBoundTop = null
     this._zoomBoundBottom = null
     this._zoomSlice = null
+    this._zoomRailCollapse = null
+    this._zoomRailLabel = null
   }
 
   /** Position the rail clear of Foundry's right sidebar + mirror the live camera distance,
@@ -4472,6 +4492,14 @@ export class Overlay3D {
       return
     }
     this._syncSeatSlider() // same poll drives the seat pill's live azimuth + visibility
+    // Collapsed: only the header chevron shows (the rail overlays the scene on small screens).
+    const collapsed = !!this._zoomRailCollapsed
+    if (this._zoomRailCollapse) this._zoomRailCollapse.innerHTML = collapsed ? '<i class="fa-solid fa-angles-down"></i>' : '<i class="fa-solid fa-angles-up"></i>'
+    this._zoomRail.style.padding = collapsed ? '4px' : '8px 4px'
+    for (const el of [this._zoomRailLabel, this._zoomBoundTop, this._zoomRailInput, this._zoomBoundBottom, this._zoomSlice]) {
+      if (el) el.style.display = collapsed ? 'none' : ''
+    }
+    if (collapsed) return
     if (this._zoomSlice) this._zoomSlice.style.color = this._sliceFloors !== false ? '#ffb300' : 'rgba(255,255,255,0.7)'
     // Bracket the slider with the active Level's authored elevation bounds (grid units — the
     // level doc's `elevation.bottom/top`, e.g. 0–20 ft). An open (null → ±Infinity) bound shows ∞.
