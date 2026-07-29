@@ -195,18 +195,21 @@ export class DocPullSync {
       const results = []
       for (const item of plan) {
         const ids = { [platformIdKey]: item[platformIdKey] ?? null, [foundryIdKey]: item[foundryIdKey] }
+        // `deleted` is echoed on every result so the server drains the right lifecycle —
+        // a delete ack clears a different column than an edit ack (dt#250).
+        const echo = { ...(item.claimedAt ? { claimedAt: item.claimedAt } : {}), ...(item.deleted ? { deleted: true } : {}) }
         try {
           await this._applyOne(item)
           // Echo the doc we WROTE — the server baselines against it. If the platform record
           // changed between the pull and this ack, echoing keeps the baseline honest about
           // what actually landed here.
-          results.push({ ...ids, ok: true, docData: item.docData, ...(item.claimedAt ? { claimedAt: item.claimedAt } : {}) })
+          results.push({ ...ids, ok: true, ...(item.docData ? { docData: item.docData } : {}), ...echo })
         } catch (err) {
           // One bad document must not stop the rest; it retries next tick (except
           // world_deleted, which the server parks).
           const message = String(err?.message || err).slice(0, 1000)
           console.debug?.(`${this._log} ${this._cfg.noun} ${item?.[foundryIdKey]} skipped:`, message)
-          results.push({ ...ids, ok: false, error: message, ...(err?.code ? { code: err.code } : {}) })
+          results.push({ ...ids, ok: false, error: message, ...(err?.code ? { code: err.code } : {}), ...echo })
         }
       }
       await this._cfg.ack(this._api, this._installationId, worldId, systemId, results)
@@ -220,6 +223,19 @@ export class DocPullSync {
     const cfg = this._cfg
     const foundryDocId = item[cfg.foundryIdKey]
     const { docData, everPushed, systemId } = item
+
+    // Platform-initiated DELETE (dt#250 — folders first). Always the PLAIN delete:
+    // for a Folder that promotes children and contents to root (measured v14.361);
+    // the {deleteSubfolders, deleteContents} cascade is never issued from a plan.
+    // Already-absent is SUCCESS, not world_deleted — the goal state is "gone", and
+    // acking ok is what lets the server drain the pending delete.
+    if (item.deleted) {
+      if (!foundryDocId) throw new Error('malformed plan item')
+      const doomed = cfg.collection().get(foundryDocId)
+      if (doomed) await doomed.delete()
+      return
+    }
+
     if (!foundryDocId || !docData) throw new Error('malformed plan item')
 
     // The world is the authority on its own system — refuse before touching anything.

@@ -51,6 +51,7 @@ import { MacroPullSync } from './services/macro-pull-sync.js'
 import { RollTablePullSync } from './services/rolltable-pull-sync.js'
 import { PlaylistPullSync } from './services/playlist-pull-sync.js'
 import { CardsPullSync } from './services/cards-pull-sync.js'
+import { FolderPullSync } from './services/folder-pull-sync.js'
 import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
@@ -129,6 +130,8 @@ let _rollTablePullSync = null
 let _playlistPullSync = null
 /** @type {CardsPullSync|null} */
 let _cardsPullSync = null
+/** @type {FolderPullSync|null} */
+let _folderPullSync = null
 /** @type {ScenePullSync|null} */
 let _scenePullSync = null
 
@@ -752,6 +755,13 @@ Hooks.once('ready', async () => {
     _staggerStart('playlist-pull', () => _playlistPullSync.start())
     _cardsPullSync = new CardsPullSync(_api, heartbeatInstallId)
     _staggerStart('cards-pull', () => _cardsPullSync.start())
+
+    // Core→Foundry folder write-back (dt#250 slice 2). Claim-is-the-queue plus the two
+    // firsts: platform-born CREATES (everPushed: false → the engine's keepId create) and
+    // platform-staked DELETES (plain folder-only delete — contents promote to root,
+    // measured; the cascade options are never issued).
+    _folderPullSync = new FolderPullSync(_api, heartbeatInstallId)
+    _staggerStart('folder-pull', () => _folderPullSync.start())
 
     // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
     // (the free SRD packages) from this world into a scoped compendium. The licensing

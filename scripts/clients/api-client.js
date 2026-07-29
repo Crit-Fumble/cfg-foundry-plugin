@@ -559,6 +559,32 @@ export class CoreAPIClient {
     return this.post(`/api/v1/installations/${installationId}/foundry/rolltable-sync/ack`, { world: worldId, results })
   }
 
+  // ── Folder write-back (platform → this world) — dt#250 ────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/folder-sync?world={worldId}
+   * The folders a GM created/edited/deleted in PlayTable that no write-back has drained
+   * yet. Creates/edits carry docData; `deleted: true` items carry none.
+   *
+   * @returns {Promise<{ data: Array<{ foundryFolderId: string, everPushed: boolean, claimedAt: string|null, docData?: object, removedPaths: string[], deleted?: boolean }> }>}
+   */
+  getFolderSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/folder-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/folder-sync/ack
+   *
+   * `claimedAt` is echoed so the server only drains a claim that has not been re-staked
+   * since the plan was pulled; `deleted` is echoed so the server drains the right
+   * lifecycle (a delete ack removes the row, an edit ack clears the claim).
+   *
+   * @param {Array<{ foundryFolderId: string, ok: boolean, error?: string, code?: string, claimedAt?: string, deleted?: boolean }>} results
+   */
+  ackFolderSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/folder-sync/ack`, { world: worldId, results })
+  }
+
   // ── Playlist write-back (platform → this world) — dt#249 ──────────────────
 
   /**
