@@ -232,6 +232,17 @@ export class CoreAPIClient {
   }
 
   /**
+   * POST /api/v1/foundry/worlds/{worldId}/rolltables — mirror the world's RollTable documents
+   * so PlayTable can list and edit them (dt#249). Same body shape as the macro push: a batch of
+   * `table.toObject()` snapshots (embedded results included), and/or a reconcile signal.
+   *
+   * @param {{ tables?: Array, reconcile?: boolean, keepTableIds?: string[] }} body
+   */
+  pushWorldRollTables(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/rolltables`, body)
+  }
+
+  /**
    * POST /api/v1/foundry/worlds/{worldId}/scenes — mirror the world's Scene documents so the
    * platform can show them in PlayTable and render the offline viewer WHILE the world is running
    * (the LevelDB read is locked then). Same body shape as the actor push: a batch of
@@ -499,6 +510,32 @@ export class CoreAPIClient {
    */
   ackMacroSync(installationId, worldId, results) {
     return this.post(`/api/v1/installations/${installationId}/foundry/macro-sync/ack`, { world: worldId, results })
+  }
+
+  // ── RollTable write-back (platform → this world) — dt#249 ─────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/rolltable-sync?world={worldId}
+   * The roll tables a GM edited in PlayTable that no write-back has drained yet. Empty is the
+   * normal steady state. No `system` parameter — a RollTable carries no `system` block.
+   *
+   * @returns {Promise<{ data: Array<{ foundryRollTableId: string, everPushed: boolean, claimedAt: string|null, docData: object, removedPaths: string[] }> }>}
+   */
+  getRollTableSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/rolltable-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/rolltable-sync/ack
+   *
+   * `claimedAt` is echoed so the server only drains a claim that has not been re-staked
+   * since the plan was pulled. `code: 'world_deleted'` releases the claim instead of
+   * retrying into a table that no longer exists.
+   *
+   * @param {Array<{ foundryRollTableId: string, ok: boolean, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackRollTableSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/rolltable-sync/ack`, { world: worldId, results })
   }
 
   /**

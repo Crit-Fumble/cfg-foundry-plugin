@@ -39,12 +39,14 @@ import { ProvisionDrain } from './services/provision-drain.js'
 import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
+import { WorldRollTableSnapshot } from './services/world-rolltable-snapshot.js'
 import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
 import { WorldJournalSnapshot } from './services/world-journal-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
 import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
 import { MacroPullSync } from './services/macro-pull-sync.js'
+import { RollTablePullSync } from './services/rolltable-pull-sync.js'
 import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
@@ -93,6 +95,8 @@ let _journalPullSync = null
 let _worldActorSnapshot = null
 /** @type {WorldMacroSnapshot|null} */
 let _worldMacroSnapshot = null
+/** @type {WorldRollTableSnapshot|null} */
+let _worldRollTableSnapshot = null
 /** @type {WorldSceneSnapshot|null} */
 let _worldSceneSnapshot = null
 /** @type {WorldJournalSnapshot|null} */
@@ -111,6 +115,8 @@ let _modulePackImportSync = null
 
 /** @type {MacroPullSync|null} */
 let _macroPullSync = null
+/** @type {RollTablePullSync|null} */
+let _rollTablePullSync = null
 /** @type {ScenePullSync|null} */
 let _scenePullSync = null
 
@@ -660,6 +666,12 @@ Hooks.once('ready', async () => {
     _worldMacroSnapshot = new WorldMacroSnapshot(_api)
     _staggerStart('macro-snapshot', () => _worldMacroSnapshot.start())
 
+    // World RollTables (dt#249). Same reporter election + linked-world gate. Small documents;
+    // the whole collection ships each sweep. Listens to the embedded TableResult hooks too —
+    // a row edit fires the result's hooks, not the parent's, and content lives in the rows.
+    _worldRollTableSnapshot = new WorldRollTableSnapshot(_api)
+    _staggerStart('rolltable-snapshot', () => _worldRollTableSnapshot.start())
+
     // World Scenes (fp#48). Same reporter election + linked-world gate. Batched (scenes can be
     // large). The push is what lets the platform show scenes WHILE the world runs — the LevelDB
     // read is locked then.
@@ -708,6 +720,11 @@ Hooks.once('ready', async () => {
     // actor + journal syncs.
     _macroPullSync = new MacroPullSync(_api, heartbeatInstallId)
     _staggerStart('macro-pull', () => _macroPullSync.start())
+
+    // Core→Foundry rolltable write-back (dt#249). Same claim-is-the-queue lifecycle as
+    // macros; the one embedded collection (results) is reconciled by the engine.
+    _rollTablePullSync = new RollTablePullSync(_api, heartbeatInstallId)
+    _staggerStart('rolltable-pull', () => _rollTablePullSync.start())
 
     // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
     // (the free SRD packages) from this world into a scoped compendium. The licensing

@@ -9,7 +9,6 @@ Core platform integration for [Crit-Fumble](https://crit-fumble.com)–hosted Fo
 ## Documentation
 
 - [API-REFERENCE.md](API-REFERENCE.md) — module API surface
-- [TABLE-SYNC-IMPLEMENTATION.md](TABLE-SYNC-IMPLEMENTATION.md) — sync architecture
 - [docs/](docs/) — additional guides
 
 ## Development
