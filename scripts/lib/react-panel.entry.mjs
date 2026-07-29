@@ -14,9 +14,9 @@
  */
 import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher } from '@crit-fumble/react'
+import { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher, SeatSlider } from '@crit-fumble/react'
 
-export { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher }
+export { TerrainToolPanel, TerrainElevationPill, CameraModeSwitcher, SeatSlider }
 
 /**
  * Mount a cfg-react component into `container` and return handles. `update(nextProps)` re-renders with
@@ -48,4 +48,9 @@ export function mountElevationPill(container, props) {
 /** The camera-mode bar — hosted above Foundry's hotbar while the 3D overlay is up. */
 export function mountCameraSwitcher(container, props) {
   return mountComponent(CameraModeSwitcher, container, props)
+}
+
+/** The SEAT slider — stacked above the camera bar while a tabletop seat is active. */
+export function mountSeatSlider(container, props) {
+  return mountComponent(SeatSlider, container, props)
 }

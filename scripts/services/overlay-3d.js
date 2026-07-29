@@ -39,7 +39,7 @@ import {
 } from './overlay3d/terrain-stamp.js'
 // The PlayTable-style terrain tool PANEL — React + @crit-fumble/react, bundled with its own React
 // (react-panel.js). mountTerrainPanel(container, props) → { update, unmount }.
-import { mountTerrainPanel, mountElevationPill, mountCameraSwitcher } from '../lib/react-panel.js'
+import { mountTerrainPanel, mountElevationPill, mountSeatSlider } from '../lib/react-panel.js'
 
 const OVERLAY_ID = 'cfg-3d-overlay'
 
@@ -241,6 +241,11 @@ export class Overlay3D {
       // fires `moveToken` (often the only signal for a drag/move). Re-sync on
       // both so position + elevation stay live regardless of how it changed.
       this._on('moveToken', (doc) => this._onUpdateToken(doc))
+      // The single 3D toggle lives NEXT TO the scene switcher (owner 2026-07-28) — Foundry
+      // re-renders that nav often, so re-attach our node after every render (a move, not a
+      // recreate — same pattern as the terrain rail in the scene controls).
+      this._on('renderSceneNavigation', () => this._attachNavToggle())
+      this._attachNavToggle() // the nav is usually already rendered when we boot
       this._on('updateScene', (doc, changes) => {
         // A heightfield-ONLY update (a sculpt/stamp commit — ours or another GM's) re-displaces
         // the live terrain mesh in place instead of rebuilding the whole scene. The full rebuild
@@ -3282,13 +3287,6 @@ export class Overlay3D {
     const scene = canvas?.scene
     const lvls = scene?.levels
     if (!lvls || !lvls.size) return null
-    // ELEV-rail level scroll (owner 2026-07-28): an explicit floor pick wins over the legacy
-    // resolution chain in every mode except Character view (there the SUBJECT's floor rules).
-    // A stale id (scene switched, level deleted) is ignored, not an error.
-    if (this._levelOverrideId && this._mode !== 'firstperson') {
-      const o = lvls.get?.(this._levelOverrideId)
-      if (o) return o
-    }
     // Delegate the precedence to the pure resolver. In firstperson (character) view the
     // SUBJECT's floor wins outright — regardless of the off-by-default focus-follow toggle
     // or where the GM navigated (canvas.level) — because the camera is anchored on the
@@ -4145,7 +4143,8 @@ export class Overlay3D {
   _syncTerrainPanel() {
     this._terrainPanel?.update?.(this._terrainPanelProps())
     this._elevPillRoot?.update?.(this._elevPillProps())
-    this._cameraSwitcher?.update?.(this._cameraSwitcherProps())
+    this._syncSeatSlider()
+    this._syncNavToggle()
   }
 
   /**
@@ -4217,60 +4216,122 @@ export class Overlay3D {
     return !!this._sharedControls && (this._mode === 'orbit' || this._mode === 'tabletop' || this._mode === 'tabletop-gm')
   }
 
-  /** The camera modes THIS user may use — a player gets the shared seats + their token's view;
-   *  Free Camera and the GM seat stay GM/Assistant-GM only (mirrors the old toolbar gate). */
-  _cameraModes() {
-    const gm = this._canBuild()
-    const modes = [{ key: '2d', label: '2D', title: 'Leave 3D — back to the normal Foundry canvas' }]
-    // Top Down unlisted for now (owner 2026-07-28): keep the bar simple — Party/GM seats are the
-    // 3D views. The tracked rig stays for a future render option (setViewMode('topdown') works).
-    modes.push({ key: 'tabletop', label: 'Party View', title: 'Seated at the table (player side)' })
-    if (gm) modes.push({ key: 'tabletop-gm', label: 'GM View', title: "Seated at the GM's side of the table" })
-    // Free Camera retired from the bar (owner 2026-07-28): too easy to get lost in, and GM View
-    // already covers the roaming-builder need. The orbit rig stays reachable via API for debugging.
-    // Character view is NOT a bar mode either (owner 2026-07-28): it belongs to a specific token,
-    // so its only entry is the token right-click "3D View" option — and while it's active the whole
-    // bar hides (see _cameraSwitcherProps). Esc / the toolbar cube leave it.
-    return modes
-  }
+  // The mode-pill bar is GONE (owner 2026-07-28): ONE 3D toggle beside the scene switcher, the
+  // role picks the seat (players Party, GM/Assistant GMs), Character stays on the token
+  // right-click, and Free/Top Down survive only as API modes. The bottom dock below now carries
+  // just the shared SEAT slider.
 
-  /** Mount the shared CameraModeSwitcher ABOVE the hotbar (footer#ui-bottom is a flex column, so
-   *  inserting before #hotbar stacks it on top). Foundry re-renders that footer too, hence the same
-   *  own-the-node + re-append approach as the terrain rail. */
+  /** Mount the SEAT dock ABOVE the hotbar (footer#ui-bottom is a flex column, so inserting before
+   *  #hotbar stacks it on top). Foundry re-renders that footer too, hence the same own-the-node +
+   *  re-append approach as the terrain rail. */
   _mountCameraSwitcher() {
     if (!this._cameraBar) {
       const bar = document.createElement('div')
       bar.id = 'cfg-3d-camera-bar'
-      // #ui-bottom is pointer-events:none; the switcher's own buttons opt back in (cfgr-switch-btn).
-      bar.style.cssText = 'display:flex;justify-content:center;padding:0 0 6px;pointer-events:none;'
+      // TOP-centre, stacked right above the camera-controls hint pill (owner 2026-07-28) — the
+      // hint (#cfg-3d-controls, top:6px) shifts down to 44px while the seat is shown (see
+      // _syncSeatSlider). The pill's own controls opt back into pointer events (cfgr-* classes).
+      bar.style.cssText = 'position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:31;display:flex;flex-direction:column;align-items:center;pointer-events:none;'
+      const seatWrap = document.createElement('div')
+      seatWrap.id = 'cfg-3d-seat-wrap'
+      seatWrap.style.display = 'none'
+      bar.append(seatWrap)
       this._cameraBar = bar
+      this._seatWrap = seatWrap
       try {
-        this._cameraSwitcher = mountCameraSwitcher(bar, this._cameraSwitcherProps())
+        this._seatSliderRoot = mountSeatSlider(seatWrap, this._seatSliderProps())
       } catch (err) {
-        console.warn('CFG Core | camera switcher mount failed:', err)
+        console.warn('CFG Core | seat slider mount failed:', err)
         this._cameraBar = null
+        this._seatWrap = null
+        this._seatSliderRoot = null
         return
       }
     }
     this._attachCameraSwitcher()
   }
 
+  /**
+   * The single 3D toggle beside the scene switcher (owner 2026-07-28: "one toggle next to the
+   * scene switcher; role picks the seat"). Absolutely positioned INSIDE the nav so it tracks the
+   * nav through Foundry's re-renders and layout shifts; visible to every role — for players this
+   * is their one Party-seat entry now that the mode pills are gone.
+   */
+  _mountNavToggle() {
+    if (this._navToggle) return
+    const btn = document.createElement('button')
+    btn.id = 'cfg-3d-nav-toggle'
+    btn.type = 'button'
+    btn.title = '3D View — you sit at your seat (players: Party side · GMs: GM side)'
+    btn.innerHTML = '<i class="fa-solid fa-cube"></i>'
+    btn.style.cssText =
+      'position:absolute;left:calc(100% + 8px);top:0;width:32px;height:32px;pointer-events:all;' +
+      'border:1px solid rgba(255,255,255,0.22);border-radius:4px;background:rgba(0,0,0,0.6);' +
+      'color:rgba(255,255,255,0.85);cursor:pointer;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);'
+    btn.addEventListener('click', () => {
+      void this.setViewMode(this._visible ? '2d' : this._canBuild() ? 'tabletop-gm' : 'tabletop')
+    })
+    this._navToggle = btn
+    this._attachNavToggle()
+  }
+
+  /** (Re-)append the toggle + the ELEV rail into the scene nav (it re-renders often). */
+  _attachNavToggle() {
+    const nav = document.getElementById('scene-navigation')
+    if (!nav) return
+    if (!this._navToggle) return this._mountNavToggle()
+    if (getComputedStyle(nav).position === 'static') nav.style.position = 'relative'
+    if (this._navToggle.parentElement !== nav) nav.appendChild(this._navToggle)
+    if (this._zoomRail && this._zoomRail.parentElement !== nav) nav.appendChild(this._zoomRail)
+    this._syncNavToggle()
+  }
+
+  _syncNavToggle() {
+    if (!this._navToggle) return
+    this._navToggle.style.borderColor = this._visible ? '#ffb300' : 'rgba(255,255,255,0.22)'
+    this._navToggle.style.color = this._visible ? '#ffb300' : 'rgba(255,255,255,0.85)'
+  }
+
+  /** Props for the shared SEAT slider (GM seat = full circle around north; party = 270° arc). */
+  _seatSliderProps() {
+    return {
+      gmSeat: this._mode === 'tabletop-gm',
+      seatAz: this._sharedControls?.getSeat?.() ?? (this._mode === 'tabletop-gm' ? Math.PI : 0),
+      onSeatChange: (az) => {
+        this._sharedControls?.setSeat?.(az)
+        this._render()
+      },
+    }
+  }
+
+  /** Show the seat pill only while a tabletop seat drives the camera; mirror the live azimuth
+   *  (the poll makes the handle track a right-drag orbit, PlayTable-style). */
+  _syncSeatSlider() {
+    if (!this._seatWrap) return
+    const seated = this._visible && (this._mode === 'tabletop' || this._mode === 'tabletop-gm')
+    this._seatWrap.style.display = seated ? '' : 'none'
+    // The camera-controls hint pill sits directly BELOW the seat pill (both top-centre).
+    if (this._controlBar) this._controlBar.style.top = seated ? '44px' : '6px'
+    if (seated) this._seatSliderRoot?.update?.(this._seatSliderProps())
+  }
+
   /** Put the switcher back above the hotbar — after any UI re-render. Only while 3D is up. */
   _attachCameraSwitcher() {
     if (!this._cameraBar) return
-    const footer = document.getElementById('ui-bottom')
-    const hotbar = document.getElementById('hotbar')
-    if (this._visible && footer && this._cameraBar.parentElement !== footer) {
-      if (hotbar) footer.insertBefore(this._cameraBar, hotbar)
-      else footer.appendChild(this._cameraBar)
+    // Fixed top-centre — plain body child (no #ui-bottom involvement since the pills left).
+    if (this._visible && this._cameraBar.parentElement !== document.body) {
+      document.body.appendChild(this._cameraBar)
     } else if (!this._visible && this._cameraBar.parentElement) {
-      this._cameraBar.remove() // hidden with the overlay — 3D is entered from the toolbar toggle
+      this._cameraBar.remove() // hidden with the overlay — 3D is entered from the nav toggle
     }
   }
 
   _unmountCameraSwitcher() {
     try { this._cameraSwitcher?.unmount?.() } catch { /* */ }
     this._cameraSwitcher = null
+    try { this._seatSliderRoot?.unmount?.() } catch { /* */ }
+    this._seatSliderRoot = null
+    this._seatWrap = null
     try { this._cameraBar?.remove?.() } catch { /* */ }
     this._cameraBar = null
   }
@@ -4280,23 +4341,23 @@ export class Overlay3D {
   // bottom SEAT slider) drives it in every 3D mode, so zoom stays reachable while a terrain tool
   // owns the pointer/wheel. Top = high (zoomed out), bottom = ground level.
 
-  /** The active camera-distance range + current value for the rail, per mode. */
+  /** The rail's range + current value, per mode. ZOOM stays on the wheel (owner 2026-07-28) —
+   *  in the seat modes this rail is the EYE HEIGHT: the polar tilt between the seat clamps
+   *  (`invert`: slider top = most overhead), at the wheel's dolly distance. Top-Down keeps its
+   *  camera height (height IS the view there). */
   _zoomState() {
     const size = canvas?.dimensions?.size || 100
-    const span = this._frame ? Math.max(1, this._frame.span) : size * 40
     if (this._mode === 'tracked') {
       return { min: size * 3, max: size * 40, value: this._trackDist || size * 12 }
     }
-    if (this._mode === 'firstperson') {
-      return { min: 0, max: size * 10, value: this._charDist ?? size * 4 }
-    }
-    // Seats (shared ViewerControls) + the API-only orbit rig: distance from the orbit pivot.
+    // Seats (shared ViewerControls) + the API-only orbit rig: polar angle from the orbit pivot.
     const oc = (this._mode === 'tabletop' || this._mode === 'tabletop-gm') && this._sharedControls ? this._sharedControls.orbit3d : this._controls
     const cam = this._orbitCamera
-    if (!oc || !cam) return null
-    const min = Number.isFinite(oc.minDistance) && oc.minDistance > 0 ? oc.minDistance : size * 3
-    const max = Number.isFinite(oc.maxDistance) && oc.maxDistance < span * 4 ? oc.maxDistance : span * 1.8
-    return { min, max, value: cam.position.distanceTo(oc.target), orbit: oc }
+    if (!oc || !cam || !this._THREE) return null
+    const sph = new this._THREE.Spherical().setFromVector3(new this._THREE.Vector3().subVectors(cam.position, oc.target))
+    const min = Number.isFinite(oc.minPolarAngle) && oc.minPolarAngle > 0 ? oc.minPolarAngle : 0.3
+    const max = Number.isFinite(oc.maxPolarAngle) && oc.maxPolarAngle < Math.PI ? oc.maxPolarAngle : 1.3
+    return { min, max, value: sph.phi, orbit: oc, invert: true }
   }
 
   _applyZoomValue(value) {
@@ -4306,50 +4367,29 @@ export class Overlay3D {
     if (this._mode === 'tracked') {
       this._trackDist = d
       this._syncTrackedCamera()
-    } else if (this._mode === 'firstperson') {
-      const tok = this._firstPersonToken()
-      if (!tok?.document) return
-      if (this._fpCenter == null) this._fpSyncLocalFromToken(tok)
-      this._charDist = d
-      this._fpPositionCamera(tok)
-      this._maybeResliceOnFpZoom()
     } else if (s.orbit && this._orbitCamera && this._THREE) {
+      // Re-tilt at the CURRENT dolly distance: same seat, same azimuth, higher/lower eye.
       const cam = this._orbitCamera
-      const dir = new this._THREE.Vector3().subVectors(cam.position, s.orbit.target)
-      if (dir.lengthSq() < 1e-6) dir.set(0, 1, 0)
-      dir.normalize().multiplyScalar(d)
-      cam.position.copy(s.orbit.target).add(dir)
+      const off = new this._THREE.Vector3().subVectors(cam.position, s.orbit.target)
+      const sph = new this._THREE.Spherical().setFromVector3(off)
+      sph.phi = d
+      off.setFromSpherical(sph)
+      cam.position.copy(s.orbit.target).add(off)
+      cam.lookAt(s.orbit.target)
       s.orbit.update?.()
     }
     this._render()
-  }
-
-  /** Scene levels sorted bottom→top (by base elevation) — the ELEV rail's scroll order. */
-  _levelsSorted() {
-    const lvls = canvas?.scene?.levels
-    if (!lvls || !lvls.size) return []
-    return [...(lvls.contents || [])].sort((a, b) => this._levelBase(a) - this._levelBase(b))
-  }
-
-  /** Step the viewed floor up/down from the ELEV rail (±1 through _levelsSorted). */
-  _stepLevel(dir) {
-    const sorted = this._levelsSorted()
-    if (sorted.length < 2) return
-    const cur = this._activeLevel()
-    const idx = Math.max(0, sorted.findIndex((l) => l.id === cur?.id))
-    const next = sorted[Math.max(0, Math.min(sorted.length - 1, idx + dir))]
-    if (!next || next.id === cur?.id) return
-    this._levelOverrideId = next.id
-    this.rebuild() // the slice + per-floor rendering key off _activeLevel
-    this._syncZoomRail()
   }
 
   _mountZoomRail() {
     if (this._zoomRail || !this._container) return
     const rail = document.createElement('div')
     rail.id = 'cfg-3d-zoom-rail'
+    // Docked DIRECTLY below the 3D toggle beside the scene switcher (owner 2026-07-28), so
+    // Foundry's native Level rows and our elevation/cutaway controls sit together. Absolutely
+    // positioned inside the nav — it tracks the nav through re-renders (see _attachNavToggle).
     Object.assign(rail.style, {
-      position: 'fixed', top: '50%', transform: 'translateY(-50%)', zIndex: '31',
+      position: 'absolute', left: 'calc(100% + 8px)', top: '40px', zIndex: '31',
       display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
       padding: '8px 4px', background: 'rgba(11,14,19,0.7)', border: '1px solid rgba(255,255,255,0.1)',
       borderRadius: '8px', pointerEvents: 'auto',
@@ -4363,12 +4403,9 @@ export class Overlay3D {
       b.addEventListener('click', onClick)
       return b
     }
-    // Floor scroll + cutaway (moved here from the scene-control group, owner 2026-07-28): the
-    // ELEV rail owns everything vertical — camera height, the viewed floor, and the cutaway.
-    this._zoomLevelUp = railBtn('Floor up', '<i class="fa-solid fa-chevron-up"></i>', () => this._stepLevel(1))
-    this._zoomLevelLabel = document.createElement('span')
-    Object.assign(this._zoomLevelLabel.style, { font: '9px/1.2 system-ui, sans-serif', color: 'rgba(255,255,255,0.7)', maxWidth: '44px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' })
-    this._zoomLevelDown = railBtn('Floor down', '<i class="fa-solid fa-chevron-down"></i>', () => this._stepLevel(-1))
+    // Cutaway (moved here from the scene-control group, owner 2026-07-28). Floor SELECTION is
+    // Foundry's native level rows in the scene nav, sitting right beside this rail — no
+    // duplicate stepper here; _activeLevel follows the native pick.
     this._zoomSlice = railBtn('Floor cutaway — show the viewed floor + below, hide floors above', '<i class="fa-solid fa-layer-group"></i>', () => {
       this.setSlice(this._sliceFloors === false)
       this._syncZoomRail()
@@ -4376,6 +4413,15 @@ export class Overlay3D {
     const label = document.createElement('span')
     label.textContent = 'ELEV'
     Object.assign(label.style, { font: '9px/1 system-ui, sans-serif', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.55)' })
+    // The active Foundry Level's authored elevation BOUNDS (level doc `elevation.bottom/top`,
+    // owner 2026-07-28) bracket the slider — the band you're viewing/cutting, in scene units.
+    const bound = () => {
+      const s = document.createElement('span')
+      Object.assign(s.style, { font: '9px/1 system-ui, sans-serif', color: 'rgba(255,255,255,0.5)' })
+      return s
+    }
+    this._zoomBoundTop = bound()
+    this._zoomBoundBottom = bound()
     const input = document.createElement('input')
     input.type = 'range'
     input.min = '0'
@@ -4388,13 +4434,14 @@ export class Overlay3D {
       const s = this._zoomState()
       if (!s) return
       this._zoomRailDragging = true
-      this._applyZoomValue(s.min + (Number(input.value) / 1000) * (s.max - s.min))
+      const frac = Number(input.value) / 1000
+      this._applyZoomValue(s.invert ? s.max - frac * (s.max - s.min) : s.min + frac * (s.max - s.min))
     })
     input.addEventListener('change', () => { this._zoomRailDragging = false })
-    rail.append(this._zoomLevelUp, this._zoomLevelLabel, this._zoomLevelDown, label, input, this._zoomSlice)
-    this._container.appendChild(rail)
+    rail.append(label, this._zoomBoundTop, input, this._zoomBoundBottom, this._zoomSlice)
     this._zoomRail = rail
     this._zoomRailInput = input
+    this._attachNavToggle() // parent the rail (and the toggle) into the scene nav
     // Follow wheel/drag zoom changes (and sidebar collapse) — light poll, PlayTable's seat-slider pattern.
     this._zoomRailTimer = setInterval(() => this._syncZoomRail(), 400)
     this._syncZoomRail()
@@ -4406,9 +4453,8 @@ export class Overlay3D {
     try { this._zoomRail?.remove?.() } catch { /* */ }
     this._zoomRail = null
     this._zoomRailInput = null
-    this._zoomLevelUp = null
-    this._zoomLevelLabel = null
-    this._zoomLevelDown = null
+    this._zoomBoundTop = null
+    this._zoomBoundBottom = null
     this._zoomSlice = null
   }
 
@@ -4416,39 +4462,32 @@ export class Overlay3D {
    *  floor scroll, and cutaway state. */
   _syncZoomRail() {
     if (!this._zoomRail) return
-    const show = this._visible
+    // Hidden in Character view (like the camera bar): its chrome stays minimal — the wheel
+    // dollies 1st↔3rd person there and Q/E drive the token's own elevation.
+    const show = this._visible && this._mode !== 'firstperson'
     this._zoomRail.style.display = show ? 'flex' : 'none'
-    if (!show) return
-    const sidebar = document.getElementById('sidebar')
-    const w = sidebar ? Math.ceil(sidebar.getBoundingClientRect().width) : 0
-    this._zoomRail.style.right = `${w + 16}px`
-    // Floor stepper only exists on multi-level scenes; the label shows the viewed floor.
-    const sorted = this._levelsSorted()
-    const multi = sorted.length > 1
-    const cur = multi ? this._activeLevel() : null
-    const idx = cur ? sorted.findIndex((l) => l.id === cur.id) : -1
-    for (const el of [this._zoomLevelUp, this._zoomLevelLabel, this._zoomLevelDown]) if (el) el.style.display = multi ? '' : 'none'
-    if (multi && this._zoomLevelLabel) this._zoomLevelLabel.textContent = cur?.name || `L${idx + 1}`
-    if (multi && this._zoomLevelUp) this._zoomLevelUp.style.opacity = idx >= sorted.length - 1 ? '0.3' : '1'
-    if (multi && this._zoomLevelDown) this._zoomLevelDown.style.opacity = idx <= 0 ? '0.3' : '1'
+    this._syncNavToggle() // the nav toggle's active state rides the same poll
+    if (!show) {
+      if (this._visible) this._syncSeatSlider() // the seat pill still tracks mode changes
+      return
+    }
+    this._syncSeatSlider() // same poll drives the seat pill's live azimuth + visibility
     if (this._zoomSlice) this._zoomSlice.style.color = this._sliceFloors !== false ? '#ffb300' : 'rgba(255,255,255,0.7)'
+    // Bracket the slider with the active Level's authored elevation bounds (grid units — the
+    // level doc's `elevation.bottom/top`, e.g. 0–20 ft). An open (null → ±Infinity) bound shows ∞.
+    const lvl = this._activeLevel()
+    const units = canvas?.scene?.grid?.units || 'ft'
+    for (const [el, val] of [[this._zoomBoundTop, lvl ? this._levelTop(lvl) : null], [this._zoomBoundBottom, lvl ? this._levelBase(lvl) : null]]) {
+      if (!el) continue
+      el.style.display = lvl && val !== null ? '' : 'none'
+      if (lvl && val !== null) el.textContent = Number.isFinite(val) ? `${Math.round(val)} ${units}` : '∞'
+    }
     if (this._zoomRailDragging) return // don't fight the user's drag with the poll
     const s = this._zoomState()
     if (!s || !this._zoomRailInput) return
-    const frac = s.max > s.min ? (s.value - s.min) / (s.max - s.min) : 0
+    let frac = s.max > s.min ? (s.value - s.min) / (s.max - s.min) : 0
+    if (s.invert) frac = 1 - frac // seats: slider top = most overhead (smallest polar angle)
     this._zoomRailInput.value = String(Math.round(Math.max(0, Math.min(1, frac)) * 1000))
-  }
-
-  _cameraSwitcherProps() {
-    // Hide the whole bar in Character view — that mode is entered per-token (right-click →
-    // 3D View) and exited with Esc / the toolbar cube; offering table-camera pills while looking
-    // through a token invited accidental mode churn (owner 2026-07-28).
-    if (this._cameraBar) this._cameraBar.style.display = this._currentViewMode() === 'firstperson' ? 'none' : 'flex'
-    return {
-      modes: this._cameraModes(),
-      active: this._currentViewMode(),
-      onSelect: (key) => void this.setViewMode(key),
-    }
   }
 
   /** Props for the floating elevation readout (null elevation → the pill renders nothing). */
@@ -4599,20 +4638,10 @@ export class Overlay3D {
         // Three 3D view modes as radio-like toggles; "2D" = none active (overlay off).
         const vm = this._currentViewMode()
         const tools = {
-          view3d: {
-            name: 'view3d',
-            order: 0,
-            title: '3D View — enter/leave 3D. GMs land at the GM seat, players at the Party seat; switch above the hotbar.',
-            icon: 'fa-solid fa-cube',
-            toggle: true,
-            active: this._visible,
-            // Straight to your ROLE's seat (owner 2026-07-28): Players/Trusted → Party View,
-            // Assistant GM/GM → GM View. Top Down is unlisted for now (future render option —
-            // the tracked rig stays API-reachable via setViewMode('topdown')).
-            onChange: (event, active) => this.setViewMode(active ? (this._canBuild() ? 'tabletop-gm' : 'tabletop') : '2d'),
-          },
-          // NOTE: the floor-slice cutaway moved OUT of this group onto the right-edge ELEV rail
-          // (owner 2026-07-28) — cutaway + level scrolling live with the elevation control.
+          // NOTE (owner 2026-07-28): the 3D toggle is no longer a tool here — the SINGLE toggle
+          // sits beside the scene switcher (_mountNavToggle), visible to every role, and your
+          // role picks the seat. The floor-slice cutaway also moved out, onto the ELEV rail
+          // docked under that toggle — cutaway + level scrolling live with the elevation control.
           terrainGenerate: {
             name: 'terrainGenerate',
             order: 9,
