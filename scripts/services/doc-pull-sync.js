@@ -110,8 +110,13 @@ export function withRemovals(fields, removedPaths) {
  * @property {string} foundryIdKey             plan/ack key for the world id, e.g. 'foundryActorId'
  * @property {(api, inst, world, system) => Promise<any>} getPlan
  * @property {(api, inst, world, system, results) => Promise<any>} ack
- * @property {Array<{name: string, field: string, of: (live: any) => any[]}>} [embedded]
- *           embedded collections to reconcile, e.g. Item/`items`, ActiveEffect/`effects`
+ * @property {Array<{name: string, field: string, of: (live: any) => any[], stripFields?: string[]}>} [embedded]
+ *           embedded collections to reconcile, e.g. Item/`items`, ActiveEffect/`effects`.
+ *           An entry's `stripFields` are deleted from every desired CHILD before any write —
+ *           the embedded counterpart of the top-level knob below, needed because dangerous
+ *           fields can live inside children too: `PlaylistSound.playing` is settable through
+ *           a plain update AND survives create (measured v14, dt#249), and a sound carrying
+ *           it starts audio for every connected client.
  * @property {string[]} [stripFields] top-level fields this document class must NEVER write,
  *           whatever the server sends. Belt-and-braces for fields that are dangerous rather
  *           than merely wrong: `Scene.active` is writable through a plain create/update, so
@@ -223,8 +228,17 @@ export class DocPullSync {
     }
 
     // Strip the never-write fields BEFORE anything reads the doc, so create and update
-    // cannot diverge on it.
+    // cannot diverge on it. Embedded strips happen here too — the CREATE path hands
+    // docData (children included) straight to DocClass.create, which is exactly how the
+    // Scene.active hazard reached a live world when only the update path was guarded.
     for (const field of cfg.stripFields ?? []) delete docData[field]
+    for (const e of cfg.embedded ?? []) {
+      if (!e.stripFields?.length || !Array.isArray(docData[e.field])) continue
+      for (const child of docData[e.field]) {
+        if (!child || typeof child !== 'object') continue
+        for (const f of e.stripFields) delete child[f]
+      }
+    }
 
     const live = cfg.collection().get(foundryDocId)
 

@@ -243,6 +243,27 @@ export class CoreAPIClient {
   }
 
   /**
+   * POST /api/v1/foundry/worlds/{worldId}/playlists — mirror the world's Playlist documents
+   * (dt#249). Full `playlist.toObject()` snapshots, embedded sounds included; the server
+   * strips the dangerous playback fields (`playing`/`pausedTime`) at ingest.
+   *
+   * @param {{ playlists?: Array, reconcile?: boolean, keepPlaylistIds?: string[] }} body
+   */
+  pushWorldPlaylists(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/playlists`, body)
+  }
+
+  /**
+   * POST /api/v1/foundry/worlds/{worldId}/cards — mirror the world's card stacks (dt#249).
+   * Full `cards.toObject()` snapshots, embedded cards included.
+   *
+   * @param {{ stacks?: Array, reconcile?: boolean, keepStackIds?: string[] }} body
+   */
+  pushWorldCards(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/cards`, body)
+  }
+
+  /**
    * POST /api/v1/foundry/worlds/{worldId}/scenes — mirror the world's Scene documents so the
    * platform can show them in PlayTable and render the offline viewer WHILE the world is running
    * (the LevelDB read is locked then). Same body shape as the actor push: a batch of
@@ -536,6 +557,48 @@ export class CoreAPIClient {
    */
   ackRollTableSync(installationId, worldId, results) {
     return this.post(`/api/v1/installations/${installationId}/foundry/rolltable-sync/ack`, { world: worldId, results })
+  }
+
+  // ── Playlist write-back (platform → this world) — dt#249 ──────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/playlist-sync?world={worldId}
+   * The playlists a GM edited in PlayTable that no write-back has drained yet.
+   *
+   * @returns {Promise<{ data: Array<{ foundryPlaylistId: string, everPushed: boolean, claimedAt: string|null, docData: object, removedPaths: string[] }> }>}
+   */
+  getPlaylistSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/playlist-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/playlist-sync/ack
+   *
+   * @param {Array<{ foundryPlaylistId: string, ok: boolean, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackPlaylistSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/playlist-sync/ack`, { world: worldId, results })
+  }
+
+  // ── Cards write-back (platform → this world) — dt#249 ─────────────────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/cards-sync?world={worldId}
+   * The card stacks a GM edited in PlayTable that no write-back has drained yet.
+   *
+   * @returns {Promise<{ data: Array<{ foundryCardsId: string, everPushed: boolean, claimedAt: string|null, docData: object, removedPaths: string[] }> }>}
+   */
+  getCardsSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/cards-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/cards-sync/ack
+   *
+   * @param {Array<{ foundryCardsId: string, ok: boolean, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackCardsSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/cards-sync/ack`, { world: worldId, results })
   }
 
   /**

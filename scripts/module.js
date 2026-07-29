@@ -40,6 +40,8 @@ import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
 import { WorldRollTableSnapshot } from './services/world-rolltable-snapshot.js'
+import { WorldPlaylistSnapshot } from './services/world-playlist-snapshot.js'
+import { WorldCardsSnapshot } from './services/world-cards-snapshot.js'
 import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
 import { WorldJournalSnapshot } from './services/world-journal-snapshot.js'
 import { WorldPackSnapshot } from './services/world-pack-snapshot.js'
@@ -47,6 +49,8 @@ import { CompendiumPullSync } from './services/compendium-pull-sync.js'
 import { ActorPullSync } from './services/actor-pull-sync.js'
 import { MacroPullSync } from './services/macro-pull-sync.js'
 import { RollTablePullSync } from './services/rolltable-pull-sync.js'
+import { PlaylistPullSync } from './services/playlist-pull-sync.js'
+import { CardsPullSync } from './services/cards-pull-sync.js'
 import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
@@ -97,6 +101,10 @@ let _worldActorSnapshot = null
 let _worldMacroSnapshot = null
 /** @type {WorldRollTableSnapshot|null} */
 let _worldRollTableSnapshot = null
+/** @type {WorldPlaylistSnapshot|null} */
+let _worldPlaylistSnapshot = null
+/** @type {WorldCardsSnapshot|null} */
+let _worldCardsSnapshot = null
 /** @type {WorldSceneSnapshot|null} */
 let _worldSceneSnapshot = null
 /** @type {WorldJournalSnapshot|null} */
@@ -117,6 +125,10 @@ let _modulePackImportSync = null
 let _macroPullSync = null
 /** @type {RollTablePullSync|null} */
 let _rollTablePullSync = null
+/** @type {PlaylistPullSync|null} */
+let _playlistPullSync = null
+/** @type {CardsPullSync|null} */
+let _cardsPullSync = null
 /** @type {ScenePullSync|null} */
 let _scenePullSync = null
 
@@ -672,6 +684,13 @@ Hooks.once('ready', async () => {
     _worldRollTableSnapshot = new WorldRollTableSnapshot(_api)
     _staggerStart('rolltable-snapshot', () => _worldRollTableSnapshot.start())
 
+    // World Playlists + Cards (dt#249). Same pattern as roll tables — both listen to their
+    // embedded document hooks (PlaylistSound / Card) since content lives in the children.
+    _worldPlaylistSnapshot = new WorldPlaylistSnapshot(_api)
+    _staggerStart('playlist-snapshot', () => _worldPlaylistSnapshot.start())
+    _worldCardsSnapshot = new WorldCardsSnapshot(_api)
+    _staggerStart('cards-snapshot', () => _worldCardsSnapshot.start())
+
     // World Scenes (fp#48). Same reporter election + linked-world gate. Batched (scenes can be
     // large). The push is what lets the platform show scenes WHILE the world runs — the LevelDB
     // read is locked then.
@@ -725,6 +744,14 @@ Hooks.once('ready', async () => {
     // macros; the one embedded collection (results) is reconciled by the engine.
     _rollTablePullSync = new RollTablePullSync(_api, heartbeatInstallId)
     _staggerStart('rolltable-pull', () => _rollTablePullSync.start())
+
+    // Core→Foundry playlist + cards write-back (dt#249). Claim-is-the-queue, like macros.
+    // Playlist NEVER writes `playing` (parent or sound) — settable via plain update AND
+    // create, measured; it would start audio for every connected client.
+    _playlistPullSync = new PlaylistPullSync(_api, heartbeatInstallId)
+    _staggerStart('playlist-pull', () => _playlistPullSync.start())
+    _cardsPullSync = new CardsPullSync(_api, heartbeatInstallId)
+    _staggerStart('cards-pull', () => _cardsPullSync.start())
 
     // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
     // (the free SRD packages) from this world into a scoped compendium. The licensing
