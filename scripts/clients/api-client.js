@@ -243,6 +243,17 @@ export class CoreAPIClient {
   }
 
   /**
+   * POST /api/v1/foundry/worlds/{worldId}/items — mirror the world's STANDALONE Item
+   * directory (dt#250). Full `item.toObject()` snapshots, embedded effects included;
+   * actor-embedded items ride the actor push, not this one.
+   *
+   * @param {{ items?: Array, reconcile?: boolean, keepItemIds?: string[] }} body
+   */
+  pushWorldItems(worldId, body) {
+    return this.post(`/api/v1/foundry/worlds/${encodeURIComponent(worldId)}/items`, body)
+  }
+
+  /**
    * POST /api/v1/foundry/worlds/{worldId}/playlists — mirror the world's Playlist documents
    * (dt#249). Full `playlist.toObject()` snapshots, embedded sounds included; the server
    * strips the dangerous playback fields (`playing`/`pausedTime`) at ingest.
@@ -557,6 +568,32 @@ export class CoreAPIClient {
    */
   ackRollTableSync(installationId, worldId, results) {
     return this.post(`/api/v1/installations/${installationId}/foundry/rolltable-sync/ack`, { world: worldId, results })
+  }
+
+  // ── Standalone Item write-back (platform → this world) — dt#250 ───────────
+
+  /**
+   * GET /api/v1/installations/{installationId}/foundry/item-sync?world={worldId}
+   * The standalone items a GM edited in PlayTable that no write-back has drained yet.
+   * No `system` parameter — every doc is a same-world round-trip.
+   *
+   * @returns {Promise<{ data: Array<{ foundryItemId: string, everPushed: boolean, claimedAt: string|null, docData: object, removedPaths: string[] }> }>}
+   */
+  getItemSyncPlan(installationId, worldId) {
+    return this.get(`/api/v1/installations/${installationId}/foundry/item-sync?world=${encodeURIComponent(worldId)}`)
+  }
+
+  /**
+   * POST /api/v1/installations/{installationId}/foundry/item-sync/ack
+   *
+   * `claimedAt` is echoed so the server only drains a claim that has not been re-staked
+   * since the plan was pulled. `code: 'world_deleted'` releases the claim instead of
+   * retrying into an item that no longer exists.
+   *
+   * @param {Array<{ foundryItemId: string, ok: boolean, error?: string, code?: string, claimedAt?: string }>} results
+   */
+  ackItemSync(installationId, worldId, results) {
+    return this.post(`/api/v1/installations/${installationId}/foundry/item-sync/ack`, { world: worldId, results })
   }
 
   // ── Folder write-back (platform → this world) — dt#250 ────────────────────

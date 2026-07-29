@@ -40,6 +40,7 @@ import { JournalPullSync } from './services/journal-pull-sync.js'
 import { WorldActorSnapshot } from './services/world-actor-snapshot.js'
 import { WorldMacroSnapshot } from './services/world-macro-snapshot.js'
 import { WorldRollTableSnapshot } from './services/world-rolltable-snapshot.js'
+import { WorldItemSnapshot } from './services/world-item-snapshot.js'
 import { WorldPlaylistSnapshot } from './services/world-playlist-snapshot.js'
 import { WorldCardsSnapshot } from './services/world-cards-snapshot.js'
 import { WorldSceneSnapshot } from './services/world-scene-snapshot.js'
@@ -52,6 +53,7 @@ import { RollTablePullSync } from './services/rolltable-pull-sync.js'
 import { PlaylistPullSync } from './services/playlist-pull-sync.js'
 import { CardsPullSync } from './services/cards-pull-sync.js'
 import { FolderPullSync } from './services/folder-pull-sync.js'
+import { ItemPullSync } from './services/item-pull-sync.js'
 import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
 import { Overlay3D } from './services/overlay-3d.js'
@@ -102,6 +104,8 @@ let _worldActorSnapshot = null
 let _worldMacroSnapshot = null
 /** @type {WorldRollTableSnapshot|null} */
 let _worldRollTableSnapshot = null
+/** @type {WorldItemSnapshot|null} */
+let _worldItemSnapshot = null
 /** @type {WorldPlaylistSnapshot|null} */
 let _worldPlaylistSnapshot = null
 /** @type {WorldCardsSnapshot|null} */
@@ -132,6 +136,8 @@ let _playlistPullSync = null
 let _cardsPullSync = null
 /** @type {FolderPullSync|null} */
 let _folderPullSync = null
+/** @type {ItemPullSync|null} */
+let _itemPullSync = null
 /** @type {ScenePullSync|null} */
 let _scenePullSync = null
 
@@ -687,6 +693,12 @@ Hooks.once('ready', async () => {
     _worldRollTableSnapshot = new WorldRollTableSnapshot(_api)
     _staggerStart('rolltable-snapshot', () => _worldRollTableSnapshot.start())
 
+    // World standalone Items (dt#250). The world's Item DIRECTORY only — actor-embedded
+    // items ride the actor snapshot. Listens to the ActiveEffect hooks filtered to
+    // standalone parents; an effect edit does not bump the item's own clock.
+    _worldItemSnapshot = new WorldItemSnapshot(_api)
+    _staggerStart('item-snapshot', () => _worldItemSnapshot.start())
+
     // World Playlists + Cards (dt#249). Same pattern as roll tables — both listen to their
     // embedded document hooks (PlaylistSound / Card) since content lives in the children.
     _worldPlaylistSnapshot = new WorldPlaylistSnapshot(_api)
@@ -762,6 +774,11 @@ Hooks.once('ready', async () => {
     // measured; the cascade options are never issued).
     _folderPullSync = new FolderPullSync(_api, heartbeatInstallId)
     _staggerStart('folder-pull', () => _folderPullSync.start())
+
+    // Core→Foundry standalone-item write-back (dt#250). Claim-is-the-queue; the engine
+    // reconciles embedded effects and delete+recreates on a type change (Actor case).
+    _itemPullSync = new ItemPullSync(_api, heartbeatInstallId)
+    _staggerStart('item-pull', () => _itemPullSync.start())
 
     // Module-pack import queue (dt#185) — carries a requested module/system pack's documents
     // (the free SRD packages) from this world into a scoped compendium. The licensing
