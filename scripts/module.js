@@ -65,11 +65,12 @@ import { registerSourcebookShelfButton } from './views/sourcebook-shelf.js'
 /* -------------------------------------------- */
 
 const MODULE_ID = 'crit-fumble-core'
-// MUST match module.json's `version` — bump both together. This is what
-// `window.CFGCore.version` reports and what the boot log prints; module.json is
-// what Foundry reads. They had silently drifted a release apart (2.13.0 vs
-// 2.14.0) until fp#47, so every consumer read a stale version.
-const MODULE_VERSION = '2.42.0'
+// Derived from module.json AT RUNTIME (game.modules is populated before any
+// hook fires). The old hand-bumped constant here drifted from module.json TWICE
+// (2.13.0 vs 2.14.0 caught by fp#47, then 2.42.0 vs 2.48.0 caught by dt#268) —
+// "bump both together" is exactly the pin-without-a-bump-step failure class, so
+// the constant is gone: module.json is the ONLY version source.
+const MODULE_VERSION = () => game.modules?.get?.(MODULE_ID)?.version ?? 'unknown'
 
 /** @type {'full'|'narrative'} */
 let _featureMode = 'narrative'
@@ -149,7 +150,9 @@ let _overlay3D = null
 /* -------------------------------------------- */
 
 window.CFGCore = {
-  version: MODULE_VERSION,
+  get version() {
+    return MODULE_VERSION()
+  },
   /** @returns {'full'|'narrative'} */
   featureMode: () => _featureMode,
   /** @returns {string|null} */
@@ -221,7 +224,7 @@ function _detectInstallationIdFromUrl() {
 /* -------------------------------------------- */
 
 Hooks.once('init', () => {
-  console.log(`CFG Core | Initializing v${MODULE_VERSION}`)
+  console.log(`CFG Core | Initializing v${MODULE_VERSION()}`)
 
   // ---- Settings ----
 
@@ -901,7 +904,10 @@ async function _reportWorldLoaded(apiKey) {
     method: 'POST',
     headers,
     credentials: 'include',
-    body: JSON.stringify({ status: 'ready' }),
+    // pluginVersion rides the heartbeat so the platform's fleet report
+    // (dt#268/dt#183) knows what each world actually RUNS — the installed
+    // files on disk are not evidence of the running version.
+    body: JSON.stringify({ status: 'ready', pluginVersion: MODULE_VERSION() }),
   })
   if (!res.ok) {
     throw new Error(`world-load callback returned HTTP ${res.status}`)
