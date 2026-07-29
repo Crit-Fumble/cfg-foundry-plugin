@@ -4346,22 +4346,29 @@ export class Overlay3D {
   // owns the pointer/wheel. Top = high (zoomed out), bottom = ground level.
 
   /** The rail's range + current value, per mode. ZOOM stays on the wheel (owner 2026-07-28) —
-   *  in the seat modes this rail is the EYE HEIGHT: the polar tilt between the seat clamps
-   *  (`invert`: slider top = most overhead), at the wheel's dolly distance. Top-Down keeps its
+   *  in the seat modes this rail is the EYE HEIGHT, "standing up at the table": the camera's
+   *  x/z stay FIXED and only its height changes (still looking at your spot), like a player
+   *  rising from their chair. The range is the seat's polar clamps converted to heights at the
+   *  current horizontal offset, so OrbitControls never fights the pose. Top-Down keeps its
    *  camera height (height IS the view there). */
   _zoomState() {
     const size = canvas?.dimensions?.size || 100
     if (this._mode === 'tracked') {
       return { min: size * 3, max: size * 40, value: this._trackDist || size * 12 }
     }
-    // Seats (shared ViewerControls) + the API-only orbit rig: polar angle from the orbit pivot.
+    // Seats (shared ViewerControls) + the API-only orbit rig: eye height above the orbit pivot.
     const oc = (this._mode === 'tabletop' || this._mode === 'tabletop-gm') && this._sharedControls ? this._sharedControls.orbit3d : this._controls
     const cam = this._orbitCamera
     if (!oc || !cam || !this._THREE) return null
-    const sph = new this._THREE.Spherical().setFromVector3(new this._THREE.Vector3().subVectors(cam.position, oc.target))
-    const min = Number.isFinite(oc.minPolarAngle) && oc.minPolarAngle > 0 ? oc.minPolarAngle : 0.3
-    const max = Number.isFinite(oc.maxPolarAngle) && oc.maxPolarAngle < Math.PI ? oc.maxPolarAngle : 1.3
-    return { min, max, value: sph.phi, orbit: oc, invert: true }
+    const off = new this._THREE.Vector3().subVectors(cam.position, oc.target)
+    const hxz = Math.max(1, Math.hypot(off.x, off.z))
+    const minPolar = Number.isFinite(oc.minPolarAngle) && oc.minPolarAngle > 0 ? oc.minPolarAngle : 0.3
+    const maxPolar = Number.isFinite(oc.maxPolarAngle) && oc.maxPolarAngle < Math.PI ? oc.maxPolarAngle : 1.3
+    // Height window compatible with the polar clamps at this horizontal offset — plus the dolly
+    // floor (rising increases the radius, but crouching could dip under minDistance).
+    const minD = Number.isFinite(oc.minDistance) ? oc.minDistance : 0
+    const floorY = Math.sqrt(Math.max(0, minD * minD - hxz * hxz))
+    return { min: Math.max(hxz / Math.tan(maxPolar), floorY), max: hxz / Math.tan(minPolar), value: off.y, orbit: oc }
   }
 
   _applyZoomValue(value) {
@@ -4371,14 +4378,11 @@ export class Overlay3D {
     if (this._mode === 'tracked') {
       this._trackDist = d
       this._syncTrackedCamera()
-    } else if (s.orbit && this._orbitCamera && this._THREE) {
-      // Re-tilt at the CURRENT dolly distance: same seat, same azimuth, higher/lower eye.
+    } else if (s.orbit && this._orbitCamera) {
+      // Stand up / sit down: vertical translation ONLY — x/z (your seat) stay put, the eye
+      // rises or drops, and you keep looking at your spot on the table.
       const cam = this._orbitCamera
-      const off = new this._THREE.Vector3().subVectors(cam.position, s.orbit.target)
-      const sph = new this._THREE.Spherical().setFromVector3(off)
-      sph.phi = d
-      off.setFromSpherical(sph)
-      cam.position.copy(s.orbit.target).add(off)
+      cam.position.y = s.orbit.target.y + d
       cam.lookAt(s.orbit.target)
       s.orbit.update?.()
     }
@@ -4453,7 +4457,7 @@ export class Overlay3D {
       if (!s) return
       this._zoomRailDragging = true
       const frac = Number(input.value) / 1000
-      this._applyZoomValue(s.invert ? s.max - frac * (s.max - s.min) : s.min + frac * (s.max - s.min))
+      this._applyZoomValue(s.min + frac * (s.max - s.min)) // top of the rail = highest eye
     })
     input.addEventListener('change', () => { this._zoomRailDragging = false })
     rail.append(this._zoomRailCollapse, label, this._zoomBoundTop, input, this._zoomBoundBottom, this._zoomSlice)
@@ -4513,8 +4517,7 @@ export class Overlay3D {
     if (this._zoomRailDragging) return // don't fight the user's drag with the poll
     const s = this._zoomState()
     if (!s || !this._zoomRailInput) return
-    let frac = s.max > s.min ? (s.value - s.min) / (s.max - s.min) : 0
-    if (s.invert) frac = 1 - frac // seats: slider top = most overhead (smallest polar angle)
+    const frac = s.max > s.min ? (s.value - s.min) / (s.max - s.min) : 0
     this._zoomRailInput.value = String(Math.round(Math.max(0, Math.min(1, frac)) * 1000))
   }
 
