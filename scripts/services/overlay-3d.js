@@ -2910,9 +2910,36 @@ export class Overlay3D {
     this._openTokenHudFor(tok, x, y)
   }
 
+  /**
+   * Foundry's own gate for "may this user open the Token HUD on this token".
+   *
+   * ⚠️ SECURITY — do not remove. On the 2D canvas Foundry never opens the HUD for a token
+   * the user does not own: `Token#_canHUD` (`game.user.isGM || token.isOwner`) is consulted
+   * by the interaction manager before the right-click ever reaches `canvas.hud.token`. The
+   * 3D overlay does its OWN picking (`_pick` / `_pickNearest`, which filter on 3D visibility
+   * only), so nothing upstream applies that gate — without this check a player right-clicking
+   * a visible hostile NPC gets the full GM Token HUD for it. Reported live 2026-07-31: "one
+   * player could see the full GM menu on a Hostile Enemy."
+   *
+   * Prefer Foundry's own method when the build exposes it, so we inherit any semantics change;
+   * fall back to the documented rule.
+   */
+  _canOpenHudFor(tok) {
+    if (!tok) return false
+    try {
+      if (typeof tok._canHUD === 'function') return !!tok._canHUD(game.user)
+    } catch {
+      /* fall through to the explicit rule */
+    }
+    return !!(this._isGM() || tok.document?.isOwner)
+  }
+
   /** Bind + show Foundry's native token HUD for `tok` over the 3D view, optionally pinned at
    * a screen point. Shared by the 3D right-click pick and the self-token chip. */
   async _openTokenHudFor(tok, x, y) {
+    // The single choke point for every HUD-open path in 3D — gate here, not at the call
+    // sites, so a new caller cannot reintroduce the bypass.
+    if (!this._canOpenHudFor(tok)) return
     try {
       document.body.classList.add('cfg-3d-show-hud')
       canvas.hud.token.bind(tok)
