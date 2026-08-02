@@ -30,3 +30,31 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm test
+
+  # ── THE ONLY REQUIRED CONTEXT ─────────────────────────────────────────────
+  # Branch protection requires `ci-gate` and nothing else, so renaming or
+  # splitting a job needs no branch-protection change.
+  # `if: always()` — without it the gate is SKIPPED on a failed dependency,
+  # which reports as neither pass nor fail and hangs the PR.
+  # SKIPPED is success; only `failure` and `cancelled` fail the gate.
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any required job failed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -uo pipefail
+          echo "$RESULTS"
+          BAD=$(printf '%s' "$RESULTS" | jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key')
+          if [ -n "$BAD" ]; then
+            echo "::error::CI Gate FAILED — these jobs did not pass:"
+            # shellcheck disable=SC2086  # deliberate word-split — one job per line
+            printf '  %s\n' $BAD
+            exit 1
+          fi
+          echo "✓ CI Gate: nothing failed"
