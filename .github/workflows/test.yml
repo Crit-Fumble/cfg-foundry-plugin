@@ -2,9 +2,9 @@ name: test
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main, staging, next]
   pull_request:
-    branches: [main, staging]
+    branches: [main, staging, next]
 
 permissions:
   contents: read
