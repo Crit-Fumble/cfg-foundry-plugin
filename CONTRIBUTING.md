@@ -76,13 +76,14 @@ docs: clarify api-reference for hook ordering
 
 ## Submitting a pull request
 
-1. **Fork** the repo and branch from `main`:
+1. **Fork** the repo and branch from `next` (the release-candidate branch):
    `git checkout -b feat/your-change`
 2. **Write tests** for new behavior. Keep the existing suite green.
 3. **Run locally** before pushing: `npm test`. If your change touches
    server-side hooks or sync code, also run the Foundry integration tests.
 4. **Commit** using Conventional Commits.
-5. **Open a PR** against `main`. Describe the *why*, screenshots/clips help
+5. **Open a PR** against `next` (never `main` — it is released truth and is
+   only ever fast-forwarded to). Describe the *why*, screenshots/clips help
    for UI changes. Link any related issues.
 6. **Be patient and responsive** during review.
 
