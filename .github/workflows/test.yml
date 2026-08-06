@@ -36,7 +36,13 @@ jobs:
   # splitting a job needs no branch-protection change.
   # `if: always()` — without it the gate is SKIPPED on a failed dependency,
   # which reports as neither pass nor fail and hangs the PR.
-  # SKIPPED is success; only `failure` and `cancelled` fail the gate.
+  # ⚠️ FAIL-CLOSED, AND IT MUST STAY THAT WAY. `success` and `skipped` pass;
+  # EVERY other result fails, including ones GitHub has not documented.
+  # This was a denylist (`failure` or `cancelled`) until 2026-08-06, when an
+  # Actions partial outage produced `"result": "abandoned"` — which matched
+  # neither, so the gate reported SUCCESS over a job that never ran. CI Gate is
+  # the ONLY required check, so that made branch protection satisfiable with zero
+  # tests. Never enumerate the bad values; enumerate the good ones.
   ci-gate:
     name: CI Gate
     if: always()
@@ -50,7 +56,7 @@ jobs:
         run: |
           set -uo pipefail
           echo "$RESULTS"
-          BAD=$(printf '%s' "$RESULTS" | jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key')
+          BAD=$(printf '%s' "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"')
           if [ -n "$BAD" ]; then
             echo "::error::CI Gate FAILED — these jobs did not pass:"
             # shellcheck disable=SC2086  # deliberate word-split — one job per line
