@@ -1,10 +1,29 @@
 # Crit-Fumble Core — FoundryVTT module
 
-Core platform integration for [Crit-Fumble](https://crit-fumble.com)–hosted FoundryVTT campaigns. Provides quest sync, party roster, session tracking, AI narration, and system-aware feature gating.
+> # ⛔ SUPERSEDED — this repo no longer ships the module
+>
+> `crit-fumble-core` now ships from **[cfg-server-foundryvtt](https://github.com/Crit-Fumble/cfg-server-foundryvtt)**
+> (`module/`), released as `v*` tags with `module.json` + `module.zip` as release assets.
+> Production has run **3.0.0 from that channel since 2026-08-07**.
+>
+> The 3D view-skin, terrain sculpting and camera controls moved the other way, into
+> **cfg-app-playtable** as the separate `cfg-playtable` module — one repo per surface, with a
+> per-host adapter for each client (FoundryVTT now; TaleSpire and Tabletop Simulator next).
+> That was the cb#132 audience split: this repo kept only what CFG-*hosted* instances need,
+> and everything portable went where self-hosters can eventually reach it.
+>
+> **What is left here is history, plus one working part:** `module.json` is now a *pointer*.
+> It advertises version 3.0.0 and a `download` on the new channel, so any Foundry still
+> polling the old `raw.githubusercontent.com` manifest upgrades itself onto
+> cfg-server-foundryvtt and never comes back here. Do not "fix" it to describe this repo's
+> code — migrating those installs is the only job it has left.
+>
+> Nothing here should receive new work. Open an issue on the repo that owns the code.
 
 - **Module ID:** `crit-fumble-core`
 - **Compatibility:** FoundryVTT v13–v14
-- **Manifest:** `https://raw.githubusercontent.com/Crit-Fumble/cfg-foundry-plugin/main/module.json`
+- **Manifest (legacy, redirects):** `https://raw.githubusercontent.com/Crit-Fumble/cfg-foundry-plugin/main/module.json`
+- **Manifest (current):** `https://github.com/Crit-Fumble/cfg-server-foundryvtt/releases/latest/download/module.json`
 
 ## Documentation
 

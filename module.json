@@ -1,8 +1,8 @@
 {
   "id": "crit-fumble-core",
-  "title": "Crit-Fumble Core",
-  "description": "Core platform integration for CFG-hosted FoundryVTT campaigns. Provides quest sync, party roster, session tracking, AI narration, and system-aware feature gating.",
-  "version": "2.48.3",
+  "title": "CFG Server Manager",
+  "description": "Crit-Fumble platform integration for FoundryVTT worlds. THIS REPO IS SUPERSEDED — the module now ships from cfg-server-foundryvtt. This manifest exists only to migrate existing installs onto that channel.",
+  "version": "3.0.0",
   "authors": [
     {
       "name": "Crit-Fumble Gaming",
@@ -30,8 +30,8 @@
     }
   ],
   "url": "https://crit-fumble.com",
-  "manifest": "https://raw.githubusercontent.com/Crit-Fumble/cfg-foundry-plugin/main/module.json",
-  "download": "https://github.com/Crit-Fumble/cfg-foundry-plugin/archive/refs/heads/main.zip",
+  "manifest": "https://github.com/Crit-Fumble/cfg-server-foundryvtt/releases/latest/download/module.json",
+  "download": "https://github.com/Crit-Fumble/cfg-server-foundryvtt/releases/latest/download/module.zip",
   "flags": {
     "coreApiIntegration": true,
     "narrativeTools": true,
