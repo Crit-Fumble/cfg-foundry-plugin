@@ -89,24 +89,10 @@ export default defineConfig({
     {
       name: 'integration',
       testDir: './specs',
-      // overlay-3d runs in its own screenshot project; `_*.spec.js` are headed
-      // human-review harnesses (setTimeout(0), hold the browser open, no
-      // assertions) — they can't pass headless, so keep them out of the
-      // automated run. Invoke a review harness explicitly with --headed.
-      testIgnore: ['overlay-3d.spec.js', 'terrain-sculpt.spec.js', '_*.spec.js'],
-      dependencies: ['setup'],
-      use: {
-        storageState: join(__dirname, '../.auth/foundry.json'),
-      },
-    },
-    {
-      // 3D-overlay runs (WebGL) — `npm run test:foundry:3d`. The screenshot-review
-      // overlay spec + the terrain-sculpt spec both need the 3D overlay + a GM
-      // storage state, and are kept out of the `integration` project (testIgnore
-      // above) so the normal suite doesn't pay for the WebGL setup.
-      name: '3d-screenshots',
-      testDir: './specs',
-      testMatch: /(overlay-3d|terrain-sculpt)\.spec\.js/,
+      // `_*.spec.js` are headed human-review harnesses (setTimeout(0), hold the
+      // browser open, no assertions) — they can't pass headless, so keep them out
+      // of the automated run. Invoke one explicitly with --headed.
+      testIgnore: ['_*.spec.js'],
       dependencies: ['setup'],
       use: {
         storageState: join(__dirname, '../.auth/foundry.json'),

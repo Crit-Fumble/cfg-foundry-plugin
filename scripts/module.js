@@ -11,7 +11,6 @@
  *   - Character sheet write-back, Core → live actor (UPDATE-only; it cannot
  *     create an actor — fp#46)
  *   - Party journal sync, Core → live world (JournalPullSync, GM-only, #184)
- *   - 3D overlay — a three.js view-skin over the canvas (draft)
  *   - Connection banner + first-run pair prompt
  *
  * NOT present, though older docs claimed them: party roster, session tracker,
@@ -56,7 +55,6 @@ import { FolderPullSync } from './services/folder-pull-sync.js'
 import { ItemPullSync } from './services/item-pull-sync.js'
 import { ModulePackImportSync } from './services/module-pack-import-sync.js'
 import { ScenePullSync } from './services/scene-pull-sync.js'
-import { Overlay3D } from './services/overlay-3d.js'
 import { registerJsonEditorHeaderButton } from './views/json-editor-header-button.js'
 import { registerSourcebookShelfButton } from './views/sourcebook-shelf.js'
 
@@ -141,9 +139,6 @@ let _folderPullSync = null
 let _itemPullSync = null
 /** @type {ScenePullSync|null} */
 let _scenePullSync = null
-
-/** @type {Overlay3D|null} 3D view-skin over the canvas (DRAFT). */
-let _overlay3D = null
 
 /* -------------------------------------------- */
 /*  Global Exposure                              */
@@ -810,17 +805,10 @@ Hooks.once('ready', async () => {
     _staggerStart('journal-pull', () => _journalPullSync.start())
   }
 
-  // 3D overlay (DRAFT — cfs 3D-VTT slice 1) — a three.js view-skin over the
-  // canvas. Available to every user; three.js loads lazily on first toggle.
-  // The toggle lives in the Token scene controls. Reads Foundry's own scene +
-  // token + elevation data; no new server, sync rides Foundry's broadcasts.
-  // See docs/notes/3d-vtt-scope.md (cfg-core-dev-tools).
-  try {
-    _overlay3D = new Overlay3D()
-    _overlay3D.start()
-  } catch (err) {
-    console.warn('CFG Core | Overlay3D init failed (non-fatal):', err)
-  }
+  // The 3D view-skin MOVED OUT (cb#132 audience split) — it is now the separate
+  // `cfg-playtable` module in the cfg-app-playtable repo, which is where every
+  // PlayTable host adapter lives. It referenced hosted context zero times, so it
+  // was always portable; this repo keeps only what CFG-hosted instances need.
 
   // dt#212 parity — an "Edit JSON" control on Item/Actor/JournalEntry sheet headers, opening the
   // CFG JSON editor with the same discard/required-empty diagnostics and pre-save health probe
